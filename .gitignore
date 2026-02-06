@@ -5,3 +5,4 @@ orchestrator.*
 skills/
 tasks.yml
 tasks.yml.lock*
+contexts/
