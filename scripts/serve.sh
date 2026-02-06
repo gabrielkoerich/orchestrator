@@ -42,6 +42,9 @@ lock_mtime() {
 
 LAST_CONFIG_MTIME=$(lock_mtime "$CONFIG_PATH")
 
+# Sync skills on start
+"$SCRIPT_DIR/skills_sync.sh" >> "$LOG_FILE" 2>&1 || true
+
 echo "[serve] starting with interval=${INTERVAL}s" >> "$LOG_FILE"
 
 while true; do

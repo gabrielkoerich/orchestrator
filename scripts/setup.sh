@@ -13,6 +13,7 @@ rsync -a --delete \
   --exclude 'config.yml' \
   --exclude '.env' \
   --exclude 'contexts/' \
+  --exclude 'skills/' \
   "$(cd "$(dirname "$0")/.." && pwd)/" "$TARGET_DIR/"
 
 # Initialize config if missing
@@ -59,6 +60,9 @@ if [ -t 0 ]; then
     fi
   fi
 fi
+
+# Sync skills catalog
+"$TARGET_DIR/scripts/skills_sync.sh" || true
 
 # Install justfile shortcut
 cat > "$BIN_DIR/orchestrator" <<'EOF'
