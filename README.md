@@ -249,6 +249,10 @@ gh:
     review: ""
     done: ""
 ```
+To discover Project field and option IDs:
+```bash
+just gh-project-info
+```
 
 ### Pull issues into tasks.yml
 ```bash
@@ -286,7 +290,7 @@ Provide in `config.yml`:
 ```bash
 gh api graphql -f query='query($org:String!, $num:Int!){ organization(login:$org){ projectV2(number:$num){ id } } }' -f org=YOUR_ORG -f num=PROJECT_NUMBER
 ```
-2. Status field ID + option IDs:
+2. Status field ID + option IDs (or use `just gh-project-info`):
 ```bash
 gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:50){ nodes{ ... on ProjectV2SingleSelectField { id name options{ id name } } } } } } }' -f project=YOUR_PROJECT_ID
 ```

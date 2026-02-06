@@ -3,6 +3,9 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_yq
 init_config_file
+if [ "${DEBUG_GH:-0}" = "1" ]; then
+  set -x
+fi
 
 require_gh() {
   if ! command -v gh >/dev/null 2>&1; then
@@ -21,7 +24,8 @@ fi
 
 SYNC_LABEL=${GITHUB_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
 
-ISSUES_JSON=$(gh api "repos/$REPO/issues" --paginate -f state=all -f per_page=100)
+echo "[gh_pull] repo=$REPO"
+ISSUES_JSON=$(gh api -X GET "repos/$REPO/issues" --paginate -f state=all -f per_page=100)
 FILTERED=$(printf '%s' "$ISSUES_JSON" | yq -o=json -I=0 'map(select(.pull_request == null))')
 if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
   FILTERED=$(printf '%s' "$FILTERED" | yq -o=json -I=0 "map(select(.labels | map(.name) | index(\"$SYNC_LABEL\") != null))")
@@ -29,12 +33,22 @@ fi
 
 acquire_lock
 
+trap 'release_lock' EXIT INT TERM
+
 COUNT=$(printf '%s' "$FILTERED" | yq -r 'length')
+if [ "$COUNT" -le 0 ]; then
+  release_lock
+  exit 0
+fi
+
+export LABELS_CSV=""
 for i in $(seq 0 $((COUNT - 1))); do
   NUM=$(printf '%s' "$FILTERED" | yq -r ".[$i].number")
   TITLE=$(printf '%s' "$FILTERED" | yq -r ".[$i].title")
   BODY=$(printf '%s' "$FILTERED" | yq -r ".[$i].body // \"\"")
   LABELS_CSV=$(printf '%s' "$FILTERED" | yq -r ".[$i].labels | map(.name) | join(\",\")")
+  LABELS_CSV=${LABELS_CSV:-""}
+  export LABELS_CSV
   STATE=$(printf '%s' "$FILTERED" | yq -r ".[$i].state")
   URL=$(printf '%s' "$FILTERED" | yq -r ".[$i].html_url")
   UPDATED=$(printf '%s' "$FILTERED" | yq -r ".[$i].updated_at")
@@ -45,7 +59,7 @@ for i in $(seq 0 $((COUNT - 1))); do
     yq -i \
       "(.tasks[] | select(.gh_issue_number == $NUM) | .title) = env(TITLE) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .body) = env(BODY) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .labels) = (env(LABELS_CSV) | split(\",\") | map(select(length > 0))) | \
+       (.tasks[] | select(.gh_issue_number == $NUM) | .labels) = (strenv(LABELS_CSV) | split(\",\") | map(select(length > 0))) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_state) = env(STATE) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_url) = env(URL) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_updated_at) = env(UPDATED)" \
@@ -73,7 +87,7 @@ for i in $(seq 0 $((COUNT - 1))); do
         "id": (env(NEXT_ID) | tonumber),
         "title": env(TITLE),
         "body": env(BODY),
-        "labels": (env(LABELS_CSV) | split(",") | map(select(length > 0))),
+        "labels": (strenv(LABELS_CSV) | split(",") | map(select(length > 0))),
         "status": env(STATUS),
         "agent": null,
         "agent_profile": null,

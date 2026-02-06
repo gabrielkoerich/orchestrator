@@ -39,6 +39,43 @@ render_template() {
   esc_files=$(escape_sed "$task_files_changed")
   esc_context=$(escape_sed "$task_context")
 
+  if command -v python3 >/dev/null 2>&1; then
+    TASK_ID="$task_id" \
+    TASK_TITLE="$task_title" \
+    TASK_LABELS="$task_labels" \
+    TASK_BODY="$task_body" \
+    AGENT_PROFILE_JSON="$agent_profile_json" \
+    TASK_SUMMARY="$task_summary" \
+    TASK_FILES_CHANGED="$task_files_changed" \
+    TASK_CONTEXT="$task_context" \
+    python3 - "$template_path" <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = fh.read()
+
+repl = {
+    "{{TASK_ID}}": os.environ.get("TASK_ID", ""),
+    "{{TASK_TITLE}}": os.environ.get("TASK_TITLE", ""),
+    "{{TASK_LABELS}}": os.environ.get("TASK_LABELS", ""),
+    "{{TASK_BODY}}": os.environ.get("TASK_BODY", ""),
+    "{{AGENT_PROFILE_JSON}}": os.environ.get("AGENT_PROFILE_JSON", ""),
+    "{{TASK_SUMMARY}}": os.environ.get("TASK_SUMMARY", ""),
+    "{{TASK_FILES_CHANGED}}": os.environ.get("TASK_FILES_CHANGED", ""),
+    "{{TASK_CONTEXT}}": os.environ.get("TASK_CONTEXT", ""),
+    "{{SKILLS_CATALOG}}": os.environ.get("TASK_CONTEXT", ""),
+  }
+
+for key, val in repl.items():
+    data = data.replace(key, val)
+
+sys.stdout.write(data)
+PY
+    return 0
+  fi
+
   sed \
     -e "s/{{TASK_ID}}/${esc_id}/g" \
     -e "s/{{TASK_TITLE}}/${esc_title}/g" \
@@ -48,6 +85,7 @@ render_template() {
     -e "s/{{TASK_SUMMARY}}/${esc_summary}/g" \
     -e "s/{{TASK_FILES_CHANGED}}/${esc_files}/g" \
     -e "s/{{TASK_CONTEXT}}/${esc_context}/g" \
+    -e "s/{{SKILLS_CATALOG}}/${esc_context}/g" \
     "$template_path"
 }
 
@@ -56,6 +94,99 @@ require_yq() {
     echo "yq is required but not found in PATH." >&2
     exit 1
   fi
+}
+
+require_jq() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "jq is required but not found in PATH." >&2
+    exit 1
+  fi
+}
+
+normalize_json_response() {
+  local raw="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    RAW_RESPONSE="$raw" python3 - <<'PY'
+import json
+import re
+import os
+import sys
+
+raw = os.environ.get("RAW_RESPONSE", "")
+
+def strip_fences(text: str) -> str:
+    if "```" not in text:
+        return text
+    parts = text.split("```")
+    if len(parts) >= 3:
+        body = parts[1]
+        if body.startswith("json"):
+            body = body[len("json"):]
+        if body.startswith("\n"):
+            body = body[1:]
+        return body
+    return text
+
+def parse_payload(payload):
+    if isinstance(payload, str):
+        # If fenced JSON exists anywhere, extract it.
+        if "```" in payload:
+            parts = payload.split("```")
+            if len(parts) >= 3:
+                payload = parts[1]
+        text = strip_fences(payload).strip()
+        try:
+            return json.loads(text)
+        except Exception:
+            return json.loads(json.dumps(text))
+    return payload
+
+try:
+    obj = json.loads(raw)
+    if isinstance(obj, dict) and "result" in obj:
+        parsed = parse_payload(obj["result"])
+    else:
+        parsed = parse_payload(obj)
+    print(json.dumps(parsed, separators=(",", ":")))
+    sys.exit(0)
+except Exception:
+    pass
+
+# Try line-delimited JSON (codex/opencode streaming)
+lines = [l for l in raw.splitlines() if l.strip().startswith("{")]
+events = []
+for line in lines:
+    try:
+        events.append(json.loads(line))
+    except Exception:
+        continue
+
+# Opencode: last text part
+for ev in reversed(events):
+    if ev.get("type") == "text":
+        text = ev.get("part", {}).get("text", "")
+        if text:
+            parsed = parse_payload(text)
+            print(json.dumps(parsed, separators=(",", ":")))
+            sys.exit(0)
+
+# Codex: last agent_message item
+for ev in reversed(events):
+    if ev.get("type") == "item.completed":
+        item = ev.get("item", {})
+        if item.get("type") == "agent_message":
+            text = item.get("text", "")
+            if text:
+                parsed = parse_payload(text)
+                print(json.dumps(parsed, separators=(",", ":")))
+                sys.exit(0)
+
+sys.exit(1)
+PY
+    return $?
+  fi
+
+  return 1
 }
 
 init_tasks_file() {
@@ -110,7 +241,7 @@ config_get() {
 }
 
 acquire_lock() {
-  local wait_seconds=${LOCK_WAIT_SECONDS:-5}
+  local wait_seconds=${LOCK_WAIT_SECONDS:-20}
   local start
   start=$(date +%s)
 
@@ -123,9 +254,10 @@ acquire_lock() {
     now=$(date +%s)
     if [ $((now - start)) -ge "$wait_seconds" ]; then
       echo "Failed to acquire lock: $LOCK_PATH" >&2
+      echo "Tip: if no orchestrator is running, remove stale locks with 'just unlock'." >&2
       exit 1
     fi
-    sleep 0.05
+    sleep 0.1
   done
 }
 
@@ -235,6 +367,22 @@ run_with_timeout() {
   fi
   if command -v gtimeout >/dev/null 2>&1; then
     gtimeout "$timeout_seconds" "$@"
+    return $?
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$timeout_seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+timeout_seconds = float(sys.argv[1])
+cmd = sys.argv[2:]
+
+try:
+    result = subprocess.run(cmd, timeout=timeout_seconds)
+    sys.exit(result.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+PY
     return $?
   fi
   "$@"

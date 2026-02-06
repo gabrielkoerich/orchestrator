@@ -6,6 +6,8 @@ workflow:
 router:
   agent: "claude"
   model: "haiku"
+  timeout_seconds: 120
+  fallback_executor: "codex"
   allowed_tools:
     - yq
     - jq
@@ -22,7 +24,11 @@ router:
   default_skills:
     - gh
     - git-worktree
+llm:
+  input_format: ""
+  output_format: "json"
 gh:
+  enabled: true
   repo: "owner/repo"
   sync_label: "sync"
   project_id: ""

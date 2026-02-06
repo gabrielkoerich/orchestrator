@@ -18,7 +18,7 @@ Constraints:
 - If changes are needed, describe the files changed in the response.
 - If you need help or a sub-agent, set needs_help: true and include delegations.
 
-Return ONLY YAML with the following keys:
+Return ONLY JSON (no code fences, no markdown) with the following keys:
 status: new|routed|in_progress|done|blocked|needs_review
 summary: short summary of what you did or found
 accomplished: list of completed items

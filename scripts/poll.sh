@@ -6,8 +6,24 @@ require_yq
 JOBS=${POLL_JOBS:-4}
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
-# Run all new tasks in parallel
-NEW_IDS=$(yq -r '.tasks[] | select(.status == "new") | .id' "$TASKS_PATH")
+# Recover tasks stuck in progress without an agent
+STUCK_IDS=$(yq -r '.tasks[] | select(.status == "in_progress" and (.agent == null or .agent == "")) | .id' "$TASKS_PATH")
+if [ -n "$STUCK_IDS" ]; then
+  NOW=$(now_iso)
+  export NOW
+  while IFS= read -r sid; do
+    [ -n "$sid" ] || continue
+    with_lock yq -i \
+      "(.tasks[] | select(.id == $sid) | .status) = \"needs_review\" | \
+       (.tasks[] | select(.id == $sid) | .last_error) = \"task stuck in_progress without agent\" | \
+       (.tasks[] | select(.id == $sid) | .updated_at) = env(NOW)" \
+      "$TASKS_PATH"
+    append_history "$sid" "needs_review" "stuck in_progress without agent"
+  done <<< "$STUCK_IDS"
+fi
+
+# Run all new/routed tasks in parallel
+NEW_IDS=$(yq -r '.tasks[] | select(.status == "new" or .status == "routed") | .id' "$TASKS_PATH")
 if [ -n "$NEW_IDS" ]; then
   printf '%s\n' "$NEW_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
 fi

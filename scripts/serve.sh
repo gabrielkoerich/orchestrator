@@ -2,18 +2,80 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-PID_FILE=${PID_FILE:-"${SCRIPT_DIR}/../orchestrator.pid"}
-LOG_FILE=${LOG_FILE:-"${SCRIPT_DIR}/../orchestrator.log"}
-ARCHIVE_LOG=${ARCHIVE_LOG:-"${SCRIPT_DIR}/../orchestrator.archive.log"}
+ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+STATE_DIR=${STATE_DIR:-"${ROOT_DIR}/.orchestrator"}
+PID_FILE=${PID_FILE:-"${STATE_DIR}/orchestrator.pid"}
+LOG_FILE=${LOG_FILE:-"${STATE_DIR}/orchestrator.log"}
+ARCHIVE_LOG=${ARCHIVE_LOG:-"${STATE_DIR}/orchestrator.archive.log"}
 INTERVAL=${INTERVAL:-10}
-CONFIG_PATH=${CONFIG_PATH:-"${SCRIPT_DIR}/../config.yml"}
+GH_PULL_INTERVAL=${GH_PULL_INTERVAL:-60}
+CONFIG_PATH=${CONFIG_PATH:-"${ROOT_DIR}/config.yml"}
+SERVE_LOCK=${SERVE_LOCK:-"${STATE_DIR}/serve.lock"}
+TAIL_PID_FILE=${TAIL_PID_FILE:-"${STATE_DIR}/tail.pid"}
+RESTARTING=${RESTARTING:-0}
 
-if [ -f "$PID_FILE" ]; then
-  if kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
-    echo "Orchestrator already running (pid $(cat "$PID_FILE"))" >&2
-    exit 1
+mkdir -p "$STATE_DIR"
+
+if [ -d "$SERVE_LOCK" ] && [ "$RESTARTING" != "1" ]; then
+  if [ -f "$PID_FILE" ]; then
+    EXISTING_PID=$(cat "$PID_FILE")
+    if kill -0 "$EXISTING_PID" >/dev/null 2>&1; then
+      if [ "$EXISTING_PID" != "$$" ]; then
+        echo "Orchestrator already running (pid $EXISTING_PID)."
+        echo "Tip: use 'just restart' to stop and start again."
+        exit 0
+      fi
+      # If this process already owns the lock, continue.
+    else
+      rm -f "$PID_FILE"
+    fi
+  fi
+  rm -rf "$SERVE_LOCK"
+fi
+
+if ! mkdir "$SERVE_LOCK" 2>/dev/null; then
+  if [ "$RESTARTING" = "1" ]; then
+    :
+  else
+    echo "Orchestrator already running (lock exists)."
+    echo "Tip: use 'just restart' to stop and start again."
+    exit 0
+  fi
+fi
+
+if [ "$RESTARTING" != "1" ]; then
+  if [ -f "$PID_FILE" ]; then
+  EXISTING_PID=$(cat "$PID_FILE")
+  if kill -0 "$EXISTING_PID" >/dev/null 2>&1; then
+    if [ "$EXISTING_PID" != "$$" ]; then
+      echo "Orchestrator already running (pid $EXISTING_PID)."
+      echo "Tip: use 'just restart' to stop and start again."
+      rm -rf "$SERVE_LOCK"
+      exit 0
+    fi
   else
     rm -f "$PID_FILE"
+  fi
+  fi
+fi
+
+if [ -d "${TASKS_PATH:-tasks.yml}.lock" ]; then
+  LOCK_PATH="${TASKS_PATH:-tasks.yml}.lock"
+  if command -v stat >/dev/null 2>&1; then
+    if stat -f %m "$LOCK_PATH" >/dev/null 2>&1; then
+      MTIME=$(stat -f %m "$LOCK_PATH")
+    elif stat -c %Y "$LOCK_PATH" >/dev/null 2>&1; then
+      MTIME=$(stat -c %Y "$LOCK_PATH")
+    else
+      MTIME=0
+    fi
+  else
+    MTIME=0
+  fi
+  NOW=$(date +%s)
+  STALE_SECONDS=${LOCK_STALE_SECONDS:-600}
+  if [ "$MTIME" -gt 0 ] && [ $((NOW - MTIME)) -ge "$STALE_SECONDS" ]; then
+    rm -rf "$LOCK_PATH"
   fi
 fi
 
@@ -21,6 +83,17 @@ echo $$ > "$PID_FILE"
 
 cleanup() {
   rm -f "$PID_FILE"
+  rm -rf "$SERVE_LOCK"
+  if [ -f "$TAIL_PID_FILE" ]; then
+    TPID=$(cat "$TAIL_PID_FILE")
+    if [ -n "$TPID" ]; then
+      kill "$TPID" >/dev/null 2>&1 || true
+    fi
+    rm -f "$TAIL_PID_FILE"
+  fi
+  if [ -n "${TAIL_PID:-}" ]; then
+    kill "$TAIL_PID" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -47,23 +120,92 @@ lock_mtime() {
   echo 0
 }
 
+clear_stale_task_lock() {
+  local lock_dir="${TASKS_PATH:-tasks.yml}.lock"
+  local stale_seconds=${LOCK_STALE_SECONDS:-600}
+  if [ -d "$lock_dir" ]; then
+    local mtime
+    mtime=$(lock_mtime "$lock_dir")
+    if [ "$mtime" -gt 0 ]; then
+      local now
+      now=$(date +%s)
+      if [ $((now - mtime)) -ge "$stale_seconds" ]; then
+        rm -rf "$lock_dir"
+        echo "[serve] cleared stale task lock" >> "$LOG_FILE"
+      fi
+    fi
+  fi
+}
+
+snapshot_hash() {
+  # Hash all repo files except runtime state
+  find "$ROOT_DIR" -type f \
+    -not -path "$ROOT_DIR/.git/*" \
+    -not -path "$ROOT_DIR/tasks.yml" \
+    -not -path "$ROOT_DIR/config.yml" \
+    -not -path "$STATE_DIR/orchestrator.log" \
+    -not -path "$STATE_DIR/orchestrator.archive.log" \
+    -not -path "$STATE_DIR/orchestrator.pid" \
+    -not -path "$STATE_DIR/*" \
+    -not -path "$ROOT_DIR/tasks.yml.lock" \
+    -not -path "$ROOT_DIR/tasks.yml.lock.task.*" \
+    -not -path "$ROOT_DIR/contexts/*" \
+    -not -path "$ROOT_DIR/skills/*" \
+    -print0 \
+    | xargs -0 stat -f "%m %N" 2>/dev/null \
+    | sort \
+    | shasum | awk '{print $1}'
+}
+
 LAST_CONFIG_MTIME=$(lock_mtime "$CONFIG_PATH")
+LAST_SNAPSHOT=$(snapshot_hash)
+LAST_GH_PULL=0
 
 # Sync skills on start
 "$SCRIPT_DIR/skills_sync.sh" >> "$LOG_FILE" 2>&1 || true
 
 echo "[serve] starting with interval=${INTERVAL}s" >> "$LOG_FILE"
 
+echo "Orchestrator started, listening to tasks and delegating agents." \
+  "(pid $(cat "$PID_FILE"), interval ${INTERVAL}s)"
+
+if [ "${TAIL_LOG:-0}" = "1" ]; then
+  if [ -f "$TAIL_PID_FILE" ]; then
+    EXISTING_TPID=$(cat "$TAIL_PID_FILE")
+    if [ -n "$EXISTING_TPID" ] && kill -0 "$EXISTING_TPID" >/dev/null 2>&1; then
+      :
+    else
+      rm -f "$TAIL_PID_FILE"
+    fi
+  fi
+  if [ ! -f "$TAIL_PID_FILE" ]; then
+    tail -n 50 -F "$LOG_FILE" &
+    TAIL_PID=$!
+    echo "$TAIL_PID" > "$TAIL_PID_FILE"
+  fi
+fi
+
 while true; do
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "[serve] tick ${ts}" >> "$LOG_FILE"
+  clear_stale_task_lock
   "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
-  "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+  NOW_EPOCH=$(date +%s)
+  if [ $((NOW_EPOCH - LAST_GH_PULL)) -ge "$GH_PULL_INTERVAL" ]; then
+    "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+    LAST_GH_PULL=$NOW_EPOCH
+  fi
 
   CURRENT_MTIME=$(lock_mtime "$CONFIG_PATH")
   if [ "$CURRENT_MTIME" -ne "$LAST_CONFIG_MTIME" ]; then
     echo "[serve] config.yml changed; restarting" >> "$LOG_FILE"
-    exec "$SCRIPT_DIR/serve.sh"
+    exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
+  fi
+
+  CURRENT_SNAPSHOT=$(snapshot_hash)
+  if [ "$CURRENT_SNAPSHOT" != "$LAST_SNAPSHOT" ]; then
+    echo "[serve] code changed; restarting" >> "$LOG_FILE"
+    exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
   fi
 
   sleep "$INTERVAL"

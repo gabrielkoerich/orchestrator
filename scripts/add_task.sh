@@ -15,6 +15,7 @@ fi
 NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
 NOW=$(now_iso)
 
+BODY=${BODY:-}
 LABELS=${LABELS:-}
 export NEXT_ID TITLE BODY LABELS NOW
 
@@ -22,8 +23,8 @@ with_lock yq -i \
   '.tasks += [{
     "id": (env(NEXT_ID) | tonumber),
     "title": env(TITLE),
-    "body": env(BODY),
-    "labels": (env(LABELS) | split(",") | map(select(length > 0))),
+    "body": strenv(BODY),
+    "labels": (strenv(LABELS) | split(",") | map(select(length > 0))),
     "status": "new",
     "agent": null,
     "agent_model": null,

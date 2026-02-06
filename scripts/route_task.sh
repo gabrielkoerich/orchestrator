@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_yq
+require_jq
 init_config_file
 
 TASK_ID=${1:-}
@@ -13,11 +14,18 @@ if [ -z "$TASK_ID" ]; then
   fi
 fi
 
+echo "[route] task=$TASK_ID starting" >&2
+mkdir -p .orchestrator
+CMD_STATUS=0
+ROUTED_AGENT=""
+
 TASK_TITLE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .title" "$TASKS_PATH")
 TASK_BODY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .body" "$TASKS_PATH")
 TASK_LABELS=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .labels | join(\",\")" "$TASKS_PATH")
 ROUTER_AGENT=${ROUTER_AGENT:-$(config_get '.router.agent // "claude"')}
 ROUTER_MODEL=${ROUTER_MODEL:-$(config_get '.router.model // ""')}
+ROUTER_TIMEOUT=${ROUTER_TIMEOUT:-$(config_get '.router.timeout_seconds // ""')}
+ROUTER_FALLBACK=${ROUTER_FALLBACK:-$(config_get '.router.fallback_executor // "codex"')}
 ALLOWED_TOOLS_CSV=$(config_get '.router.allowed_tools // [] | join(",")')
 DEFAULT_SKILLS_CSV=$(config_get '.router.default_skills // [] | join(",")')
 
@@ -28,42 +36,136 @@ fi
 
 SKILLS_CATALOG=""
 if [ -f "skills.yml" ]; then
-  SKILLS_CATALOG=$(cat "skills.yml")
+  SKILLS_CATALOG=$(yq -o=json -I=0 '.skills // []' "skills.yml")
 fi
 
 PROMPT=$(render_template "prompts/route.md" "$TASK_ID" "$TASK_TITLE" "$TASK_LABELS" "$TASK_BODY" "{}" "" "" "$SKILLS_CATALOG")
+PROMPT_FILE=".orchestrator/route-prompt-${TASK_ID}.txt"
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
+
+run_router_cmd() {
+  if [ -n "${ROUTER_TIMEOUT:-}" ] && [ "${ROUTER_TIMEOUT}" != "0" ]; then
+    AGENT_TIMEOUT_SECONDS="${ROUTER_TIMEOUT}" run_with_timeout "$@"
+    return $?
+  fi
+  "$@"
+}
 
 case "$ROUTER_AGENT" in
   codex)
+    echo "[route] using codex model=${ROUTER_MODEL:-default}" >&2
+    echo "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s" >&2
+    echo "[route] cmd: codex exec --json ${ROUTER_MODEL:+--model \"$ROUTER_MODEL\"} \"$(cat "$PROMPT_FILE")\"" >&2
     if [ -n "$ROUTER_MODEL" ]; then
-      RESPONSE=$(codex --model "$ROUTER_MODEL" --print "$PROMPT")
+      RESPONSE=$(run_router_cmd codex exec --model "$ROUTER_MODEL" --json "$PROMPT") || CMD_STATUS=$?
     else
-      RESPONSE=$(codex --print "$PROMPT")
+      RESPONSE=$(run_router_cmd codex exec --json "$PROMPT") || CMD_STATUS=$?
     fi
     ;;
   claude)
+    echo "[route] using claude model=${ROUTER_MODEL:-default}" >&2
+    echo "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s" >&2
+    echo "[route] cmd: claude ${ROUTER_MODEL:+--model \"$ROUTER_MODEL\"} --output-format json --print \"$(cat "$PROMPT_FILE")\"" >&2
     if [ -n "$ROUTER_MODEL" ]; then
-      RESPONSE=$(claude --model "$ROUTER_MODEL" --print "$PROMPT")
+      RESPONSE=$(run_router_cmd claude --model "$ROUTER_MODEL" --output-format json --print "$PROMPT") || CMD_STATUS=$?
     else
-      RESPONSE=$(claude --print "$PROMPT")
+      RESPONSE=$(run_router_cmd claude --output-format json --print "$PROMPT") || CMD_STATUS=$?
     fi
+    ;;
+  opencode)
+    echo "[route] using opencode" >&2
+    echo "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s" >&2
+    echo "[route] cmd: opencode run --format json \"$(cat "$PROMPT_FILE")\"" >&2
+    RESPONSE=$(run_router_cmd opencode run --format json "$PROMPT") || CMD_STATUS=$?
     ;;
   *)
     echo "Unknown router agent: $ROUTER_AGENT" >&2
     exit 1
     ;;
- esac
+esac
 
-ROUTED_AGENT=$(printf '%s' "$RESPONSE" | yq -r '.executor')
-REASON=$(printf '%s' "$RESPONSE" | yq -r '.reason')
-PROFILE_YAML=$(printf '%s' "$RESPONSE" | yq '.profile // {}')
-SELECTED_SKILLS_CSV=$(printf '%s' "$RESPONSE" | yq -r '.selected_skills // [] | join(",")')
-MODEL=$(printf '%s' "$RESPONSE" | yq -r '.model // ""')
+echo "[route] raw response:" >&2
+printf '%s\n' "$RESPONSE" | sed 's/^/[route] > /' >&2
+
+if [ "${CMD_STATUS:-0}" -ne 0 ]; then
+  echo "[route] router failed exit=${CMD_STATUS}" >&2
+  if [ -n "${ROUTER_FALLBACK:-}" ]; then
+    ROUTED_AGENT="$ROUTER_FALLBACK"
+    REASON="router failed (exit $CMD_STATUS); fallback to $ROUTER_FALLBACK"
+    ROUTE_WARNING=""
+    PROFILE_JSON='{}'
+    SELECTED_SKILLS_CSV=""
+    MODEL=""
+    NOW=$(now_iso)
+    # Apply static defaults to fallback profile
+    if [ -n "$ALLOWED_TOOLS_CSV" ]; then
+      PROFILE_JSON=$(printf '%s' "$PROFILE_JSON" | jq -c --arg tools "$ALLOWED_TOOLS_CSV" '.tools = ($tools | split(",") | map(select(length > 0)))')
+    fi
+    TMP_PROFILE=$(mktemp)
+    printf '%s
+' "$PROFILE_JSON" > "$TMP_PROFILE"
+    ROLE="general"
+    AGENT_LABEL="agent:${ROUTED_AGENT}"
+    ROLE_LABEL="role:${ROLE}"
+    MODEL_LABEL=""
+    export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV MODEL MODEL_LABEL
+    with_lock yq -i \
+      "(.tasks[] | select(.id == $TASK_ID) | .agent) = (strenv(ROUTED_AGENT) | select(length > 0)) | \
+       (.tasks[] | select(.id == $TASK_ID) | .agent_model) = (strenv(MODEL) | select(length > 0) // null) | \
+       (.tasks[] | select(.id == $TASK_ID) | .status) = \"routed\" | \
+       (.tasks[] | select(.id == $TASK_ID) | .route_reason) = strenv(REASON) | \
+       (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (strenv(ROUTE_WARNING) | select(length > 0) // null) | \
+       (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = load(\"$TMP_PROFILE\") | \
+       (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (strenv(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0)) | unique) | \
+       (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL)]) | unique) | \
+       (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
+      "$TASKS_PATH"
+    rm -f "$TMP_PROFILE"
+    append_history "$TASK_ID" "routed" "$REASON"
+    echo "[route] task=$TASK_ID fallback to ${ROUTED_AGENT}" >&2
+    echo "$ROUTED_AGENT"
+    exit 0
+  fi
+
+  NOW=$(now_iso)
+  export NOW
+  with_lock yq -i \
+    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
+     (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"router failed (exit ${CMD_STATUS})\" | \
+     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+    "$TASKS_PATH"
+  append_history "$TASK_ID" "needs_review" "router failed (exit ${CMD_STATUS})"
+  exit 0
+fi
+
+RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+if [ -z "$RESPONSE_JSON" ] || ! printf '%s' "$RESPONSE_JSON" | jq -e 'type=="object"' >/dev/null 2>&1; then
+  echo "[route] invalid JSON response" >&2
+  NOW=$(now_iso)
+  export NOW
+  with_lock yq -i \
+    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
+     (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"router response invalid JSON\" | \
+     (.tasks[] | select(.id == $TASK_ID) | .summary) = \"Router error: invalid JSON response\" | \
+     (.tasks[] | select(.id == $TASK_ID) | .blockers) = [\"Router failed to return valid JSON\"] | \
+     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+    "$TASKS_PATH"
+  mkdir -p "$CONTEXTS_DIR"
+  printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/route-response-${TASK_ID}.md"
+  append_history "$TASK_ID" "needs_review" "router response invalid JSON"
+  exit 0
+fi
+
+ROUTED_AGENT=$(printf '%s' "$RESPONSE_JSON" | jq -r '.executor // ""')
+REASON=$(printf '%s' "$RESPONSE_JSON" | jq -r '.reason // ""')
+PROFILE_JSON=$(printf '%s' "$RESPONSE_JSON" | jq -c '.profile // {}')
+SELECTED_SKILLS_CSV=$(printf '%s' "$RESPONSE_JSON" | jq -r '.selected_skills // [] | join(",")')
+MODEL=$(printf '%s' "$RESPONSE_JSON" | jq -r '.model // ""')
 NOW=$(now_iso)
 
 # Apply static defaults
 if [ -n "$ALLOWED_TOOLS_CSV" ]; then
-  PROFILE_YAML=$(printf '%s' "$PROFILE_YAML" | yq ".tools = (\"$ALLOWED_TOOLS_CSV\" | split(\",\") | map(select(length > 0)))")
+  PROFILE_JSON=$(printf '%s' "$PROFILE_JSON" | jq -c --arg tools "$ALLOWED_TOOLS_CSV" '.tools = ($tools | split(",") | map(select(length > 0)))')
 fi
 if [ -n "$DEFAULT_SKILLS_CSV" ]; then
   if [ -n "$SELECTED_SKILLS_CSV" ]; then
@@ -76,7 +178,7 @@ fi
 # Simple router sanity check
 ROUTE_WARNING=""
 LABELS_LOWER=$(printf '%s' "$TASK_LABELS" | tr '[:upper:]' '[:lower:]')
-SKILLS=$(printf '%s' "$PROFILE_YAML" | yq -r '.skills // [] | join(",")')
+SKILLS=$(printf '%s' "$PROFILE_JSON" | jq -r '.skills // [] | join(",")')
 SKILLS_LOWER=$(printf '%s' "$SKILLS" | tr '[:upper:]' '[:lower:]')
 
 if echo "$LABELS_LOWER" | grep -qE '(backend|api|database|db)'; then
@@ -97,9 +199,9 @@ fi
 
 TMP_PROFILE=$(mktemp)
 printf '%s
-' "$PROFILE_YAML" > "$TMP_PROFILE"
+' "$PROFILE_JSON" > "$TMP_PROFILE"
 
-ROLE=$(printf '%s' "$PROFILE_YAML" | yq -r '.role // "general"')
+ROLE=$(printf '%s' "$PROFILE_JSON" | jq -r '.role // "general"')
 AGENT_LABEL="agent:${ROUTED_AGENT}"
 ROLE_LABEL="role:${ROLE}"
 MODEL_LABEL=""
@@ -110,15 +212,15 @@ fi
 export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV MODEL MODEL_LABEL
 
 with_lock yq -i \
-  "(.tasks[] | select(.id == $TASK_ID) | .agent) = env(ROUTED_AGENT) | \
-   (.tasks[] | select(.id == $TASK_ID) | .agent_model) = (env(MODEL) | select(length > 0) // null) | \
+  "(.tasks[] | select(.id == $TASK_ID) | .agent) = (strenv(ROUTED_AGENT) | select(length > 0)) | \
+   (.tasks[] | select(.id == $TASK_ID) | .agent_model) = (strenv(MODEL) | select(length > 0) // null) | \
    (.tasks[] | select(.id == $TASK_ID) | .status) = \"routed\" | \
-   (.tasks[] | select(.id == $TASK_ID) | .route_reason) = env(REASON) | \
-   (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (env(ROUTE_WARNING) | select(length > 0) // null) | \
+   (.tasks[] | select(.id == $TASK_ID) | .route_reason) = strenv(REASON) | \
+   (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (strenv(ROUTE_WARNING) | select(length > 0) // null) | \
    (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = load(\"$TMP_PROFILE\") | \
-   (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (env(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0)) | unique) | \
-   (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [env(AGENT_LABEL), env(ROLE_LABEL)] + (env(MODEL_LABEL) | select(length > 0) | [.] // [])) | unique) | \
-   (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+   (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (strenv(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0)) | unique) | \
+   (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL)] + (strenv(MODEL_LABEL) | select(length > 0) | [.] // [])) | unique) | \
+   (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
 
 rm -f "$TMP_PROFILE"
@@ -131,5 +233,7 @@ if [ -n "$ROUTE_WARNING" ]; then
   NOTE="$NOTE (warning: $ROUTE_WARNING)"
 fi
 append_history "$TASK_ID" "routed" "$NOTE"
+
+echo "[route] task=$TASK_ID routed to ${ROUTED_AGENT:-unknown}" >&2
 
 echo "$ROUTED_AGENT"

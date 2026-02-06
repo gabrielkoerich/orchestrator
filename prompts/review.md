@@ -8,6 +8,6 @@ Summary:
 Files changed:
 {{TASK_FILES_CHANGED}}
 
-Return ONLY YAML with the following keys:
+Return ONLY JSON with the following keys:
 decision: approve|request_changes
 notes: short feedback

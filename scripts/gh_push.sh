@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_yq
+require_jq
 init_config_file
 
 require_gh() {
@@ -89,6 +90,19 @@ sync_project_status() {
 }
 
 TASK_COUNT=$(yq -r '.tasks | length' "$TASKS_PATH")
+if [ "$TASK_COUNT" -le 0 ]; then
+  exit 0
+fi
+
+DIRTY_COUNT=$(yq -r '
+  [.tasks[] | select(
+    (.gh_issue_number == null or .gh_issue_number == "") or
+    (.updated_at != .gh_synced_at)
+  )] | length
+' "$TASKS_PATH")
+if [ "$DIRTY_COUNT" -le 0 ]; then
+  exit 0
+fi
 for i in $(seq 0 $((TASK_COUNT - 1))); do
   ID=$(yq -r ".tasks[$i].id" "$TASKS_PATH")
   TITLE=$(yq -r ".tasks[$i].title" "$TASKS_PATH")
@@ -104,6 +118,8 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   FILES_CHANGED_JSON=$(yq -o=json -I=0 ".tasks[$i].files_changed // []" "$TASKS_PATH")
   UPDATED_AT=$(yq -r ".tasks[$i].updated_at // \"\"" "$TASKS_PATH")
   GH_SYNCED_AT=$(yq -r ".tasks[$i].gh_synced_at // \"\"" "$TASKS_PATH")
+
+  echo "[gh_push] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
 
   skip=false
   for lbl in "${SKIP_LABELS[@]}"; do
@@ -126,9 +142,14 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   STATUS_LABEL="${STATUS_LABEL_PREFIX}${STATUS}"
   export STATUS_LABEL STATUS_LABEL_PREFIX
-  LABELS_FOR_GH=$(printf '%s' "$LABELS_JSON" | yq -o=json -I=0 'map(select(startswith(env(STATUS_LABEL_PREFIX)) | not)) + [env(STATUS_LABEL)]')
+  LABELS_FOR_GH=$(printf '%s' "$LABELS_JSON" | jq -c --arg prefix "$STATUS_LABEL_PREFIX" --arg status "$STATUS_LABEL" \
+    'map(select(startswith($prefix) | not)) + [$status]')
 
   if [ -z "$GH_NUM" ] || [ "$GH_NUM" = "null" ]; then
+    if [ -z "$TITLE" ] || [ "$TITLE" = "null" ]; then
+      echo "Skipping task $ID: missing title; cannot create GitHub issue." >&2
+      continue
+    fi
     # create issue
     LABEL_ARGS=()
     LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
@@ -155,7 +176,12 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     continue
   fi
 
-  # Ensure issue labels reflect status
+  # Ensure issue labels reflect status only when task changed
+  if [ "$UPDATED_AT" = "$GH_SYNCED_AT" ]; then
+    sync_project_status "$GH_NUM" "$STATUS"
+    continue
+  fi
+
   LABEL_ARGS=()
   LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
   for j in $(seq 0 $((LABEL_COUNT - 1))); do
@@ -163,6 +189,11 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     LABEL_ARGS+=("-f" "labels[]=$LBL")
   done
   gh api "repos/$REPO/issues/$GH_NUM" -X PATCH "${LABEL_ARGS[@]}" >/dev/null
+  NOW=$(now_iso)
+  export NOW
+  with_lock yq -i \
+    "(.tasks[] | select(.id == $ID) | .gh_synced_at) = env(NOW)" \
+    "$TASKS_PATH"
 
   # Post a comment if summary updated
   if [ -n "$SUMMARY" ] && [ "$UPDATED_AT" != "" ] && [ "$UPDATED_AT" != "$GH_SYNCED_AT" ]; then

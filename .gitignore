@@ -1,9 +1,7 @@
-.orchestrator.log
-orchestrator.log
-orchestrator.archive.log
-orchestrator.pid
-tasks.yml
+.env*
+.orchestrator*
 config.yml
+orchestrator.*
 skills/
-tasks.yml.lock
-tasks.yml.lock.task.*
+tasks.yml
+tasks.yml.lock*
