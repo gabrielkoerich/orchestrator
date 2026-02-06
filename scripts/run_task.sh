@@ -5,8 +5,14 @@ require_yq
 
 TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
-  echo "usage: run_task.sh TASK_ID" >&2
-  exit 1
+  TASK_ID=$(yq -r '.tasks[] | select(.status == "new") | .id' "$TASKS_PATH" | head -n1)
+  if [ -z "$TASK_ID" ]; then
+    TASK_ID=$(yq -r '.tasks[] | select(.status == "routed") | .id' "$TASKS_PATH" | head -n1)
+  fi
+  if [ -z "$TASK_ID" ]; then
+    echo "No runnable tasks found" >&2
+    exit 1
+  fi
 fi
 
 # Per-task lock to avoid double-run across multiple watchers

@@ -5,8 +5,11 @@ require_yq
 
 TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
-  echo "usage: route_task.sh TASK_ID" >&2
-  exit 1
+  TASK_ID=$(yq -r '.tasks[] | select(.status == "new") | .id' "$TASKS_PATH" | head -n1)
+  if [ -z "$TASK_ID" ]; then
+    echo "No new tasks to route" >&2
+    exit 1
+  fi
 fi
 
 TASK_TITLE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .title" "$TASKS_PATH")

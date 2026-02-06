@@ -62,11 +62,13 @@ just tree
 ```
 just route 1
 ```
+If no ID is provided, the next `new` task is routed.
 
 ### Run a task
 ```
 just run 1
 ```
+If no ID is provided, the next `new` task is run (or `routed` if no `new`).
 
 ### Poll all tasks (parallel)
 ```
@@ -150,4 +152,3 @@ just gh-sync
 ## Notes
 - `tasks.yml` is the system of record and can be synced to GitHub.
 - Routing and profiles are LLM-generated; you can override them manually.
-
