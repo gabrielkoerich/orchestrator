@@ -1,4 +1,4 @@
-# Agent Orchestrator (YAML + yq)
+# Agent Orchestrator (bash, YAML + yq)
 
 A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex` and `claude`) and can delegate subtasks dynamically.
 
