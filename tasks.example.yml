@@ -1,0 +1,9 @@
+version: 1
+router:
+  agent: codex
+agents:
+  - id: codex
+    description: General-purpose coding agent.
+  - id: claude
+    description: General-purpose reasoning agent.
+tasks: []

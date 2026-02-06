@@ -18,8 +18,13 @@ if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
 
+SYNC_LABEL=${GH_SYNC_LABEL:-$(yq -r '.gh.sync_label // ""' "$TASKS_PATH")}
+
 ISSUES_JSON=$(gh api "repos/$REPO/issues" --paginate -f state=all -f per_page=100)
 FILTERED=$(printf '%s' "$ISSUES_JSON" | yq -o=json -I=0 'map(select(.pull_request == null))')
+if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
+  FILTERED=$(printf '%s' "$FILTERED" | yq -o=json -I=0 "map(select(.labels | map(.name) | index(\"$SYNC_LABEL\") != null))")
+fi
 
 acquire_lock
 
@@ -28,18 +33,18 @@ for i in $(seq 0 $((COUNT - 1))); do
   NUM=$(printf '%s' "$FILTERED" | yq -r ".[$i].number")
   TITLE=$(printf '%s' "$FILTERED" | yq -r ".[$i].title")
   BODY=$(printf '%s' "$FILTERED" | yq -r ".[$i].body // \"\"")
-  LABELS_JSON=$(printf '%s' "$FILTERED" | yq -o=json -I=0 ".[$i].labels | map(.name)")
+  LABELS_CSV=$(printf '%s' "$FILTERED" | yq -r ".[$i].labels | map(.name) | join(\",\")")
   STATE=$(printf '%s' "$FILTERED" | yq -r ".[$i].state")
   URL=$(printf '%s' "$FILTERED" | yq -r ".[$i].html_url")
   UPDATED=$(printf '%s' "$FILTERED" | yq -r ".[$i].updated_at")
 
   EXISTS=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .id" "$TASKS_PATH")
   if [ -n "$EXISTS" ] && [ "$EXISTS" != "null" ]; then
-    export TITLE BODY LABELS_JSON STATE URL UPDATED
+    export TITLE BODY LABELS_CSV STATE URL UPDATED
     yq -i \
       "(.tasks[] | select(.gh_issue_number == $NUM) | .title) = env(TITLE) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .body) = env(BODY) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .labels) = (env(LABELS_JSON) | fromjson) | \
+       (.tasks[] | select(.gh_issue_number == $NUM) | .labels) = (env(LABELS_CSV) | split(\",\") | map(select(length > 0))) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_state) = env(STATE) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_url) = env(URL) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_updated_at) = env(UPDATED)" \
@@ -54,29 +59,36 @@ for i in $(seq 0 $((COUNT - 1))); do
         "$TASKS_PATH"
     fi
   else
-    NEXT_ID=$(yq -r '.tasks | map(.id) | max // 0 | . + 1' "$TASKS_PATH")
+    NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
     NOW=$(now_iso)
     STATUS="new"
     if [ "$STATE" = "closed" ]; then
       STATUS="done"
     fi
-    export NEXT_ID TITLE BODY LABELS_JSON STATUS NOW STATE URL UPDATED NUM
+    export NEXT_ID TITLE BODY LABELS_CSV STATUS NOW STATE URL UPDATED NUM
 
     yq -i \
       '.tasks += [{
         "id": (env(NEXT_ID) | tonumber),
         "title": env(TITLE),
         "body": env(BODY),
-        "labels": (env(LABELS_JSON) | fromjson),
+        "labels": (env(LABELS_CSV) | split(",") | map(select(length > 0))),
         "status": env(STATUS),
         "agent": null,
         "agent_profile": null,
         "parent_id": null,
         "children": [],
         "route_reason": null,
+        "route_warning": null,
         "summary": null,
         "files_changed": [],
         "needs_help": false,
+        "attempts": 0,
+        "last_error": null,
+        "retry_at": null,
+        "review_decision": null,
+        "review_notes": null,
+        "history": [],
         "created_at": env(NOW),
         "updated_at": env(NOW),
         "gh_issue_number": (env(NUM) | tonumber),

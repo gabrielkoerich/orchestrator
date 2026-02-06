@@ -39,17 +39,57 @@ case "$ROUTER_AGENT" in
 
 ROUTED_AGENT=$(printf '%s' "$RESPONSE" | yq -r '.executor')
 REASON=$(printf '%s' "$RESPONSE" | yq -r '.reason')
-PROFILE_JSON=$(printf '%s' "$RESPONSE" | yq -o=json -I=0 '.profile // {}')
+PROFILE_YAML=$(printf '%s' "$RESPONSE" | yq '.profile // {}')
 NOW=$(now_iso)
 
-export ROUTED_AGENT REASON PROFILE_JSON NOW
+# Simple router sanity check
+ROUTE_WARNING=""
+LABELS_LOWER=$(printf '%s' "$TASK_LABELS" | tr '[:upper:]' '[:lower:]')
+SKILLS=$(printf '%s' "$PROFILE_YAML" | yq -r '.skills // [] | join(",")')
+SKILLS_LOWER=$(printf '%s' "$SKILLS" | tr '[:upper:]' '[:lower:]')
+
+if echo "$LABELS_LOWER" | grep -qE '(backend|api|database|db)'; then
+  if [ "$ROUTED_AGENT" = "claude" ]; then
+    ROUTE_WARNING="backend-labeled task routed to claude"
+  fi
+fi
+
+if echo "$LABELS_LOWER" | grep -qE '(docs|documentation|writing)'; then
+  if [ "$ROUTED_AGENT" = "codex" ]; then
+    ROUTE_WARNING="docs-labeled task routed to codex"
+  fi
+fi
+
+if [ -z "$SKILLS_LOWER" ]; then
+  ROUTE_WARNING="profile missing skills"
+fi
+
+TMP_PROFILE=$(mktemp)
+printf '%s
+' "$PROFILE_YAML" > "$TMP_PROFILE"
+
+ROLE=$(printf '%s' "$PROFILE_YAML" | yq -r '.role // "general"')
+AGENT_LABEL="agent:${ROUTED_AGENT}"
+ROLE_LABEL="role:${ROLE}"
+
+export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL
 
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .agent) = env(ROUTED_AGENT) | \
    (.tasks[] | select(.id == $TASK_ID) | .status) = \"routed\" | \
    (.tasks[] | select(.id == $TASK_ID) | .route_reason) = env(REASON) | \
-   (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = (env(PROFILE_JSON) | fromjson) | \
+   (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (env(ROUTE_WARNING) | select(length > 0) // null) | \
+   (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = load(\"$TMP_PROFILE\") | \
+   (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [env(AGENT_LABEL), env(ROLE_LABEL)]) | unique) | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
   "$TASKS_PATH"
+
+rm -f "$TMP_PROFILE"
+
+NOTE="routed to $ROUTED_AGENT"
+if [ -n "$ROUTE_WARNING" ]; then
+  NOTE="$NOTE (warning: $ROUTE_WARNING)"
+fi
+append_history "$TASK_ID" "routed" "$NOTE"
 
 echo "$ROUTED_AGENT"

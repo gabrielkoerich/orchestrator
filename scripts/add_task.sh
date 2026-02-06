@@ -8,36 +8,38 @@ TITLE=${1:-}
 BODY=${2:-}
 LABELS=${3:-}
 if [ -z "$TITLE" ]; then
-  echo "usage: add_task.sh \"title\" \"body\" \"label1,label2\"" >&2
+  echo "usage: add_task.sh \"title\" [\"body\"] [\"label1,label2\"]" >&2
   exit 1
 fi
 
-NEXT_ID=$(yq -r '.tasks | map(.id) | max // 0 | . + 1' "$TASKS_PATH")
+NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
 NOW=$(now_iso)
 
-LABELS_JSON="[]"
-if [ -n "$LABELS" ]; then
-  IFS=',' read -r -a arr <<< "$LABELS"
-  LABELS_JSON=$(printf '%s\n' "${arr[@]}" | yq -o=json -I=0 '[.]')
-fi
-
-export NEXT_ID TITLE BODY LABELS_JSON NOW
+LABELS=${LABELS:-}
+export NEXT_ID TITLE BODY LABELS NOW
 
 with_lock yq -i \
   '.tasks += [{
     "id": (env(NEXT_ID) | tonumber),
     "title": env(TITLE),
     "body": env(BODY),
-    "labels": (env(LABELS_JSON) | fromjson),
+    "labels": (env(LABELS) | split(",") | map(select(length > 0))),
     "status": "new",
     "agent": null,
     "agent_profile": null,
     "parent_id": null,
     "children": [],
     "route_reason": null,
+    "route_warning": null,
     "summary": null,
     "files_changed": [],
     "needs_help": false,
+    "attempts": 0,
+    "last_error": null,
+    "retry_at": null,
+    "review_decision": null,
+    "review_notes": null,
+    "history": [],
     "created_at": env(NOW),
     "updated_at": env(NOW)
   }]' \

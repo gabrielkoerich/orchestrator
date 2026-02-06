@@ -9,17 +9,26 @@ list:
 status:
   @scripts/status.sh
 
+dashboard:
+  @scripts/dashboard.sh
+
 tree:
   @scripts/tree.sh
 
-add title body labels="":
+add title body="" labels="":
   @scripts/add_task.sh "{{title}}" "{{body}}" "{{labels}}"
 
-route id:
+route id="":
   @scripts/route_task.sh {{id}}
 
-run id:
+run id="":
   @scripts/run_task.sh {{id}}
+
+set-agent id agent:
+  @scripts/set_agent.sh {{id}} {{agent}}
+
+next:
+  @scripts/next.sh
 
 poll jobs="4":
   @POLL_JOBS={{jobs}} scripts/poll.sh
@@ -29,6 +38,12 @@ rejoin jobs="4":
 
 watch interval="10":
   @scripts/watch.sh {{interval}}
+
+serve interval="10":
+  @INTERVAL={{interval}} scripts/serve.sh
+
+setup:
+  @scripts/setup.sh
 
 gh-pull:
   @scripts/gh_pull.sh

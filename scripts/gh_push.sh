@@ -18,7 +18,44 @@ if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
 
+SYNC_LABEL=${GH_SYNC_LABEL:-$(yq -r '.gh.sync_label // ""' "$TASKS_PATH")}
+STATUS_LABEL_PREFIX=${GH_STATUS_LABEL_PREFIX:-"status:"}
+
+PROJECT_ID=${GH_PROJECT_ID:-}
+PROJECT_STATUS_FIELD_ID=${GH_PROJECT_STATUS_FIELD_ID:-}
+PROJECT_STATUS_MAP_JSON=${GH_PROJECT_STATUS_MAP_JSON:-}
+
 SKIP_LABELS=("no_gh" "local-only")
+
+sync_project_status() {
+  local issue_number="$1"
+  local status="$2"
+
+  if [ -z "$PROJECT_ID" ] || [ -z "$PROJECT_STATUS_FIELD_ID" ] || [ -z "$PROJECT_STATUS_MAP_JSON" ]; then
+    return 0
+  fi
+
+  local option_id
+  option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r ".\"$status\" // \"\"")
+  if [ -z "$option_id" ] || [ "$option_id" = "null" ]; then
+    return 0
+  fi
+
+  local issue_node
+  issue_node=$(gh api "repos/$REPO/issues/$issue_number" -q .node_id)
+
+  local items_json
+  items_json=$(gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { items(first:100){ nodes{ id content{ ... on Issue { id } } } } } } }' -f project="$PROJECT_ID")
+
+  local item_id
+  item_id=$(printf '%s' "$items_json" | yq -r ".data.node.items.nodes[] | select(.content.id == \"$issue_node\") | .id" | head -n1)
+  if [ -z "$item_id" ] || [ "$item_id" = "null" ]; then
+    return 0
+  fi
+
+  gh api graphql -f query='mutation($project:ID!, $item:ID!, $field:ID!, $option:ID!){ updateProjectV2ItemFieldValue(input:{projectId:$project, itemId:$item, fieldId:$field, value:{singleSelectOptionId:$option}}){ projectV2Item{id} } }' \
+    -f project="$PROJECT_ID" -f item="$item_id" -f field="$PROJECT_STATUS_FIELD_ID" -f option="$option_id" >/dev/null
+}
 
 TASK_COUNT=$(yq -r '.tasks | length' "$TASKS_PATH")
 for i in $(seq 0 $((TASK_COUNT - 1))); do
@@ -47,12 +84,22 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     continue
   fi
 
+  if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
+    if [ "$(printf '%s' "$LABELS_JSON" | yq -r "index(\"$SYNC_LABEL\")")" = "null" ]; then
+      continue
+    fi
+  fi
+
+  STATUS_LABEL="${STATUS_LABEL_PREFIX}${STATUS}"
+  export STATUS_LABEL STATUS_LABEL_PREFIX
+  LABELS_FOR_GH=$(printf '%s' "$LABELS_JSON" | yq -o=json -I=0 'map(select(startswith(env(STATUS_LABEL_PREFIX)) | not)) + [env(STATUS_LABEL)]')
+
   if [ -z "$GH_NUM" ] || [ "$GH_NUM" = "null" ]; then
     # create issue
     LABEL_ARGS=()
-    LABEL_COUNT=$(printf '%s' "$LABELS_JSON" | yq -r 'length')
+    LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
     for j in $(seq 0 $((LABEL_COUNT - 1))); do
-      LBL=$(printf '%s' "$LABELS_JSON" | yq -r ".[$j]")
+      LBL=$(printf '%s' "$LABELS_FOR_GH" | yq -r ".[$j]")
       LABEL_ARGS+=("-f" "labels[]=$LBL")
     done
 
@@ -69,8 +116,19 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
        (.tasks[] | select(.id == $ID) | .gh_state) = env(STATE) | \
        (.tasks[] | select(.id == $ID) | .gh_synced_at) = env(NOW)" \
       "$TASKS_PATH"
+
+    sync_project_status "$NUM" "$STATUS"
     continue
   fi
+
+  # Ensure issue labels reflect status
+  LABEL_ARGS=()
+  LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
+  for j in $(seq 0 $((LABEL_COUNT - 1))); do
+    LBL=$(printf '%s' "$LABELS_FOR_GH" | yq -r ".[$j]")
+    LABEL_ARGS+=("-f" "labels[]=$LBL")
+  done
+  gh api "repos/$REPO/issues/$GH_NUM" -X PATCH "${LABEL_ARGS[@]}" >/dev/null
 
   # Post a comment if summary updated
   if [ -n "$SUMMARY" ] && [ "$UPDATED_AT" != "" ] && [ "$UPDATED_AT" != "$GH_SYNCED_AT" ]; then
@@ -99,5 +157,7 @@ EOF
        (.tasks[] | select(.id == $ID) | .gh_synced_at) = env(NOW)" \
       "$TASKS_PATH"
   fi
+
+  sync_project_status "$GH_NUM" "$STATUS"
 
 done

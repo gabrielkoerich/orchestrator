@@ -4,6 +4,22 @@ source "$(dirname "$0")/lib.sh"
 require_yq
 init_tasks_file
 
+if [ "${1:-}" = "--json" ]; then
+  yq -o=json -I=2 '{
+    total: (.tasks | length),
+    counts: {
+      new: ([.tasks[] | select(.status == "new")] | length),
+      routed: ([.tasks[] | select(.status == "routed")] | length),
+      in_progress: ([.tasks[] | select(.status == "in_progress")] | length),
+      blocked: ([.tasks[] | select(.status == "blocked")] | length),
+      done: ([.tasks[] | select(.status == "done")] | length),
+      needs_review: ([.tasks[] | select(.status == "needs_review")] | length)
+    },
+    recent: (.tasks | sort_by(.updated_at) | reverse | .[0:10])
+  }' "$TASKS_PATH"
+  exit 0
+fi
+
 TOTAL=$(yq -r '.tasks | length' "$TASKS_PATH")
 NEW=$(yq -r '[.tasks[] | select(.status == "new")] | length' "$TASKS_PATH")
 ROUTED=$(yq -r '[.tasks[] | select(.status == "routed")] | length' "$TASKS_PATH")

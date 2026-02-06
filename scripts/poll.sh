@@ -12,6 +12,13 @@ if [ -n "$NEW_IDS" ]; then
   printf '%s\n' "$NEW_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
 fi
 
+# Run retryable needs_review tasks
+NOW_EPOCH=$(now_epoch)
+RETRY_IDS=$(yq -r ".tasks[] | select(.status == \"needs_review\" and (.retry_at == null or .retry_at <= $NOW_EPOCH)) | .id" "$TASKS_PATH")
+if [ -n "$RETRY_IDS" ]; then
+  printf '%s\n' "$RETRY_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
+fi
+
 # Collect blocked parents ready to rejoin
 READY_IDS=()
 BLOCKED_IDS=$(yq -r '.tasks[] | select(.status == "blocked") | .id' "$TASKS_PATH")

@@ -1,0 +1,7 @@
+.env
+.ev
+orchestrator.log
+orchestrator.pid
+tasks.yml
+tasks.yml.lock
+tasks.yml.lock.task.*
