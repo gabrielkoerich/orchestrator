@@ -238,12 +238,7 @@ gh auth login
 ```bash
 gh repo view
 ```
-3. (Recommended) Put token in `.env`:
-```bash
-export GITHUB_TOKEN=YOUR_TOKEN
-```
-
-Project fields belong in `config.yml` (not `.env`):
+Project fields belong in `config.yml`:
 ```bash
 gh:
   project_id: ""

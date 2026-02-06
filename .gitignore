@@ -1,6 +1,6 @@
-.env
-.ev
+.orchestrator.log
 orchestrator.log
+orchestrator.archive.log
 orchestrator.pid
 tasks.yml
 config.yml

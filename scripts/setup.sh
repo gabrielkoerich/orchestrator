@@ -11,7 +11,6 @@ rsync -a --delete \
   --exclude '.git' \
   --exclude 'tasks.yml' \
   --exclude 'config.yml' \
-  --exclude '.env' \
   --exclude 'contexts/' \
   --exclude 'skills/' \
   "$(cd "$(dirname "$0")/.." && pwd)/" "$TARGET_DIR/"
@@ -25,13 +24,9 @@ fi
 if [ -t 0 ]; then
   read -r -p "Enable GitHub sync now? (y/N): " ENABLE_GH
   if [ "${ENABLE_GH}" = "y" ] || [ "${ENABLE_GH}" = "Y" ]; then
-    read -r -p "GitHub token (GITHUB_TOKEN) [skip]: " GH_TOKEN_INPUT
+    echo "Make sure you are logged in: gh auth login"
     read -r -p "GitHub repo (owner/repo) [skip]: " GH_REPO_INPUT
     read -r -p "GitHub Project ID [skip]: " GH_PROJECT_ID_INPUT
-
-    if [ -n "$GH_TOKEN_INPUT" ]; then
-      echo "GITHUB_TOKEN=$GH_TOKEN_INPUT" > "$TARGET_DIR/.env"
-    fi
 
     if [ -n "$GH_REPO_INPUT" ]; then
       export GH_REPO_INPUT
