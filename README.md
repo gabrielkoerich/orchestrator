@@ -2,6 +2,16 @@
 
 A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex` and `claude`) and can delegate subtasks dynamically.
 
+
+## Quick Setup
+```bash
+just setup
+```
+Then run:
+```bash
+orchestrator status
+```
+
 ## Requirements
 - `yq` (mikefarah)
 - `just`
@@ -218,6 +228,17 @@ export GH_SYNC_LABEL=sync
 export GH_TOKEN=YOUR_TOKEN
 ```
 
+## Router Model
+The router uses a cheap/fast model by default. Configure it in `config.yml`:
+```bash
+router:
+  model: "haiku"
+```
+You can override at runtime:
+```bash
+ROUTER_MODEL=sonnet just route 1
+```
+
 ### Pull issues into tasks.yml
 ```bash
 just gh-pull
@@ -266,4 +287,3 @@ export GH_PROJECT_STATUS_MAP_JSON='{"backlog":"<optionId>","in_progress":"<optio
 ## Notes
 - `tasks.yml` is the system of record and can be synced to GitHub.
 - Routing and profiles are LLM-generated; you can override them manually.
-

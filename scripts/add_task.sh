@@ -26,6 +26,7 @@ with_lock yq -i \
     "labels": (env(LABELS) | split(",") | map(select(length > 0))),
     "status": "new",
     "agent": null,
+    "agent_model": null,
     "agent_profile": null,
     "selected_skills": [],
     "parent_id": null,

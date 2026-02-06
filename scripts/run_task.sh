@@ -39,6 +39,7 @@ TASK_TITLE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .title" "$TASKS_PATH")
 TASK_BODY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .body" "$TASKS_PATH")
 TASK_LABELS=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .labels | join(\",\")" "$TASKS_PATH")
 TASK_AGENT=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .agent" "$TASKS_PATH")
+AGENT_MODEL=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .agent_model // \"\"" "$TASKS_PATH")
 AGENT_PROFILE_JSON=$(yq -o=json -I=0 ".tasks[] | select(.id == $TASK_ID) | .agent_profile // {}" "$TASKS_PATH")
 ATTEMPTS=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .attempts // 0" "$TASKS_PATH")
 ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | yq -r '.role // "general"')
@@ -51,6 +52,7 @@ fi
 if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
   TASK_AGENT=$("$(dirname "$0")/route_task.sh" "$TASK_ID")
   AGENT_PROFILE_JSON=$(yq -o=json -I=0 ".tasks[] | select(.id == $TASK_ID) | .agent_profile // {}" "$TASKS_PATH")
+  AGENT_MODEL=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .agent_model // \"\"" "$TASKS_PATH")
   ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | yq -r '.role // "general"')
 fi
 
@@ -74,10 +76,18 @@ RESPONSE=""
 CMD_STATUS=0
 case "$TASK_AGENT" in
   codex)
-    RESPONSE=$(run_with_timeout codex --print "$PROMPT") || CMD_STATUS=$?
+    if [ -n "$AGENT_MODEL" ]; then
+      RESPONSE=$(run_with_timeout codex --model "$AGENT_MODEL" --print "$PROMPT") || CMD_STATUS=$?
+    else
+      RESPONSE=$(run_with_timeout codex --print "$PROMPT") || CMD_STATUS=$?
+    fi
     ;;
   claude)
-    RESPONSE=$(run_with_timeout claude --print "$PROMPT") || CMD_STATUS=$?
+    if [ -n "$AGENT_MODEL" ]; then
+      RESPONSE=$(run_with_timeout claude --model "$AGENT_MODEL" --print "$PROMPT") || CMD_STATUS=$?
+    else
+      RESPONSE=$(run_with_timeout claude --print "$PROMPT") || CMD_STATUS=$?
+    fi
     ;;
   *)
     echo "Unknown agent: $TASK_AGENT" >&2
@@ -242,6 +252,9 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
         "labels": (env(LABELS_CSV) | split(",") | map(select(length > 0))),
         "status": "new",
         "agent": (env(SUGGESTED_AGENT) | select(length > 0) // null),
+        "agent_model": null,
+        "agent_profile": null,
+        "selected_skills": [],
         "parent_id": $TASK_ID,
         "children": [],
         "route_reason": null,
@@ -252,7 +265,6 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
         "blockers": [],
         "files_changed": [],
         "needs_help": false,
-        "agent_profile": null,
         "attempts": 0,
         "last_error": null,
         "retry_at": null,

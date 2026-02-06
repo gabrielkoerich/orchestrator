@@ -1,6 +1,8 @@
 workflow:
   auto_close: true
   review_owner: "@owner"
+router:
+  model: "haiku"
 gh:
   repo: "owner/repo"
   sync_label: "sync"
