@@ -5,6 +5,9 @@ repositories:
   - name: community
     url: https://github.com/your-org/orchestrator-skills-community
     description: Community skills
+  - name: gabrielkoerich
+    url: https://github.com/gabrielkoerich/skills
+    description: Gabriel Koerich skills
 skills:
   - id: gh
     repo: core
