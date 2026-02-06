@@ -6,8 +6,14 @@ BIN_DIR=${BIN_DIR:-"$HOME/.bin"}
 
 mkdir -p "$TARGET_DIR" "$BIN_DIR"
 
-# Copy repo to target
-rsync -a --delete --exclude '.git' "$(cd "$(dirname "$0")/.." && pwd)/" "$TARGET_DIR/"
+# Copy repo to target, preserving local state/config
+rsync -a --delete \
+  --exclude '.git' \
+  --exclude 'tasks.yml' \
+  --exclude 'config.yml' \
+  --exclude '.env' \
+  --exclude 'contexts/' \
+  "$(cd "$(dirname "$0")/.." && pwd)/" "$TARGET_DIR/"
 
 # Initialize config if missing
 if [ ! -f "$TARGET_DIR/config.yml" ] && [ -f "$TARGET_DIR/config.example.yml" ]; then
