@@ -28,5 +28,6 @@ while true; do
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "[serve] tick ${ts}" >> "$LOG_FILE"
   "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
+  "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
   sleep "$INTERVAL"
 done

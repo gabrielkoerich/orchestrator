@@ -19,7 +19,7 @@ if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
 
-SYNC_LABEL=${GH_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
+SYNC_LABEL=${GITHUB_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
 
 ISSUES_JSON=$(gh api "repos/$REPO/issues" --paginate -f state=all -f per_page=100)
 FILTERED=$(printf '%s' "$ISSUES_JSON" | yq -o=json -I=0 'map(select(.pull_request == null))')

@@ -19,12 +19,12 @@ if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
 
-SYNC_LABEL=${GH_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
-STATUS_LABEL_PREFIX=${GH_STATUS_LABEL_PREFIX:-"status:"}
+SYNC_LABEL=${GITHUB_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
+STATUS_LABEL_PREFIX=${GITHUB_STATUS_LABEL_PREFIX:-"status:"}
 
-PROJECT_ID=${GH_PROJECT_ID:-$(config_get '.gh.project_id // ""')}
-PROJECT_STATUS_FIELD_ID=${GH_PROJECT_STATUS_FIELD_ID:-$(config_get '.gh.project_status_field_id // ""')}
-PROJECT_STATUS_MAP_JSON=${GH_PROJECT_STATUS_MAP_JSON:-}
+PROJECT_ID=${GITHUB_PROJECT_ID:-$(config_get '.gh.project_id // ""')}
+PROJECT_STATUS_FIELD_ID=${GITHUB_PROJECT_STATUS_FIELD_ID:-$(config_get '.gh.project_status_field_id // ""')}
+PROJECT_STATUS_MAP_JSON=${GITHUB_PROJECT_STATUS_MAP_JSON:-}
 if [ -z "$PROJECT_STATUS_MAP_JSON" ]; then
   PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
 fi

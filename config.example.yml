@@ -3,6 +3,22 @@ workflow:
   review_owner: "@owner"
 router:
   model: "haiku"
+  allowed_tools:
+    - yq
+    - jq
+    - bash
+    - just
+    - git
+    - rg
+    - sed
+    - awk
+    - python3
+    - node
+    - npm
+    - bun
+  default_skills:
+    - gh
+    - git-worktree
 gh:
   repo: "owner/repo"
   sync_label: "sync"

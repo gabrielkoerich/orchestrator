@@ -2,7 +2,6 @@
 
 A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex` and `claude`) and can delegate subtasks dynamically.
 
-
 ## Quick Setup
 ```bash
 just setup
@@ -38,6 +37,7 @@ Each task includes:
 - `id`, `title`, `body`, `labels`
 - `status`: `new`, `routed`, `in_progress`, `done`, `blocked`, `needs_review`
 - `agent`: executor (`codex` or `claude`)
+- `agent_model`: model chosen by the router
 - `agent_profile`: dynamically generated role/skills/tools/constraints
 - `selected_skills`: chosen skill ids from `skills.yml`
 - `parent_id`, `children` for delegation
@@ -153,6 +153,16 @@ agent_profile:
 ## Skills Catalog
 `skills.yml` defines approved skill repositories and a catalog of skills. The router selects skill ids and stores them in `selected_skills`.
 
+## Router Defaults
+Static defaults live in `config.yml`:
+```bash
+router:
+  model: "haiku"
+  allowed_tools: ["yq", "bash", "just"]
+  default_skills: ["gh", "git-worktree"]
+```
+The router still builds dynamic profiles, but these defaults apply to every task.
+
 ## Context Persistence
 Task and profile contexts are persisted under `contexts/`:
 - `contexts/task-<id>.md`
@@ -221,22 +231,22 @@ export GITHUB_REPO=owner/repo
 ```
 4. (Optional) Sync only labeled issues:
 ```bash
-export GH_SYNC_LABEL=sync
+export GITHUB_SYNC_LABEL=sync
 ```
 5. (Recommended) Put token in `.env`:
 ```bash
-export GH_TOKEN=YOUR_TOKEN
+export GITHUB_TOKEN=YOUR_TOKEN
 ```
-
-## Router Model
-The router uses a cheap/fast model by default. Configure it in `config.yml`:
+Project fields belong in `config.yml` (not `.env`):
 ```bash
-router:
-  model: "haiku"
-```
-You can override at runtime:
-```bash
-ROUTER_MODEL=sonnet just route 1
+gh:
+  project_id: ""
+  project_status_field_id: ""
+  project_status_map:
+    backlog: ""
+    in_progress: ""
+    review: ""
+    done: ""
 ```
 
 ### Pull issues into tasks.yml
@@ -258,7 +268,7 @@ just gh-sync
 - The repo is resolved from `GITHUB_REPO` or `gh repo view` or `config.yml`.
 - Issues are created for tasks without `gh_issue_number`.
 - If a task has label `no_gh` or `local-only`, it will not be synced.
-- If `GH_SYNC_LABEL` (or `config.yml` `gh.sync_label`) is set, only tasks/issues with that label are synced.
+- If `GITHUB_SYNC_LABEL` (or `config.yml` `gh.sync_label`) is set, only tasks/issues with that label are synced.
 - Task status is synced to issue labels using `status:<status>`.
 - When a task is `done`, `auto_close` controls whether to close the issue or move it to Review and tag the owner.
 - On sync, task updates are posted as comments with accomplished/remaining/blockers.
@@ -281,7 +291,7 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 ```
 3. Example mapping:
 ```bash
-export GH_PROJECT_STATUS_MAP_JSON='{"backlog":"<optionId>","in_progress":"<optionId>","review":"<optionId>","done":"<optionId>"}'
+export GITHUB_PROJECT_STATUS_MAP_JSON='{"backlog":"<optionId>","in_progress":"<optionId>","review":"<optionId>","done":"<optionId>"}'
 ```
 
 ## Notes

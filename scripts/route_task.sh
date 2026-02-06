@@ -18,6 +18,8 @@ TASK_BODY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .body" "$TASKS_PATH")
 TASK_LABELS=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .labels | join(\",\")" "$TASKS_PATH")
 ROUTER_AGENT=$(yq -r '.router.agent' "$TASKS_PATH")
 ROUTER_MODEL=${ROUTER_MODEL:-$(config_get '.router.model // ""')}
+ALLOWED_TOOLS_CSV=$(config_get '.router.allowed_tools // [] | join(",")')
+DEFAULT_SKILLS_CSV=$(config_get '.router.default_skills // [] | join(",")')
 
 if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
   echo "Task $TASK_ID not found" >&2
@@ -58,6 +60,18 @@ PROFILE_YAML=$(printf '%s' "$RESPONSE" | yq '.profile // {}')
 SELECTED_SKILLS_CSV=$(printf '%s' "$RESPONSE" | yq -r '.selected_skills // [] | join(",")')
 MODEL=$(printf '%s' "$RESPONSE" | yq -r '.model // ""')
 NOW=$(now_iso)
+
+# Apply static defaults
+if [ -n "$ALLOWED_TOOLS_CSV" ]; then
+  PROFILE_YAML=$(printf '%s' "$PROFILE_YAML" | yq ".tools = (\"$ALLOWED_TOOLS_CSV\" | split(\",\") | map(select(length > 0)))")
+fi
+if [ -n "$DEFAULT_SKILLS_CSV" ]; then
+  if [ -n "$SELECTED_SKILLS_CSV" ]; then
+    SELECTED_SKILLS_CSV="$SELECTED_SKILLS_CSV,$DEFAULT_SKILLS_CSV"
+  else
+    SELECTED_SKILLS_CSV="$DEFAULT_SKILLS_CSV"
+  fi
+fi
 
 # Simple router sanity check
 ROUTE_WARNING=""
@@ -102,7 +116,7 @@ with_lock yq -i \
    (.tasks[] | select(.id == $TASK_ID) | .route_reason) = env(REASON) | \
    (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (env(ROUTE_WARNING) | select(length > 0) // null) | \
    (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = load(\"$TMP_PROFILE\") | \
-   (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (env(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0))) | \
+   (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (env(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0)) | unique) | \
    (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [env(AGENT_LABEL), env(ROLE_LABEL)] + (env(MODEL_LABEL) | select(length > 0) | [.] // [])) | unique) | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
   "$TASKS_PATH"
