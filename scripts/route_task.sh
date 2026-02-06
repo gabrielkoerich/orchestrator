@@ -16,7 +16,7 @@ fi
 TASK_TITLE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .title" "$TASKS_PATH")
 TASK_BODY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .body" "$TASKS_PATH")
 TASK_LABELS=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .labels | join(\",\")" "$TASKS_PATH")
-ROUTER_AGENT=$(yq -r '.router.agent' "$TASKS_PATH")
+ROUTER_AGENT=${ROUTER_AGENT:-$(config_get '.router.agent // "claude"')}
 ROUTER_MODEL=${ROUTER_MODEL:-$(config_get '.router.model // ""')}
 ALLOWED_TOOLS_CSV=$(config_get '.router.allowed_tools // [] | join(",")')
 DEFAULT_SKILLS_CSV=$(config_get '.router.default_skills // [] | join(",")')

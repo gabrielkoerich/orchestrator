@@ -42,8 +42,14 @@ watch interval="10":
 serve interval="10":
   @INTERVAL={{interval}} scripts/serve.sh
 
+log tail="50":
+  @tail -n {{tail}} orchestrator.log
+
 setup:
   @scripts/setup.sh
+
+skills-sync:
+  @scripts/skills_sync.sh
 
 gh-pull:
   @scripts/gh_pull.sh

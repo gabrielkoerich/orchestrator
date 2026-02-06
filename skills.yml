@@ -1,23 +1,5 @@
 repositories:
-  - name: core
-    url: https://github.com/your-org/orchestrator-skills
-    description: Core curated skills
-  - name: community
-    url: https://github.com/your-org/orchestrator-skills-community
-    description: Community skills
   - name: gabrielkoerich
     url: https://github.com/gabrielkoerich/skills
     description: Gabriel Koerich skills
-skills:
-  - id: gh
-    repo: core
-    description: GitHub CLI operations
-  - id: git-worktree
-    repo: core
-    description: Git worktree management
-  - id: docs
-    repo: community
-    description: Documentation writing support
-  - id: testing
-    repo: community
-    description: Testing patterns and helpers
+skills: []

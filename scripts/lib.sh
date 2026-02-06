@@ -65,8 +65,6 @@ init_tasks_file() {
     else
       cat > "$TASKS_PATH" <<'YAML'
 version: 1
-router:
-  agent: codex
 agents:
   - id: codex
     description: General-purpose coding agent.

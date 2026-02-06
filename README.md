@@ -25,6 +25,7 @@ orchestrator status
 - `config.yml` — runtime configuration (YAML)
   - Not committed; generated from `config.example.yml`
 - `skills.yml` — approved skill repositories and skill catalog
+- `skills/` — cloned skill repositories (via `skills-sync`)
 - `prompts/route.md` — routing + profile generation prompt
 - `prompts/agent.md` — execution prompt (includes profile + context)
 - `prompts/review.md` — optional review agent prompt
@@ -122,6 +123,11 @@ just watch
 just watch 5
 ```
 
+### Sync skills
+```bash
+just skills-sync
+```
+
 ### Tests
 ```bash
 just test
@@ -152,11 +158,16 @@ agent_profile:
 
 ## Skills Catalog
 `skills.yml` defines approved skill repositories and a catalog of skills. The router selects skill ids and stores them in `selected_skills`.
+Clone or update skills with:
+```bash
+just skills-sync
+```
 
 ## Router Defaults
 Static defaults live in `config.yml`:
 ```bash
 router:
+  agent: "claude"
   model: "haiku"
   allowed_tools: ["yq", "bash", "just"]
   default_skills: ["gh", "git-worktree"]
@@ -192,9 +203,11 @@ The orchestrator will:
 - Stale locks are auto-cleared after `LOCK_STALE_SECONDS` (default 600).
 
 ## Review Agent (Optional)
-Enable a post-run review:
+Enable a post-run review in config:
 ```bash
-ENABLE_REVIEW_AGENT=1 REVIEW_AGENT=claude just run 1
+workflow:
+  enable_review_agent: true
+  review_agent: "claude"
 ```
 
 ## GitHub Sync (Optional)
@@ -225,18 +238,11 @@ gh auth login
 ```bash
 gh repo view
 ```
-3. (Optional) Set repo explicitly:
-```bash
-export GITHUB_REPO=owner/repo
-```
-4. (Optional) Sync only labeled issues:
-```bash
-export GITHUB_SYNC_LABEL=sync
-```
-5. (Recommended) Put token in `.env`:
+3. (Recommended) Put token in `.env`:
 ```bash
 export GITHUB_TOKEN=YOUR_TOKEN
 ```
+
 Project fields belong in `config.yml` (not `.env`):
 ```bash
 gh:
@@ -265,10 +271,10 @@ just gh-sync
 ```
 
 ### Notes
-- The repo is resolved from `GITHUB_REPO` or `gh repo view` or `config.yml`.
+- The repo is resolved from `config.yml` or `gh repo view`.
 - Issues are created for tasks without `gh_issue_number`.
 - If a task has label `no_gh` or `local-only`, it will not be synced.
-- If `GITHUB_SYNC_LABEL` (or `config.yml` `gh.sync_label`) is set, only tasks/issues with that label are synced.
+- If `config.yml` `gh.sync_label` is set, only tasks/issues with that label are synced.
 - Task status is synced to issue labels using `status:<status>`.
 - When a task is `done`, `auto_close` controls whether to close the issue or move it to Review and tag the owner.
 - On sync, task updates are posted as comments with accomplished/remaining/blockers.

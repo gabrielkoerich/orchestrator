@@ -1,7 +1,10 @@
 workflow:
   auto_close: true
   review_owner: "@owner"
+  enable_review_agent: false
+  review_agent: "claude"
 router:
+  agent: "claude"
   model: "haiku"
   allowed_tools:
     - yq

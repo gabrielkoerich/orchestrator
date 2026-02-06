@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PID_FILE=${PID_FILE:-"${SCRIPT_DIR}/../orchestrator.pid"}
 LOG_FILE=${LOG_FILE:-"${SCRIPT_DIR}/../orchestrator.log"}
+ARCHIVE_LOG=${ARCHIVE_LOG:-"${SCRIPT_DIR}/../orchestrator.archive.log"}
 INTERVAL=${INTERVAL:-10}
 CONFIG_PATH=${CONFIG_PATH:-"${SCRIPT_DIR}/../config.yml"}
 
@@ -22,6 +23,12 @@ cleanup() {
   rm -f "$PID_FILE"
 }
 trap cleanup EXIT INT TERM
+
+# Rotate log on start
+if [ -f "$LOG_FILE" ]; then
+  cat "$LOG_FILE" >> "$ARCHIVE_LOG"
+  : > "$LOG_FILE"
+fi
 
 lock_mtime() {
   local path="$1"
