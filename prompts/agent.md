@@ -7,6 +7,9 @@ Labels: {{TASK_LABELS}}
 Body:
 {{TASK_BODY}}
 
+Agent profile (JSON):
+{{AGENT_PROFILE_JSON}}
+
 Constraints:
 - Do the work in the current repo.
 - If changes are needed, describe the files changed in the response.

@@ -34,16 +34,18 @@ case "$ROUTER_AGENT" in
     ;;
  esac
 
-ROUTED_AGENT=$(printf '%s' "$RESPONSE" | yq -r '.agent')
+ROUTED_AGENT=$(printf '%s' "$RESPONSE" | yq -r '.executor')
 REASON=$(printf '%s' "$RESPONSE" | yq -r '.reason')
+PROFILE_JSON=$(printf '%s' "$RESPONSE" | yq -o=json -I=0 '.profile // {}')
 NOW=$(now_iso)
 
-export ROUTED_AGENT REASON NOW
+export ROUTED_AGENT REASON PROFILE_JSON NOW
 
-yq -i \
+with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .agent) = env(ROUTED_AGENT) | \
    (.tasks[] | select(.id == $TASK_ID) | .status) = \"routed\" | \
    (.tasks[] | select(.id == $TASK_ID) | .route_reason) = env(REASON) | \
+   (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = (env(PROFILE_JSON) | fromjson) | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
   "$TASKS_PATH"
 

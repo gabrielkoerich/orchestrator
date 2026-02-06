@@ -9,10 +9,19 @@ if [ -z "$TASK_ID" ]; then
   exit 1
 fi
 
+# Per-task lock to avoid double-run across multiple watchers
+TASK_LOCK="${LOCK_PATH}.task.${TASK_ID}"
+if ! mkdir "$TASK_LOCK" 2>/dev/null; then
+  echo "Task $TASK_ID already running" >&2
+  exit 0
+fi
+trap 'rmdir "$TASK_LOCK" 2>/dev/null || true' EXIT
+
 TASK_TITLE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .title" "$TASKS_PATH")
 TASK_BODY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .body" "$TASKS_PATH")
 TASK_LABELS=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .labels | join(\",\")" "$TASKS_PATH")
 TASK_AGENT=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .agent" "$TASKS_PATH")
+AGENT_PROFILE_JSON=$(yq -o=json -I=0 ".tasks[] | select(.id == $TASK_ID) | .agent_profile // {}" "$TASKS_PATH")
 
 if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
   echo "Task $TASK_ID not found" >&2
@@ -21,17 +30,18 @@ fi
 
 if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
   TASK_AGENT=$("$(dirname "$0")/route_task.sh" "$TASK_ID")
+  AGENT_PROFILE_JSON=$(yq -o=json -I=0 ".tasks[] | select(.id == $TASK_ID) | .agent_profile // {}" "$TASKS_PATH")
 fi
 
 NOW=$(now_iso)
 export NOW
 
-yq -i \
+with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .status) = \"in_progress\" | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
   "$TASKS_PATH"
 
-PROMPT=$(render_template "prompts/agent.md" "$TASK_ID" "$TASK_TITLE" "$TASK_LABELS" "$TASK_BODY")
+PROMPT=$(render_template "prompts/agent.md" "$TASK_ID" "$TASK_TITLE" "$TASK_LABELS" "$TASK_BODY" "$AGENT_PROFILE_JSON")
 
 case "$TASK_AGENT" in
   codex)
@@ -60,7 +70,7 @@ fi
 NOW=$(now_iso)
 export AGENT_STATUS SUMMARY FILES_CHANGED_JSON NEEDS_HELP NOW
 
-yq -i \
+with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .status) = env(AGENT_STATUS) | \
    (.tasks[] | select(.id == $TASK_ID) | .summary) = env(SUMMARY) | \
    (.tasks[] | select(.id == $TASK_ID) | .files_changed) = (env(FILES_CHANGED_JSON) | fromjson) | \
@@ -71,6 +81,8 @@ yq -i \
 DELEG_COUNT=$(printf '%s' "$DELEGATIONS_JSON" | yq -r 'length')
 
 if [ "$DELEG_COUNT" -gt 0 ]; then
+  acquire_lock
+
   MAX_ID=$(yq -r '.tasks | map(.id) | max // 0' "$TASKS_PATH")
   CHILD_IDS=()
   for i in $(seq 0 $((DELEG_COUNT - 1))); do
@@ -97,6 +109,7 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
         "summary": null,
         "files_changed": [],
         "needs_help": false,
+        "agent_profile": null,
         "created_at": env(NOW),
         "updated_at": env(NOW)
       }]' \
@@ -115,6 +128,8 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
     "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
      (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
     "$TASKS_PATH"
+
+  release_lock
 
   printf 'Spawned children: %s\n' "${CHILD_IDS[*]}"
 fi

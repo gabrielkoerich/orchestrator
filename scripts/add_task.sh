@@ -23,7 +23,7 @@ fi
 
 export NEXT_ID TITLE BODY LABELS_JSON NOW
 
-yq -i \
+with_lock yq -i \
   '.tasks += [{
     "id": (env(NEXT_ID) | tonumber),
     "title": env(TITLE),
@@ -31,6 +31,7 @@ yq -i \
     "labels": (env(LABELS_JSON) | fromjson),
     "status": "new",
     "agent": null,
+    "agent_profile": null,
     "parent_id": null,
     "children": [],
     "route_reason": null,

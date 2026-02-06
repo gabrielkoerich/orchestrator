@@ -7,8 +7,6 @@ setup() {
   TMP_DIR=$(mktemp -d)
   export TASKS_PATH="${TMP_DIR}/tasks.yml"
 
-  # Ensure tasks file initialized
-  "${REPO_DIR}/scripts/lib.sh" >/dev/null 2>&1 || true
   "${REPO_DIR}/scripts/add_task.sh" "Init" "Bootstrap" "" >/dev/null
 }
 
@@ -29,21 +27,24 @@ teardown() {
   [ "$output" = "Test Title" ]
 }
 
-@test "route_task.sh sets agent and status" {
+@test "route_task.sh sets agent, status, and profile" {
   run "${REPO_DIR}/scripts/add_task.sh" "Route Me" "Routing body" ""
   [ "$status" -eq 0 ]
 
-  # Force router to codex to avoid dependency on other CLIs
   run yq -i '.router.agent = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
-  # Stub codex CLI
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
 cat <<'YAML'
-agent: codex
+executor: codex
 reason: "test route"
+profile:
+  role: "backend specialist"
+  skills: ["api", "sql"]
+  tools: ["git", "rg"]
+  constraints: ["no migrations"]
 YAML
 SH
   chmod +x "$CODEX_STUB"
@@ -56,13 +57,16 @@ SH
   run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
   [ "$status" -eq 0 ]
   [ "$output" = "routed" ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .agent_profile.role' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "backend specialist" ]
 }
 
 @test "run_task.sh updates task and handles delegations" {
   run "${REPO_DIR}/scripts/add_task.sh" "Run Me" "Run body" ""
   [ "$status" -eq 0 ]
 
-  # Stub codex CLI
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
@@ -81,7 +85,6 @@ SH
   chmod +x "$CODEX_STUB"
   export PATH="${TMP_DIR}:${PATH}"
 
-  # Set agent to codex to avoid routing
   run yq -i '.tasks[] | select(.id == 2) | .agent = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
@@ -95,4 +98,38 @@ SH
   run yq -r '.tasks[] | select(.parent_id == 2) | .title' "$TASKS_PATH"
   [ "$status" -eq 0 ]
   [ "$output" = "Child Task" ]
+}
+
+@test "poll.sh runs new tasks and rejoins blocked parents" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Parent" "Parent body" ""
+  [ "$status" -eq 0 ]
+
+  run "${REPO_DIR}/scripts/add_task.sh" "Child" "Child body" ""
+  [ "$status" -eq 0 ]
+
+  run yq -i '.tasks[] | select(.id == 2) | .status = "blocked" | .children = [3]' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  run yq -i '.tasks[] | select(.id == 3) | .status = "done" | .agent = "codex"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'YAML'
+status: done
+summary: "ok"
+files_changed: []
+needs_help: false
+delegations: []
+YAML
+SH
+  chmod +x "$CODEX_STUB"
+  export PATH="${TMP_DIR}:${PATH}"
+
+  run "${REPO_DIR}/scripts/poll.sh"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
 }
