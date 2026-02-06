@@ -45,95 +45,95 @@ GitHub metadata fields (optional):
 ## Usage
 
 ### Add a task
-```
+```bash
 just add "Build router" "Add LLM router and task runner" "orchestration,router"
-```
+```bash
 Body and labels are optional:
-```
+```bash
 just add "Build router"
-```
+```bash
 
 ### List tasks
-```
+```bash
 just list
-```
+```bash
 
 ### Status dashboard
-```
+```bash
 just status
-```
+```bash
 
 ### Task tree
-```
+```bash
 just tree
-```
+```bash
 
 ### Dashboard view
-```
+```bash
 just dashboard
-```
+```bash
 
 ### Route a task
-```
+```bash
 just route 1
-```
+```bash
 If no ID is provided, the next `new` task is routed.
 
 ### Run a task
-```
+```bash
 just run 1
-```
+```bash
 If no ID is provided, the next `new` task is run (or `routed` if no `new`).
 
 ### Run the next task
-```
+```bash
 just next
-```
+```bash
 
 ### Poll all tasks (parallel)
-```
+```bash
 just poll
 just poll 8
-```
+```bash
 
 ### Rejoin blocked parents (parallel)
-```
+```bash
 just rejoin
-```
+```bash
 
 ### Watch loop
-```
+```bash
 just watch
 just watch 5
-```
+```bash
 
 ### Tests
-```
+```bash
 just test
-```
+```bash
 
 ## Install As Global Tool
-```
+```bash
 just setup
-```
+```bash
 
 This installs to `~/.orchestrator` and creates a wrapper at `~/.bin/orchestrator`.
 Make sure `~/.bin` is on your `PATH`:
-```
+```bash
 export PATH="$HOME/.bin:$PATH"
-```
+```bash
 
 ## Dynamic Agent Profiles
 The router generates a profile for each task, persisted in `tasks.yml`. You can edit it manually if the agent needs refinement.
 
 Example:
-```
+```bash
 agent_profile:
   role: backend specialist
   skills: [api, sql, testing]
   tools: [git, rg]
   constraints: ["no migrations"]
-```
+```bash
 
 ## Context Persistence
 Task and profile contexts are persisted under `contexts/`:
@@ -144,14 +144,14 @@ The orchestrator loads both into the prompt and appends a short log entry after 
 
 ## Delegation
 If the agent returns this:
-```
+```bash
 needs_help: true
 delegations:
   - title: "Add unit tests"
     body: "Test routing logic"
     labels: ["tests"]
     suggested_agent: "codex"
-```
+```bash
 The orchestrator will:
 - Create child tasks
 - Block the parent until children are done
@@ -165,9 +165,9 @@ The orchestrator will:
 
 ## Review Agent (Optional)
 Enable a post-run review:
-```
+```bash
 ENABLE_REVIEW_AGENT=1 REVIEW_AGENT=claude just run 1
-```
+```bash
 
 ## GitHub Sync (Optional)
 Sync tasks to GitHub Issues using `gh`.
@@ -190,40 +190,40 @@ Classic PATs will also work but are broader in scope.
 
 ### GitHub Setup
 1. Install and authenticate:
-```
+```bash
 gh auth login
-```
+```bash
 2. Verify access:
-```
+```bash
 gh repo view
-```
+```bash
 3. (Optional) Set repo explicitly:
-```
+```bash
 export GITHUB_REPO=owner/repo
-```
+```bash
 4. (Optional) Sync only labeled issues:
-```
+```bash
 export GH_SYNC_LABEL=sync
-```
+```bash
 5. (Recommended) Put token in `.env`:
-```
+```bash
 export GH_TOKEN=YOUR_TOKEN
-```
+```bash
 
 ### Pull issues into tasks.yml
-```
+```bash
 just gh-pull
-```
+```bash
 
 ### Push tasks to GitHub issues
-```
+```bash
 just gh-push
-```
+```bash
 
 ### Sync both directions
-```
+```bash
 just gh-sync
-```
+```bash
 
 ### Notes
 - The repo is resolved from `GITHUB_REPO` or `gh repo view`.
@@ -242,17 +242,17 @@ Provide:
 
 #### Finding IDs
 1. Project ID (GraphQL):
-```
+```bash
 gh api graphql -f query='query($org:String!, $num:Int!){ organization(login:$org){ projectV2(number:$num){ id } } }' -f org=YOUR_ORG -f num=PROJECT_NUMBER
-```
+```bash
 2. Status field ID + option IDs:
-```
+```bash
 gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:50){ nodes{ ... on ProjectV2SingleSelectField { id name options{ id name } } } } } } }' -f project=YOUR_PROJECT_ID
-```
+```bash
 3. Example mapping:
-```
+```bash
 export GH_PROJECT_STATUS_MAP_JSON='{"new":"<optionId>","in_progress":"<optionId>","done":"<optionId>"}'
-```
+```bash
 
 ## Notes
 - `tasks.yml` is the system of record and can be synced to GitHub.
