@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_yq
+init_config_file
 
 require_gh() {
   if ! command -v gh >/dev/null 2>&1; then
@@ -13,12 +14,12 @@ require_gh() {
 require_gh
 init_tasks_file
 
-REPO=${GITHUB_REPO:-$(yq -r '.gh.repo // ""' "$TASKS_PATH")}
+REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
 
-SYNC_LABEL=${GH_SYNC_LABEL:-$(yq -r '.gh.sync_label // ""' "$TASKS_PATH")}
+SYNC_LABEL=${GH_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
 
 ISSUES_JSON=$(gh api "repos/$REPO/issues" --paginate -f state=all -f per_page=100)
 FILTERED=$(printf '%s' "$ISSUES_JSON" | yq -o=json -I=0 'map(select(.pull_request == null))')

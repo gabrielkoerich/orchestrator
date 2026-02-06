@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_yq
+init_config_file
 
 require_gh() {
   if ! command -v gh >/dev/null 2>&1; then
@@ -13,19 +14,46 @@ require_gh() {
 require_gh
 init_tasks_file
 
-REPO=${GITHUB_REPO:-$(yq -r '.gh.repo // ""' "$TASKS_PATH")}
+REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
 
-SYNC_LABEL=${GH_SYNC_LABEL:-$(yq -r '.gh.sync_label // ""' "$TASKS_PATH")}
+SYNC_LABEL=${GH_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
 STATUS_LABEL_PREFIX=${GH_STATUS_LABEL_PREFIX:-"status:"}
 
-PROJECT_ID=${GH_PROJECT_ID:-}
-PROJECT_STATUS_FIELD_ID=${GH_PROJECT_STATUS_FIELD_ID:-}
+PROJECT_ID=${GH_PROJECT_ID:-$(config_get '.gh.project_id // ""')}
+PROJECT_STATUS_FIELD_ID=${GH_PROJECT_STATUS_FIELD_ID:-$(config_get '.gh.project_status_field_id // ""')}
 PROJECT_STATUS_MAP_JSON=${GH_PROJECT_STATUS_MAP_JSON:-}
+if [ -z "$PROJECT_STATUS_MAP_JSON" ]; then
+  PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
+fi
+
+AUTO_CLOSE=${AUTO_CLOSE:-$(config_get '.workflow.auto_close // true')}
+REVIEW_OWNER=${REVIEW_OWNER:-$(config_get '.workflow.review_owner // ""')}
 
 SKIP_LABELS=("no_gh" "local-only")
+
+map_status_to_project() {
+  local status="$1"
+  case "$status" in
+    new|routed)
+      echo "backlog"
+      ;;
+    in_progress|blocked)
+      echo "in_progress"
+      ;;
+    needs_review)
+      echo "review"
+      ;;
+    done)
+      echo "done"
+      ;;
+    *)
+      echo "backlog"
+      ;;
+  esac
+}
 
 sync_project_status() {
   local issue_number="$1"
@@ -35,8 +63,11 @@ sync_project_status() {
     return 0
   fi
 
+  local key
+  key=$(map_status_to_project "$status")
+
   local option_id
-  option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r ".\"$status\" // \"\"")
+  option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r ".\"$key\" // \"\"")
   if [ -z "$option_id" ] || [ "$option_id" = "null" ]; then
     return 0
   fi
@@ -67,6 +98,9 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   GH_NUM=$(yq -r ".tasks[$i].gh_issue_number // \"\"" "$TASKS_PATH")
   GH_STATE=$(yq -r ".tasks[$i].gh_state // \"\"" "$TASKS_PATH")
   SUMMARY=$(yq -r ".tasks[$i].summary // \"\"" "$TASKS_PATH")
+  ACCOMPLISHED=$(yq -r ".tasks[$i].accomplished // [] | join(\", \" )" "$TASKS_PATH")
+  REMAINING=$(yq -r ".tasks[$i].remaining // [] | join(\", \" )" "$TASKS_PATH")
+  BLOCKERS=$(yq -r ".tasks[$i].blockers // [] | join(\", \" )" "$TASKS_PATH")
   FILES_CHANGED_JSON=$(yq -o=json -I=0 ".tasks[$i].files_changed // []" "$TASKS_PATH")
   UPDATED_AT=$(yq -r ".tasks[$i].updated_at // \"\"" "$TASKS_PATH")
   GH_SYNCED_AT=$(yq -r ".tasks[$i].gh_synced_at // \"\"" "$TASKS_PATH")
@@ -136,9 +170,15 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     COMMENT=$(cat <<EOF
 Status: $STATUS
 Summary: $SUMMARY
+Accomplished: $ACCOMPLISHED
+Remaining: $REMAINING
+Blockers: $BLOCKERS
 Files: $FILES_CHANGED
 EOF
 )
+    if [ "$STATUS" = "blocked" ] && [ -n "$REVIEW_OWNER" ]; then
+      COMMENT="$COMMENT\n\nBlocking owner: ${REVIEW_OWNER}"
+    fi
     gh api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
     NOW=$(now_iso)
     export NOW
@@ -147,8 +187,16 @@ EOF
       "$TASKS_PATH"
   fi
 
-  # Close issue if task done
-  if [ "$STATUS" = "done" ] && [ "$GH_STATE" != "closed" ]; then
+  # Review/close behavior
+  if [ "$STATUS" = "done" ] && [ "$AUTO_CLOSE" != "true" ]; then
+    if [ -n "$REVIEW_OWNER" ]; then
+      gh api "repos/$REPO/issues/$GH_NUM/comments" -f body="Review requested ${REVIEW_OWNER}" >/dev/null
+    fi
+    sync_project_status "$GH_NUM" "needs_review"
+  fi
+
+  # Close issue if task done and auto_close
+  if [ "$STATUS" = "done" ] && [ "$GH_STATE" != "closed" ] && [ "$AUTO_CLOSE" = "true" ]; then
     gh api "repos/$REPO/issues/$GH_NUM" -X PATCH -f state=closed >/dev/null
     NOW=$(now_iso)
     export NOW

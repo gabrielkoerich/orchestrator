@@ -21,6 +21,9 @@ Constraints:
 Return ONLY YAML with the following keys:
 status: new|routed|in_progress|done|blocked|needs_review
 summary: short summary of what you did or found
+accomplished: list of completed items
+remaining: list of remaining items
+blockers: list of blockers (empty if none)
 files_changed: list of files modified (paths)
 needs_help: true|false
 delegations: list of tasks (title, body, labels, suggested_agent) or []

@@ -13,6 +13,9 @@ A lightweight autonomous agent orchestrator that routes tasks, spawns specialize
 ## Files
 - `tasks.yml` — task database (YAML)
   - Not committed; generated from `tasks.example.yml`
+- `config.yml` — runtime configuration (YAML)
+  - Not committed; generated from `config.example.yml`
+- `skills.yml` — approved skill repositories and skill catalog
 - `prompts/route.md` — routing + profile generation prompt
 - `prompts/agent.md` — execution prompt (includes profile + context)
 - `prompts/review.md` — optional review agent prompt
@@ -26,8 +29,10 @@ Each task includes:
 - `status`: `new`, `routed`, `in_progress`, `done`, `blocked`, `needs_review`
 - `agent`: executor (`codex` or `claude`)
 - `agent_profile`: dynamically generated role/skills/tools/constraints
+- `selected_skills`: chosen skill ids from `skills.yml`
 - `parent_id`, `children` for delegation
-- `summary`, `files_changed`, `needs_help`
+- `summary`, `accomplished`, `remaining`, `blockers`
+- `files_changed`, `needs_help`
 - `attempts`, `last_error`, `retry_at`
 - `review_decision`, `review_notes`
 - `history`: status changes with timestamps
@@ -37,8 +42,8 @@ GitHub metadata fields (optional):
 
 ## How It Works
 1. **Add a task** to `tasks.yml` (or via `just add`).
-2. **Route the task** with an LLM that chooses executor + builds a specialized profile.
-3. **Run the task** with the chosen executor and profile.
+2. **Route the task** with an LLM that chooses executor + builds a specialized profile and selects skills.
+3. **Run the task** with the chosen executor, profile, and skills.
 4. **Delegation**: if the agent returns `delegations`, child tasks are created and the parent is blocked until children finish.
 5. **Rejoin**: parent resumes when children are done.
 
@@ -135,6 +140,9 @@ agent_profile:
   constraints: ["no migrations"]
 ```
 
+## Skills Catalog
+`skills.yml` defines approved skill repositories and a catalog of skills. The router selects skill ids and stores them in `selected_skills`.
+
 ## Context Persistence
 Task and profile contexts are persisted under `contexts/`:
 - `contexts/task-<id>.md`
@@ -226,19 +234,20 @@ just gh-sync
 ```
 
 ### Notes
-- The repo is resolved from `GITHUB_REPO` or `gh repo view`.
+- The repo is resolved from `GITHUB_REPO` or `gh repo view` or `config.yml`.
 - Issues are created for tasks without `gh_issue_number`.
 - If a task has label `no_gh` or `local-only`, it will not be synced.
-- If `GH_SYNC_LABEL` (or `gh.sync_label`) is set, only tasks/issues with that label are synced.
+- If `GH_SYNC_LABEL` (or `config.yml` `gh.sync_label`) is set, only tasks/issues with that label are synced.
 - Task status is synced to issue labels using `status:<status>`.
-- When a task is `done`, the issue is closed.
-- On sync, task `summary` is posted as a comment (once per update).
+- When a task is `done`, `auto_close` controls whether to close the issue or move it to Review and tag the owner.
+- On sync, task updates are posted as comments with accomplished/remaining/blockers.
+- If status is `blocked`, the comment tags the review owner and label `status:blocked` is applied.
 
 ### Projects (Optional)
-Provide:
-- `GH_PROJECT_ID`
-- `GH_PROJECT_STATUS_FIELD_ID`
-- `GH_PROJECT_STATUS_MAP_JSON` (e.g. `{"new":"<optionId>","in_progress":"<optionId>","done":"<optionId>"}`)
+Provide in `config.yml`:
+- `gh.project_id`
+- `gh.project_status_field_id`
+- `gh.project_status_map` (Backlog/In Progress/Review/Done option IDs)
 
 #### Finding IDs
 1. Project ID (GraphQL):
@@ -251,9 +260,10 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 ```
 3. Example mapping:
 ```bash
-export GH_PROJECT_STATUS_MAP_JSON='{"new":"<optionId>","in_progress":"<optionId>","done":"<optionId>"}'
+export GH_PROJECT_STATUS_MAP_JSON='{"backlog":"<optionId>","in_progress":"<optionId>","review":"<optionId>","done":"<optionId>"}'
 ```
 
 ## Notes
 - `tasks.yml` is the system of record and can be synced to GitHub.
 - Routing and profiles are LLM-generated; you can override them manually.
+

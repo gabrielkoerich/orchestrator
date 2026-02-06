@@ -103,6 +103,9 @@ fi
 
 AGENT_STATUS=$(printf '%s' "$RESPONSE" | yq -r '.status')
 SUMMARY=$(printf '%s' "$RESPONSE" | yq -r '.summary // ""')
+ACCOMPLISHED_STR=$(printf '%s' "$RESPONSE" | yq -r '.accomplished[]?' | tr '\n' '\n')
+REMAINING_STR=$(printf '%s' "$RESPONSE" | yq -r '.remaining[]?' | tr '\n' '\n')
+BLOCKERS_STR=$(printf '%s' "$RESPONSE" | yq -r '.blockers[]?' | tr '\n' '\n')
 FILES_CHANGED_STR=$(printf '%s' "$RESPONSE" | yq -r '.files_changed[]?' | tr '\n' '\n')
 NEEDS_HELP=$(printf '%s' "$RESPONSE" | yq -r '.needs_help // false')
 DELEGATIONS_JSON=$(printf '%s' "$RESPONSE" | yq -o=json -I=0 '.delegations // []')
@@ -124,11 +127,14 @@ if [ -z "$AGENT_STATUS" ] || [ "$AGENT_STATUS" = "null" ]; then
 fi
 
 NOW=$(now_iso)
-export AGENT_STATUS SUMMARY NEEDS_HELP NOW FILES_CHANGED_STR
+export AGENT_STATUS SUMMARY NEEDS_HELP NOW FILES_CHANGED_STR ACCOMPLISHED_STR REMAINING_STR BLOCKERS_STR
 
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .status) = env(AGENT_STATUS) | \
    (.tasks[] | select(.id == $TASK_ID) | .summary) = env(SUMMARY) | \
+   (.tasks[] | select(.id == $TASK_ID) | .accomplished) = (env(ACCOMPLISHED_STR) | split(\"\\n\") | map(select(length > 0))) | \
+   (.tasks[] | select(.id == $TASK_ID) | .remaining) = (env(REMAINING_STR) | split(\"\\n\") | map(select(length > 0))) | \
+   (.tasks[] | select(.id == $TASK_ID) | .blockers) = (env(BLOCKERS_STR) | split(\"\\n\") | map(select(length > 0))) | \
    (.tasks[] | select(.id == $TASK_ID) | .files_changed) = (env(FILES_CHANGED_STR) | split(\"\\n\") | map(select(length > 0))) | \
    (.tasks[] | select(.id == $TASK_ID) | .needs_help) = (env(NEEDS_HELP) == \"true\") | \
    (.tasks[] | select(.id == $TASK_ID) | .last_error) = null | \
@@ -241,6 +247,9 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
         "route_reason": null,
         "route_warning": null,
         "summary": null,
+        "accomplished": [],
+        "remaining": [],
+        "blockers": [],
         "files_changed": [],
         "needs_help": false,
         "agent_profile": null,

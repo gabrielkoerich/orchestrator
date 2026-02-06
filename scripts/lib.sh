@@ -4,6 +4,7 @@ set -euo pipefail
 TASKS_PATH=${TASKS_PATH:-tasks.yml}
 LOCK_PATH=${LOCK_PATH:-"${TASKS_PATH}.lock"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"contexts"}
+CONFIG_PATH=${CONFIG_PATH:-"config.yml"}
 
 now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -74,6 +75,39 @@ agents:
 tasks: []
 YAML
     fi
+  fi
+}
+
+init_config_file() {
+  if [ ! -f "$CONFIG_PATH" ]; then
+    if [ -f "config.example.yml" ]; then
+      cp "config.example.yml" "$CONFIG_PATH"
+    else
+      cat > "$CONFIG_PATH" <<'YAML'
+workflow:
+  auto_close: true
+  review_owner: ""
+gh:
+  repo: ""
+  sync_label: ""
+  project_id: ""
+  project_status_field_id: ""
+  project_status_map:
+    backlog: ""
+    in_progress: ""
+    review: ""
+    done: ""
+YAML
+    fi
+  fi
+}
+
+config_get() {
+  local key="$1"
+  if [ -f "$CONFIG_PATH" ]; then
+    yq -r "$key" "$CONFIG_PATH"
+  else
+    echo ""
   fi
 }
 

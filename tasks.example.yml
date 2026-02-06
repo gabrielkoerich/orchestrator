@@ -1,6 +1,16 @@
 version: 1
 router:
   agent: codex
+gh:
+  repo: ""
+  sync_label: ""
+  project_id: ""
+  project_status_field_id: ""
+  project_status_map:
+    backlog: ""
+    in_progress: ""
+    review: ""
+    done: ""
 agents:
   - id: codex
     description: General-purpose coding agent.

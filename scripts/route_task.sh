@@ -22,7 +22,12 @@ if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
   exit 1
 fi
 
-PROMPT=$(render_template "prompts/route.md" "$TASK_ID" "$TASK_TITLE" "$TASK_LABELS" "$TASK_BODY")
+SKILLS_CATALOG=""
+if [ -f "skills.yml" ]; then
+  SKILLS_CATALOG=$(cat "skills.yml")
+fi
+
+PROMPT=$(render_template "prompts/route.md" "$TASK_ID" "$TASK_TITLE" "$TASK_LABELS" "$TASK_BODY" "{}" "" "" "$SKILLS_CATALOG")
 
 case "$ROUTER_AGENT" in
   codex)
@@ -40,6 +45,7 @@ case "$ROUTER_AGENT" in
 ROUTED_AGENT=$(printf '%s' "$RESPONSE" | yq -r '.executor')
 REASON=$(printf '%s' "$RESPONSE" | yq -r '.reason')
 PROFILE_YAML=$(printf '%s' "$RESPONSE" | yq '.profile // {}')
+SELECTED_SKILLS_CSV=$(printf '%s' "$RESPONSE" | yq -r '.selected_skills // [] | join(",")')
 NOW=$(now_iso)
 
 # Simple router sanity check
@@ -72,7 +78,7 @@ ROLE=$(printf '%s' "$PROFILE_YAML" | yq -r '.role // "general"')
 AGENT_LABEL="agent:${ROUTED_AGENT}"
 ROLE_LABEL="role:${ROLE}"
 
-export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL
+export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV
 
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .agent) = env(ROUTED_AGENT) | \
@@ -80,6 +86,7 @@ with_lock yq -i \
    (.tasks[] | select(.id == $TASK_ID) | .route_reason) = env(REASON) | \
    (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (env(ROUTE_WARNING) | select(length > 0) // null) | \
    (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = load(\"$TMP_PROFILE\") | \
+   (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (env(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0))) | \
    (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [env(AGENT_LABEL), env(ROLE_LABEL)]) | unique) | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
   "$TASKS_PATH"

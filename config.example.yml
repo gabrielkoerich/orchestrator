@@ -1,0 +1,13 @@
+workflow:
+  auto_close: true
+  review_owner: "@owner"
+gh:
+  repo: "owner/repo"
+  sync_label: "sync"
+  project_id: ""
+  project_status_field_id: ""
+  project_status_map:
+    backlog: ""
+    in_progress: ""
+    review: ""
+    done: ""

@@ -3,5 +3,6 @@
 orchestrator.log
 orchestrator.pid
 tasks.yml
+config.yml
 tasks.yml.lock
 tasks.yml.lock.task.*
