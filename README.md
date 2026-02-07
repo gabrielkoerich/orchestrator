@@ -1,5 +1,7 @@
 # Agent Orchestrator (bash, YAML + yq)
 
+[![tests](https://github.com/gabrielkoerich/orchestrator/actions/workflows/tests.yml/badge.svg)](https://github.com/gabrielkoerich/orchestrator/actions/workflows/tests.yml)
+
 A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex`, `claude`, and `opencode`) and can delegate subtasks dynamically.
 
 ## Quick Setup
