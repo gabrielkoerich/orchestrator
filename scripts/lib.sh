@@ -245,85 +245,9 @@ require_jq() {
 normalize_json_response() {
   local raw="$1"
   if command -v python3 >/dev/null 2>&1; then
-    RAW_RESPONSE="$raw" python3 - <<'PY'
-import json
-import re
-import os
-import sys
-
-raw = os.environ.get("RAW_RESPONSE", "")
-
-def strip_fences(text: str) -> str:
-    if "```" not in text:
-        return text
-    parts = text.split("```")
-    if len(parts) >= 3:
-        body = parts[1]
-        if body.startswith("json"):
-            body = body[len("json"):]
-        if body.startswith("\n"):
-            body = body[1:]
-        return body
-    return text
-
-def parse_payload(payload):
-    if isinstance(payload, str):
-        # If fenced JSON exists anywhere, extract it.
-        if "```" in payload:
-            parts = payload.split("```")
-            if len(parts) >= 3:
-                payload = parts[1]
-        text = strip_fences(payload).strip()
-        if text.startswith("json"):
-            text = text[len("json"):].lstrip()
-        try:
-            return json.loads(text)
-        except Exception:
-            return json.loads(json.dumps(text))
-    return payload
-
-try:
-    obj = json.loads(raw)
-    if isinstance(obj, dict) and "result" in obj:
-        parsed = parse_payload(obj["result"])
-    else:
-        parsed = parse_payload(obj)
-    print(json.dumps(parsed, separators=(",", ":")))
-    sys.exit(0)
-except Exception:
-    pass
-
-# Try line-delimited JSON (codex/opencode streaming)
-lines = [l for l in raw.splitlines() if l.strip().startswith("{")]
-events = []
-for line in lines:
-    try:
-        events.append(json.loads(line))
-    except Exception:
-        continue
-
-# Opencode: last text part
-for ev in reversed(events):
-    if ev.get("type") == "text":
-        text = ev.get("part", {}).get("text", "")
-        if text:
-            parsed = parse_payload(text)
-            print(json.dumps(parsed, separators=(",", ":")))
-            sys.exit(0)
-
-# Codex: last agent_message item
-for ev in reversed(events):
-    if ev.get("type") == "item.completed":
-        item = ev.get("item", {})
-        if item.get("type") == "agent_message":
-            text = item.get("text", "")
-            if text:
-                parsed = parse_payload(text)
-                print(json.dumps(parsed, separators=(",", ":")))
-                sys.exit(0)
-
-sys.exit(1)
-PY
+    local script_dir
+    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    RAW_RESPONSE="$raw" python3 "${script_dir}/normalize_json.py"
     return $?
   fi
 
