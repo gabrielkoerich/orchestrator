@@ -6,7 +6,10 @@ source "$SCRIPT_DIR/lib.sh"
 require_yq
 init_config_file
 
-GH_ENABLED=${GITHUB_ENABLED:-$(config_get '.gh.enabled // true')}
+GH_ENABLED=${GITHUB_ENABLED:-$(config_get '.gh.enabled')}
+if [ -z "$GH_ENABLED" ] || [ "$GH_ENABLED" = "null" ]; then
+  GH_ENABLED="true"
+fi
 if [ "$GH_ENABLED" != "true" ]; then
   echo "[gh_sync] GitHub sync disabled."
   exit 0
