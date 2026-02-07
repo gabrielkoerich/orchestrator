@@ -5,6 +5,8 @@ setup() {
   export PATH="${REPO_DIR}/scripts:${PATH}"
 
   TMP_DIR=$(mktemp -d)
+  export STATE_DIR="${TMP_DIR}/.orchestrator"
+  mkdir -p "$STATE_DIR"
   export TASKS_PATH="${TMP_DIR}/tasks.yml"
   export CONFIG_PATH="${TMP_DIR}/config.yml"
   cat > "$CONFIG_PATH" <<'YAML'
@@ -142,7 +144,46 @@ SH
   cat > "$RAW_FILE" <<'RAW'
 {"type":"result","result":"```json\n{\"executor\":\"codex\"}\n```"}
 RAW
-  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; RAW=\$(cat '$RAW_FILE'); normalize_json_response \"\$RAW\" | jq -r '.executor'"
+  run env RAW_FILE="$RAW_FILE" bash -c 'source "'"${REPO_DIR}"'/scripts/lib.sh"; RAW=$(cat "$RAW_FILE"); normalize_json_response "$RAW" | jq -r ".executor"'
   [ "$status" -eq 0 ]
   [ "$output" = "codex" ]
+}
+
+@test "gh_api sets backoff on rate limit and respects skip mode" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ]; then
+  echo "secondary rate limit" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  run bash -c "PATH=\"${TMP_DIR}:\$PATH\"; STATE_DIR='${STATE_DIR}'; GH_BACKOFF_MODE=skip; source '${REPO_DIR}/scripts/lib.sh'; set +e; gh_api repos/foo/issues >/dev/null; echo \"rc=\$?\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rc=75"* ]]
+  [ -f "${STATE_DIR}/gh_backoff" ]
+}
+
+@test "gh_api skips when backoff active" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ]; then
+  echo "called" >> "${STATE_DIR}/gh_called"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  future=$(( $(date +%s) + 300 ))
+  printf "until=%s\ndelay=300\nreason=rate_limit\n" "$future" > "${STATE_DIR}/gh_backoff"
+
+  run bash -c "PATH=\"${TMP_DIR}:\$PATH\"; STATE_DIR='${STATE_DIR}'; GH_BACKOFF_MODE=skip; source '${REPO_DIR}/scripts/lib.sh'; set +e; gh_api repos/foo/issues >/dev/null; echo \"rc=\$?\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rc=75"* ]]
+  [ ! -f "${STATE_DIR}/gh_called" ]
 }

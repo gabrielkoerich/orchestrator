@@ -1,10 +1,10 @@
 # Agent Orchestrator (bash, YAML + yq)
 
-A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex` and `claude`) and can delegate subtasks dynamically.
+A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex`, `claude`, and `opencode`) and can delegate subtasks dynamically.
 
 ## Quick Setup
 ```bash
-just setup
+just install
 ```
 Then run:
 ```bash
@@ -17,6 +17,7 @@ orchestrator status
 - Agent CLIs in your PATH:
   - `codex`
   - `claude`
+  - `opencode`
 - Optional: `gh` for GitHub sync
 
 ## Files
@@ -32,12 +33,13 @@ orchestrator status
 - `scripts/*.sh` — orchestration commands
 - `tests/orchestrator.bats` — tests
 - `contexts/` — persisted context files per task/profile
+- `.orchestrator/` — runtime state (pid/log/locks/backoff)
 
 ## Task Model
 Each task includes:
 - `id`, `title`, `body`, `labels`
 - `status`: `new`, `routed`, `in_progress`, `done`, `blocked`, `needs_review`
-- `agent`: executor (`codex` or `claude`)
+- `agent`: executor (`codex`, `claude`, or `opencode`)
 - `agent_model`: model chosen by the router
 - `agent_profile`: dynamically generated role/skills/tools/constraints
 - `selected_skills`: chosen skill ids from `skills.yml`
@@ -60,82 +62,33 @@ GitHub metadata fields (optional):
 
 ## Usage
 
-### Add a task
-```bash
-just add "Build router" "Add LLM router and task runner" "orchestration,router"
-```
-Body and labels are optional:
-```bash
-just add "Build router"
-```
-
-### List tasks
-```bash
-just list
-```
-
-### Status dashboard
-```bash
-just status
-```
-
-### Task tree
-```bash
-just tree
-```
-
-### Dashboard view
-```bash
-just dashboard
-```
-
-### Route a task
-```bash
-just route 1
-```
-If no ID is provided, the next `new` task is routed.
-
-### Run a task
-```bash
-just run 1
-```
-If no ID is provided, the next `new` task is run (or `routed` if no `new`).
-
-### Run the next task
-```bash
-just next
-```
-
-### Poll all tasks (parallel)
-```bash
-just poll
-just poll 8
-```
-
-### Rejoin blocked parents (parallel)
-```bash
-just rejoin
-```
-
-### Watch loop
-```bash
-just watch
-just watch 5
-```
-
-### Sync skills
-```bash
-just skills-sync
-```
-
-### Tests
-```bash
-just test
-```
+| Command | Description |
+| --- | --- |
+| `just add "Build router" "Add LLM router and task runner" "orchestration,router"` | Add a task (title required, body/labels optional). |
+| `just add "Build router"` | Add a minimal task with only a title. |
+| `just list` | List tasks (id, status, agent, parent, title). |
+| `just status` | Show status counts and recent tasks. |
+| `just tree` | Show parent/child task tree. |
+| `just dashboard` | Grouped dashboard view by status. |
+| `just route 1` | Route task `1`. If no ID, route next `new` task. |
+| `just run 1` | Run task `1`. If no ID, run next `new` (or `routed` if none). |
+| `just next` | Route + run the next task in one step. |
+| `just poll` | Run all runnable tasks in parallel (default 4 workers). |
+| `just poll 8` | Run all runnable tasks with 8 workers. |
+| `just rejoin` | Re-run blocked parents whose children are done. |
+| `just watch` | Poll loop every 10s. |
+| `just watch 5` | Poll loop every 5s. |
+| `just serve` | Start server (poll + GitHub sync + auto-restart). |
+| `just stop` | Stop server. |
+| `just restart` | Restart server. |
+| `just log` | Tail orchestrator log. |
+| `just log 200` | Tail last 200 lines of log. |
+| `just skills-sync` | Sync skills from registry to `skills/`. |
+| `just test` | Run tests. |
 
 ## Install As Global Tool
 ```bash
-just setup
+just install
 ```
 
 This installs to `~/.orchestrator` and creates a wrapper at `~/.bin/orchestrator`.
@@ -163,15 +116,33 @@ Clone or update skills with:
 just skills-sync
 ```
 
-## Router Defaults
-Static defaults live in `config.yml`:
-```bash
-router:
-  agent: "claude"
-  model: "haiku"
-  allowed_tools: ["yq", "bash", "just"]
-  default_skills: ["gh", "git-worktree"]
-```
+## Config Reference
+All runtime configuration lives in `config.yml`.
+
+| Section | Key | Description | Default |
+| --- | --- | --- | --- |
+| `workflow` | `auto_close` | Auto-close GitHub issues when tasks are `done`. If false, move to Review and tag `review_owner`. | `true` |
+| `workflow` | `review_owner` | GitHub handle to tag when review is needed. | `@owner` |
+| `workflow` | `enable_review_agent` | Run a review agent after completion. | `false` |
+| `workflow` | `review_agent` | Executor for the review agent. | `claude` |
+| `router` | `agent` | Default router executor. | `claude` |
+| `router` | `model` | Router model name. | `haiku` |
+| `router` | `timeout_seconds` | Router timeout (0 disables timeout). | `120` |
+| `router` | `fallback_executor` | Fallback executor when router fails. | `codex` |
+| `router` | `allowed_tools` | Default tool allowlist used in routing prompts. | `["yq","jq","bash","just","git","rg","sed","awk","python3","node","npm","bun"]` |
+| `router` | `default_skills` | Skills always included in routing. | `["gh","git-worktree"]` |
+| `llm` | `input_format` | CLI input format override. | `""` |
+| `llm` | `output_format` | CLI output format override. | `"json"` |
+| `gh` | `enabled` | Enable GitHub sync. | `true` |
+| `gh` | `repo` | Default repo (`owner/repo`). | `"owner/repo"` |
+| `gh` | `sync_label` | Only sync tasks/issues with this label (empty = all). | `"sync"` |
+| `gh` | `project_id` | GitHub Project v2 ID. | `""` |
+| `gh` | `project_status_field_id` | Status field ID in Project v2. | `""` |
+| `gh` | `project_status_map` | Mapping for `backlog/in_progress/review/done` option IDs. | `{}` |
+| `gh.backoff` | `mode` | Rate-limit behavior: `wait` or `skip`. | `"wait"` |
+| `gh.backoff` | `base_seconds` | Initial backoff duration in seconds. | `30` |
+| `gh.backoff` | `max_seconds` | Max backoff duration in seconds. | `900` |
+
 The router still builds dynamic profiles, but these defaults apply to every task.
 
 ## Context Persistence
@@ -253,6 +224,10 @@ To discover Project field and option IDs:
 ```bash
 just gh-project-info
 ```
+To auto-fill the Status field/options into config:
+```bash
+just gh-project-info-fix
+```
 
 ### Pull issues into tasks.yml
 ```bash
@@ -274,10 +249,22 @@ just gh-sync
 - Issues are created for tasks without `gh_issue_number`.
 - If a task has label `no_gh` or `local-only`, it will not be synced.
 - If `config.yml` `gh.sync_label` is set, only tasks/issues with that label are synced.
+- If `config.yml` `gh.enabled` is `false`, GitHub sync is disabled.
 - Task status is synced to issue labels using `status:<status>`.
 - When a task is `done`, `auto_close` controls whether to close the issue or move it to Review and tag the owner.
 - On sync, task updates are posted as comments with accomplished/remaining/blockers.
 - If status is `blocked`, the comment tags the review owner and label `status:blocked` is applied.
+- Agents never call GitHub directly; the orchestrator posts comments and status updates so it can back off safely when rate-limited.
+
+### GitHub Backoff
+When GitHub rate limits or abuse detection triggers, the orchestrator sleeps and retries instead of hammering the API.
+
+Config keys:
+- `gh.backoff.mode` — `wait` (default) or `skip`
+- `gh.backoff.base_seconds` — initial backoff duration
+- `gh.backoff.max_seconds` — maximum backoff duration
+
+The backoff is shared across pull/push/comment/project updates, so a single rate limit event pauses all GitHub writes.
 
 ### Projects (Optional)
 Provide in `config.yml`:

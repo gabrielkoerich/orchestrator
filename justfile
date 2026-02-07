@@ -70,7 +70,7 @@ unlock:
 
 # Tail orchestrator.log
 log tail="50":
-  @tail -n {{tail}} orchestrator.log
+  @tail -n {{tail}} .orchestrator/orchestrator.log
 
 # Install to ~/.orchestrator and add wrapper to ~/.bin
 install:
@@ -95,6 +95,10 @@ gh-sync:
 # Show GitHub Project field and option ids
 gh-project-info:
   @scripts/gh_project_info.sh
+
+# Auto-apply Status field/option IDs to config.yml
+gh-project-info-fix:
+  @scripts/gh_project_info.sh --fix
 
 # List GitHub Projects for an org or user
 gh-project-list org="" user="":

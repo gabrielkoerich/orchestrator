@@ -22,6 +22,10 @@ fi
 
 SYNC_LABEL=${GITHUB_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
 STATUS_LABEL_PREFIX=${GITHUB_STATUS_LABEL_PREFIX:-"status:"}
+GH_BACKOFF_MODE=${GITHUB_BACKOFF_MODE:-$(config_get '.gh.backoff.mode // "wait"')}
+GH_BACKOFF_BASE_SECONDS=${GITHUB_BACKOFF_BASE_SECONDS:-$(config_get '.gh.backoff.base_seconds // 30')}
+GH_BACKOFF_MAX_SECONDS=${GITHUB_BACKOFF_MAX_SECONDS:-$(config_get '.gh.backoff.max_seconds // 900')}
+export GH_BACKOFF_MODE GH_BACKOFF_BASE_SECONDS GH_BACKOFF_MAX_SECONDS
 
 PROJECT_ID=${GITHUB_PROJECT_ID:-$(config_get '.gh.project_id // ""')}
 PROJECT_STATUS_FIELD_ID=${GITHUB_PROJECT_STATUS_FIELD_ID:-$(config_get '.gh.project_status_field_id // ""')}
@@ -74,10 +78,10 @@ sync_project_status() {
   fi
 
   local issue_node
-  issue_node=$(gh api "repos/$REPO/issues/$issue_number" -q .node_id)
+  issue_node=$(gh_api "repos/$REPO/issues/$issue_number" -q .node_id)
 
   local items_json
-  items_json=$(gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { items(first:100){ nodes{ id content{ ... on Issue { id } } } } } } }' -f project="$PROJECT_ID")
+  items_json=$(gh_api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { items(first:100){ nodes{ id content{ ... on Issue { id } } } } } } }' -f project="$PROJECT_ID")
 
   local item_id
   item_id=$(printf '%s' "$items_json" | yq -r ".data.node.items.nodes[] | select(.content.id == \"$issue_node\") | .id" | head -n1)
@@ -85,7 +89,7 @@ sync_project_status() {
     return 0
   fi
 
-  gh api graphql -f query='mutation($project:ID!, $item:ID!, $field:ID!, $option:ID!){ updateProjectV2ItemFieldValue(input:{projectId:$project, itemId:$item, fieldId:$field, value:{singleSelectOptionId:$option}}){ projectV2Item{id} } }' \
+  gh_api graphql -f query='mutation($project:ID!, $item:ID!, $field:ID!, $option:ID!){ updateProjectV2ItemFieldValue(input:{projectId:$project, itemId:$item, fieldId:$field, value:{singleSelectOptionId:$option}}){ projectV2Item{id} } }' \
     -f project="$PROJECT_ID" -f item="$item_id" -f field="$PROJECT_STATUS_FIELD_ID" -f option="$option_id" >/dev/null
 }
 
@@ -158,7 +162,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
       LABEL_ARGS+=("-f" "labels[]=$LBL")
     done
 
-    RESP=$(gh api "repos/$REPO/issues" -f title="$TITLE" -f body="$BODY" "${LABEL_ARGS[@]}")
+    RESP=$(gh_api "repos/$REPO/issues" -f title="$TITLE" -f body="$BODY" "${LABEL_ARGS[@]}")
     NUM=$(printf '%s' "$RESP" | yq -r '.number')
     URL=$(printf '%s' "$RESP" | yq -r '.html_url')
     STATE=$(printf '%s' "$RESP" | yq -r '.state')
@@ -188,7 +192,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     LBL=$(printf '%s' "$LABELS_FOR_GH" | yq -r ".[$j]")
     LABEL_ARGS+=("-f" "labels[]=$LBL")
   done
-  gh api "repos/$REPO/issues/$GH_NUM" -X PATCH "${LABEL_ARGS[@]}" >/dev/null
+  gh_api "repos/$REPO/issues/$GH_NUM" -X PATCH "${LABEL_ARGS[@]}" >/dev/null
   NOW=$(now_iso)
   export NOW
   with_lock yq -i \
@@ -210,7 +214,7 @@ EOF
     if [ "$STATUS" = "blocked" ] && [ -n "$REVIEW_OWNER" ]; then
       COMMENT="$COMMENT\n\nBlocking owner: ${REVIEW_OWNER}"
     fi
-    gh api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
+    gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
     NOW=$(now_iso)
     export NOW
     with_lock yq -i \
@@ -221,14 +225,14 @@ EOF
   # Review/close behavior
   if [ "$STATUS" = "done" ] && [ "$AUTO_CLOSE" != "true" ]; then
     if [ -n "$REVIEW_OWNER" ]; then
-      gh api "repos/$REPO/issues/$GH_NUM/comments" -f body="Review requested ${REVIEW_OWNER}" >/dev/null
+      gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="Review requested ${REVIEW_OWNER}" >/dev/null
     fi
     sync_project_status "$GH_NUM" "needs_review"
   fi
 
   # Close issue if task done and auto_close
   if [ "$STATUS" = "done" ] && [ "$GH_STATE" != "closed" ] && [ "$AUTO_CLOSE" = "true" ]; then
-    gh api "repos/$REPO/issues/$GH_NUM" -X PATCH -f state=closed >/dev/null
+    gh_api "repos/$REPO/issues/$GH_NUM" -X PATCH -f state=closed >/dev/null
     NOW=$(now_iso)
     export NOW
     with_lock yq -i \

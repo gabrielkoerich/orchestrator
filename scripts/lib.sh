@@ -5,6 +5,7 @@ TASKS_PATH=${TASKS_PATH:-tasks.yml}
 LOCK_PATH=${LOCK_PATH:-"${TASKS_PATH}.lock"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"config.yml"}
+STATE_DIR=${STATE_DIR:-".orchestrator"}
 
 now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -12,6 +13,144 @@ now_iso() {
 
 now_epoch() {
   date -u +"%s"
+}
+
+ensure_state_dir() {
+  mkdir -p "$STATE_DIR"
+}
+
+gh_backoff_path() {
+  echo "${GH_BACKOFF_PATH:-${STATE_DIR}/gh_backoff}"
+}
+
+gh_backoff_reset() {
+  rm -f "$(gh_backoff_path)" 2>/dev/null || true
+}
+
+gh_backoff_read() {
+  local path
+  path=$(gh_backoff_path)
+  if [ ! -f "$path" ]; then
+    echo "0 0"
+    return 0
+  fi
+  local until delay
+  until=$(awk -F= '/^until=/{print $2}' "$path" 2>/dev/null | tail -n1)
+  delay=$(awk -F= '/^delay=/{print $2}' "$path" 2>/dev/null | tail -n1)
+  until=${until:-0}
+  delay=${delay:-0}
+  echo "$until $delay"
+}
+
+gh_backoff_active() {
+  local now until delay
+  read -r until delay < <(gh_backoff_read)
+  now=$(now_epoch)
+  if [ "$until" -gt "$now" ]; then
+    echo $((until - now))
+    return 0
+  fi
+  return 1
+}
+
+gh_backoff_set() {
+  local delay="$1"
+  local reason="${2:-rate_limit}"
+  ensure_state_dir
+  local until
+  until=$(( $(now_epoch) + delay ))
+  {
+    echo "until=$until"
+    echo "delay=$delay"
+    echo "reason=$reason"
+  } > "$(gh_backoff_path)"
+}
+
+gh_backoff_next_delay() {
+  local base="${1:-30}"
+  local max="${2:-900}"
+  local until last_delay
+  read -r until last_delay < <(gh_backoff_read)
+  local next
+  if [ "${last_delay:-0}" -gt 0 ]; then
+    next=$((last_delay * 2))
+  else
+    next=$base
+  fi
+  if [ "$next" -gt "$max" ]; then
+    next=$max
+  fi
+  echo "$next"
+}
+
+gh_api() {
+  local mode=${GH_BACKOFF_MODE:-wait}
+  local base=${GH_BACKOFF_BASE_SECONDS:-30}
+  local max=${GH_BACKOFF_MAX_SECONDS:-900}
+  local errexit_enabled=0
+  if [[ $- == *e* ]]; then
+    errexit_enabled=1
+  fi
+
+  local remaining
+  if remaining=$(gh_backoff_active); then
+    if [ "$mode" = "wait" ]; then
+      sleep "$remaining"
+    else
+      echo "[gh] backoff active for ${remaining}s; skipping request." >&2
+      return 75
+    fi
+  fi
+
+  local out err rc
+  out=$(mktemp)
+  err=$(mktemp)
+  set +e
+  command gh api "$@" >"$out" 2>"$err"
+  rc=$?
+  if [ "$errexit_enabled" -eq 1 ]; then
+    set -e
+  else
+    set +e
+  fi
+
+  if [ "$rc" -eq 0 ]; then
+    gh_backoff_reset
+    cat "$out"
+    rm -f "$out" "$err"
+    return 0
+  fi
+
+  if grep -qiE "secondary rate limit|rate limit|API rate limit|abuse detection|HTTP 403" "$err"; then
+    local delay
+    delay=$(gh_backoff_next_delay "$base" "$max")
+    gh_backoff_set "$delay" "rate_limit"
+    echo "[gh] rate limit detected; backing off for ${delay}s." >&2
+    if [ "$mode" = "wait" ]; then
+      sleep "$delay"
+      set +e
+      command gh api "$@" >"$out" 2>"$err"
+      rc=$?
+      if [ "$errexit_enabled" -eq 1 ]; then
+        set -e
+      else
+        set +e
+      fi
+      if [ "$rc" -eq 0 ]; then
+        gh_backoff_reset
+        cat "$out"
+        rm -f "$out" "$err"
+        return 0
+      fi
+    else
+      rm -f "$out" "$err"
+      return 75
+    fi
+  fi
+
+  cat "$err" >&2
+  rm -f "$out" "$err"
+  return "$rc"
 }
 
 escape_sed() {
@@ -135,6 +274,8 @@ def parse_payload(payload):
             if len(parts) >= 3:
                 payload = parts[1]
         text = strip_fences(payload).strip()
+        if text.startswith("json"):
+            text = text[len("json"):].lstrip()
         try:
             return json.loads(text)
         except Exception:

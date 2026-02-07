@@ -38,3 +38,7 @@ gh:
     in_progress: ""
     review: ""
     done: ""
+  backoff:
+    mode: "wait"
+    base_seconds: 30
+    max_seconds: 900

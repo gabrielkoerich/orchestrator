@@ -13,6 +13,11 @@ require_gh() {
 require_gh
 init_config_file
 
+if [ "${1:-}" = "--fix" ]; then
+  "$(dirname "$0")/gh_project_apply.sh"
+  exit 0
+fi
+
 PROJECT_ID=${GITHUB_PROJECT_ID:-$(config_get '.gh.project_id // ""')}
 if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
   echo "Missing gh.project_id. Set it in config.yml or export GITHUB_PROJECT_ID." >&2
@@ -27,5 +32,8 @@ echo
 echo "Fields:"
 printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | [.name, .id, (.dataType // "")] | @tsv' | column -t -s $'\t'
 echo
-echo "Single-select options:"
-printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | select(.dataType == "SINGLE_SELECT") | .name as $field | .options[] | [$field, .name, .id] | @tsv' | column -t -s $'\t'
+echo "Status field:"
+printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | select(.dataType == "SINGLE_SELECT" and .name == "Status") | [.name, .id, .dataType] | @tsv' | column -t -s $'\t'
+echo
+echo "Status options:"
+printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | select(.dataType == "SINGLE_SELECT" and .name == "Status") | .options[] | [.name, .id] | @tsv' | column -t -s $'\t'
