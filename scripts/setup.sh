@@ -132,9 +132,7 @@ if [ -t 0 ]; then
                 if [ -n "$status_field_id" ] && [ "$status_field_id" != "null" ]; then
                   yq -i ".gh.project_status_field_id = env(status_field_id)" "$TARGET_DIR/config.yml"
                 fi
-                yq -i \
-                  '.gh.project_status_map |= {backlog: env(backlog_id), in_progress: env(inprog_id), review: env(review_id), done: env(done_id)}' \
-                  "$TARGET_DIR/config.yml"
+                yq -i '.gh.project_status_map.backlog = env(backlog_id) | .gh.project_status_map.in_progress = env(inprog_id) | .gh.project_status_map.review = env(review_id) | .gh.project_status_map.done = env(done_id)' "$TARGET_DIR/config.yml"
               fi
             fi
           fi
@@ -160,9 +158,7 @@ if [ -t 0 ]; then
           yq -i ".gh.project_status_field_id = env(status_field_id)" "$TARGET_DIR/config.yml"
         fi
         if [ -n "$backlog_id" ] || [ -n "$inprog_id" ] || [ -n "$review_id" ] || [ -n "$done_id" ]; then
-          yq -i \
-            '.gh.project_status_map |= {backlog: env(backlog_id), in_progress: env(inprog_id), review: env(review_id), done: env(done_id)}' \
-            "$TARGET_DIR/config.yml"
+          yq -i '.gh.project_status_map.backlog = env(backlog_id) | .gh.project_status_map.in_progress = env(inprog_id) | .gh.project_status_map.review = env(review_id) | .gh.project_status_map.done = env(done_id)' "$TARGET_DIR/config.yml"
         fi
       fi
 
@@ -183,9 +179,7 @@ if [ -t 0 ]; then
           fi
 
           export OPT_BACKLOG OPT_INPROG OPT_REVIEW OPT_DONE
-          yq -i \
-            '.gh.project_status_map |= {backlog: env(OPT_BACKLOG), in_progress: env(OPT_INPROG), review: env(OPT_REVIEW), done: env(OPT_DONE)}' \
-            "$TARGET_DIR/config.yml"
+          yq -i '.gh.project_status_map.backlog = env(OPT_BACKLOG) | .gh.project_status_map.in_progress = env(OPT_INPROG) | .gh.project_status_map.review = env(OPT_REVIEW) | .gh.project_status_map.done = env(OPT_DONE)' "$TARGET_DIR/config.yml"
         fi
       fi
     fi
