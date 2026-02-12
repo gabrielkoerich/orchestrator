@@ -5,6 +5,11 @@ require_yq
 require_jq
 init_config_file
 
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+export PROJECT_DIR
+
+load_project_config
+
 TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
   TASK_ID=$(yq -r '.tasks[] | select(.status == "new") | .id' "$TASKS_PATH" | head -n1)
@@ -46,39 +51,8 @@ fi
 echo "$$" > "$TASK_LOCK/pid"
 trap 'rm -f "$TASK_LOCK/pid"; rmdir "$TASK_LOCK" 2>/dev/null || true' EXIT
 
-TASK_TITLE=$(yq -r '.tasks[] | select(.id == (env(TASK_ID) | tonumber)) | .title' "$TASKS_PATH")
-TASK_BODY=$(yq -r '.tasks[] | select(.id == (env(TASK_ID) | tonumber)) | .body' "$TASKS_PATH")
-TASK_LABELS=$(yq -r '.tasks[] | select(.id == (env(TASK_ID) | tonumber)) | .labels | join(",")' "$TASKS_PATH")
-TASK_AGENT=$(yq -r '.tasks[] | select(.id == (env(TASK_ID) | tonumber)) | .agent' "$TASKS_PATH")
-AGENT_MODEL=$(yq -r '.tasks[] | select(.id == (env(TASK_ID) | tonumber)) | .agent_model // ""' "$TASKS_PATH")
-AGENT_PROFILE_JSON=$(yq -o=json -I=0 '.tasks[] | select(.id == (env(TASK_ID) | tonumber)) | .agent_profile // {}' "$TASKS_PATH")
-ATTEMPTS=$(yq -r '.tasks[] | select(.id == (env(TASK_ID) | tonumber)) | .attempts // 0' "$TASKS_PATH")
-ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | yq -r '.role // "general"')
-
-if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
-  TASK_TITLE=$(yq -r ".tasks[] | select(.id == \"$TASK_ID\") | .title" "$TASKS_PATH")
-  TASK_BODY=$(yq -r ".tasks[] | select(.id == \"$TASK_ID\") | .body" "$TASKS_PATH")
-  TASK_LABELS=$(yq -r ".tasks[] | select(.id == \"$TASK_ID\") | .labels | join(\",\")" "$TASKS_PATH")
-  TASK_AGENT=$(yq -r ".tasks[] | select(.id == \"$TASK_ID\") | .agent" "$TASKS_PATH")
-  AGENT_MODEL=$(yq -r ".tasks[] | select(.id == \"$TASK_ID\") | .agent_model // \"\"" "$TASKS_PATH")
-  AGENT_PROFILE_JSON=$(yq -o=json -I=0 ".tasks[] | select(.id == \"$TASK_ID\") | .agent_profile // {}" "$TASKS_PATH")
-  ATTEMPTS=$(yq -r ".tasks[] | select(.id == \"$TASK_ID\") | .attempts // 0" "$TASKS_PATH")
-  ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | yq -r '.role // "general"')
-fi
-
-if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
-  TASK_JSON=$(yq -o=json -I=0 '.' "$TASKS_PATH")
-  TASK_TITLE=$(printf '%s' "$TASK_JSON" | jq -r ".tasks[] | select(.id == $TASK_ID) | .title")
-  TASK_BODY=$(printf '%s' "$TASK_JSON" | jq -r ".tasks[] | select(.id == $TASK_ID) | .body")
-  TASK_LABELS=$(printf '%s' "$TASK_JSON" | jq -r ".tasks[] | select(.id == $TASK_ID) | (.labels // []) | join(\",\")")
-  TASK_AGENT=$(printf '%s' "$TASK_JSON" | jq -r ".tasks[] | select(.id == $TASK_ID) | .agent")
-  AGENT_MODEL=$(printf '%s' "$TASK_JSON" | jq -r ".tasks[] | select(.id == $TASK_ID) | .agent_model // \"\"")
-  AGENT_PROFILE_JSON=$(printf '%s' "$TASK_JSON" | jq -c ".tasks[] | select(.id == $TASK_ID) | .agent_profile // {}")
-  ATTEMPTS=$(printf '%s' "$TASK_JSON" | jq -r ".tasks[] | select(.id == $TASK_ID) | .attempts // 0")
-  ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | jq -r '.role // "general"')
-fi
-CLAUDE_INPUT_FORMAT=$(config_get '.llm.input_format // ""')
-CLAUDE_OUTPUT_FORMAT=$(config_get '.llm.output_format // ""')
+# Load all task fields in one pass
+load_task "$TASK_ID"
 
 if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
   echo "Task $TASK_ID not found" >&2
@@ -87,10 +61,7 @@ fi
 
 if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
   TASK_AGENT=$("$(dirname "$0")/route_task.sh" "$TASK_ID")
-  TASK_AGENT=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .agent" "$TASKS_PATH")
-  AGENT_PROFILE_JSON=$(yq -o=json -I=0 ".tasks[] | select(.id == $TASK_ID) | .agent_profile // {}" "$TASKS_PATH")
-  AGENT_MODEL=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .agent_model // \"\"" "$TASKS_PATH")
-  ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | yq -r '.role // "general"')
+  load_task "$TASK_ID"
 fi
 
 if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
@@ -110,7 +81,29 @@ if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
   exit 0
 fi
 
+# Build context enrichment
+export TASK_CONTEXT
 TASK_CONTEXT=$(load_task_context "$TASK_ID" "$ROLE")
+export PARENT_CONTEXT
+PARENT_CONTEXT=$(build_parent_context "$TASK_ID")
+export PROJECT_INSTRUCTIONS
+PROJECT_INSTRUCTIONS=$(build_project_instructions "$PROJECT_DIR")
+export SKILLS_DOCS
+SKILLS_DOCS=$(build_skills_docs "${SELECTED_SKILLS:-}")
+export REPO_TREE
+REPO_TREE=$(build_repo_tree "$PROJECT_DIR")
+export GIT_DIFF
+if [ "$ATTEMPTS" -gt 0 ]; then
+  GIT_DIFF=$(build_git_diff "$PROJECT_DIR")
+else
+  GIT_DIFF=""
+fi
+
+# Output file for agentic mode
+ensure_state_dir
+OUTPUT_FILE="${STATE_DIR}/output-${TASK_ID}.json"
+rm -f "$OUTPUT_FILE"
+export OUTPUT_FILE
 
 ATTEMPTS=$((ATTEMPTS + 1))
 NOW=$(now_iso)
@@ -124,38 +117,36 @@ with_lock yq -i \
 
 append_history "$TASK_ID" "in_progress" "started attempt $ATTEMPTS"
 
-PROMPT=$(render_template "prompts/agent.md" "$TASK_ID" "$TASK_TITLE" "$TASK_LABELS" "$TASK_BODY" "$AGENT_PROFILE_JSON" "" "" "$TASK_CONTEXT")
+# Build system prompt and agent message
+SYSTEM_PROMPT=$(render_template "prompts/system.md")
+AGENT_MESSAGE=$(render_template "prompts/agent.md")
 
 RESPONSE=""
 CMD_STATUS=0
 case "$TASK_AGENT" in
-  codex)
-    echo "[run] using codex model=${AGENT_MODEL:-default}" >&2
-    if [ -n "$AGENT_MODEL" ]; then
-      RESPONSE=$(run_with_timeout codex exec --model "$AGENT_MODEL" --json "$PROMPT") || CMD_STATUS=$?
-    else
-      RESPONSE=$(run_with_timeout codex exec --json "$PROMPT") || CMD_STATUS=$?
-    fi
-    ;;
   claude)
-    echo "[run] using claude model=${AGENT_MODEL:-default}" >&2
-    if [ -n "$AGENT_MODEL" ]; then
-      if [ -n "$CLAUDE_INPUT_FORMAT" ] || [ -n "$CLAUDE_OUTPUT_FORMAT" ]; then
-        RESPONSE=$(run_with_timeout claude --model "$AGENT_MODEL" ${CLAUDE_INPUT_FORMAT:+--input-format "$CLAUDE_INPUT_FORMAT"} ${CLAUDE_OUTPUT_FORMAT:+--output-format "$CLAUDE_OUTPUT_FORMAT"} --print "$PROMPT") || CMD_STATUS=$?
-      else
-        RESPONSE=$(run_with_timeout claude --model "$AGENT_MODEL" --print "$PROMPT") || CMD_STATUS=$?
-      fi
-    else
-      if [ -n "$CLAUDE_INPUT_FORMAT" ] || [ -n "$CLAUDE_OUTPUT_FORMAT" ]; then
-        RESPONSE=$(run_with_timeout claude ${CLAUDE_INPUT_FORMAT:+--input-format "$CLAUDE_INPUT_FORMAT"} ${CLAUDE_OUTPUT_FORMAT:+--output-format "$CLAUDE_OUTPUT_FORMAT"} --print "$PROMPT") || CMD_STATUS=$?
-      else
-        RESPONSE=$(run_with_timeout claude --print "$PROMPT") || CMD_STATUS=$?
-      fi
-    fi
+    echo "[run] using claude (agentic) model=${AGENT_MODEL:-default}" >&2
+    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
+      ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+      --append-system-prompt "$SYSTEM_PROMPT" \
+      "$AGENT_MESSAGE") || CMD_STATUS=$?
+    ;;
+  codex)
+    echo "[run] using codex (agentic) model=${AGENT_MODEL:-default}" >&2
+    FULL_MESSAGE="${SYSTEM_PROMPT}
+
+${AGENT_MESSAGE}"
+    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout codex -q \
+      ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+      "$FULL_MESSAGE") || CMD_STATUS=$?
     ;;
   opencode)
-    echo "[run] using opencode" >&2
-    RESPONSE=$(run_with_timeout opencode run --format json "$PROMPT") || CMD_STATUS=$?
+    echo "[run] using opencode (agentic)" >&2
+    FULL_MESSAGE="${SYSTEM_PROMPT}
+
+${AGENT_MESSAGE}"
+    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
+      "$FULL_MESSAGE") || CMD_STATUS=$?
     ;;
   *)
     echo "Unknown agent: $TASK_AGENT" >&2
@@ -163,8 +154,7 @@ case "$TASK_AGENT" in
     ;;
 esac
 
-echo "[run] raw response:" >&2
-printf '%s\n' "$RESPONSE" | sed 's/^/[run] > /' >&2
+echo "[run] agent finished (exit=$CMD_STATUS)" >&2
 
 if [ "$CMD_STATUS" -ne 0 ]; then
   echo "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS" >&2
@@ -183,7 +173,16 @@ if [ "$CMD_STATUS" -ne 0 ]; then
   exit 0
 fi
 
-RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+# Read structured output from file (primary), fall back to stdout parsing
+RESPONSE_JSON=""
+if [ -f "$OUTPUT_FILE" ]; then
+  RESPONSE_JSON=$(cat "$OUTPUT_FILE")
+  echo "[run] read output from $OUTPUT_FILE" >&2
+else
+  echo "[run] output file not found, trying stdout fallback" >&2
+  RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+fi
+
 if [ -z "$RESPONSE_JSON" ]; then
   echo "[run] task=$TASK_ID invalid JSON response" >&2
   NOW_EPOCH=$(now_epoch)
@@ -214,6 +213,7 @@ ACCOMPLISHED_STR=${ACCOMPLISHED_STR:-""}
 BLOCKERS_STR=${BLOCKERS_STR:-""}
 FILES_CHANGED_STR=${FILES_CHANGED_STR:-""}
 NEEDS_HELP=$(printf '%s' "$RESPONSE_JSON" | jq -r '.needs_help // false')
+REASON=$(printf '%s' "$RESPONSE_JSON" | jq -r '.reason // ""')
 DELEGATIONS_JSON=$(printf '%s' "$RESPONSE_JSON" | jq -c '.delegations // []')
 
 if [ -z "$AGENT_STATUS" ] || [ "$AGENT_STATUS" = "null" ]; then
@@ -233,11 +233,12 @@ if [ -z "$AGENT_STATUS" ] || [ "$AGENT_STATUS" = "null" ]; then
 fi
 
 NOW=$(now_iso)
-export AGENT_STATUS SUMMARY NEEDS_HELP NOW FILES_CHANGED_STR ACCOMPLISHED_STR REMAINING_STR BLOCKERS_STR
+export AGENT_STATUS SUMMARY NEEDS_HELP NOW FILES_CHANGED_STR ACCOMPLISHED_STR REMAINING_STR BLOCKERS_STR REASON
 
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .status) = strenv(AGENT_STATUS) | \
    (.tasks[] | select(.id == $TASK_ID) | .summary) = strenv(SUMMARY) | \
+   (.tasks[] | select(.id == $TASK_ID) | .reason) = strenv(REASON) | \
    (.tasks[] | select(.id == $TASK_ID) | .accomplished) = (strenv(ACCOMPLISHED_STR) | split(\"\\n\") | map(select(length > 0))) | \
    (.tasks[] | select(.id == $TASK_ID) | .remaining) = (strenv(REMAINING_STR) | split(\"\\n\") | map(select(length > 0))) | \
    (.tasks[] | select(.id == $TASK_ID) | .blockers) = (strenv(BLOCKERS_STR) | split(\"\\n\") | map(select(length > 0))) | \
@@ -248,18 +249,30 @@ with_lock yq -i \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
 
-append_history "$TASK_ID" "$AGENT_STATUS" "agent completed"
+# Build history note with reason if present
+HISTORY_NOTE="agent completed"
+if [ -n "$REASON" ] && [ "$REASON" != "null" ]; then
+  HISTORY_NOTE="agent completed: $REASON"
+fi
+append_history "$TASK_ID" "$AGENT_STATUS" "$HISTORY_NOTE"
 
 FILES_CHANGED=$(printf '%s' "$RESPONSE_JSON" | jq -r '.files_changed | join(", ")')
-append_task_context "$TASK_ID" "[$NOW] status: $AGENT_STATUS\nsummary: $SUMMARY\nfiles: $FILES_CHANGED\n"
+append_task_context "$TASK_ID" "[$NOW] status: $AGENT_STATUS\nsummary: $SUMMARY\nreason: $REASON\nfiles: $FILES_CHANGED\n"
 
 # Optional review step
 ENABLE_REVIEW_AGENT=${ENABLE_REVIEW_AGENT:-$(config_get '.workflow.enable_review_agent // false')}
 REVIEW_AGENT=${REVIEW_AGENT:-$(config_get '.workflow.review_agent // "claude"')}
 
 if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
-  FILES_CHANGED=$(printf '%s' "$RESPONSE" | yq -r '.files_changed | join(", ")')
-  REVIEW_PROMPT=$(render_template "prompts/review.md" "$TASK_ID" "$TASK_TITLE" "$TASK_LABELS" "$TASK_BODY" "{}" "$SUMMARY" "$FILES_CHANGED" "")
+  FILES_CHANGED=$(printf '%s' "$RESPONSE_JSON" | jq -r '.files_changed | join(", ")')
+
+  # Build review context with git diff
+  export TASK_SUMMARY="$SUMMARY"
+  export TASK_FILES_CHANGED="$FILES_CHANGED"
+  export GIT_DIFF
+  GIT_DIFF=$(build_git_diff "$PROJECT_DIR")
+
+  REVIEW_PROMPT=$(render_template "prompts/review.md")
 
   REVIEW_RESPONSE=""
   REVIEW_STATUS=0
@@ -358,6 +371,7 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
         "route_reason": null,
         "route_warning": null,
         "summary": null,
+        "reason": null,
         "accomplished": [],
         "remaining": [],
         "blockers": [],

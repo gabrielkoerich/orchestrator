@@ -35,6 +35,7 @@ with_lock yq -i \
     "route_reason": null,
     "route_warning": null,
     "summary": null,
+    "reason": null,
     "accomplished": [],
     "remaining": [],
     "blockers": [],

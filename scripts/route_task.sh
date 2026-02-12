@@ -4,6 +4,7 @@ source "$(dirname "$0")/lib.sh"
 require_yq
 require_jq
 init_config_file
+load_project_config
 
 TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
@@ -39,7 +40,8 @@ if [ -f "skills.yml" ]; then
   SKILLS_CATALOG=$(yq -o=json -I=0 '.skills // []' "skills.yml")
 fi
 
-PROMPT=$(render_template "prompts/route.md" "$TASK_ID" "$TASK_TITLE" "$TASK_LABELS" "$TASK_BODY" "{}" "" "" "$SKILLS_CATALOG")
+export TASK_ID TASK_TITLE TASK_LABELS TASK_BODY SKILLS_CATALOG
+PROMPT=$(render_template "prompts/route.md")
 PROMPT_FILE=".orchestrator/route-prompt-${TASK_ID}.txt"
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
 

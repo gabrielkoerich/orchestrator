@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 source "$SCRIPT_DIR/lib.sh"
 require_yq
 init_config_file
+load_project_config
 
 GH_ENABLED=${GITHUB_ENABLED:-$(config_get '.gh.enabled')}
 if [ -z "$GH_ENABLED" ] || [ "$GH_ENABLED" = "null" ]; then

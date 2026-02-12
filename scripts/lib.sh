@@ -5,6 +5,7 @@ TASKS_PATH=${TASKS_PATH:-tasks.yml}
 LOCK_PATH=${LOCK_PATH:-"${TASKS_PATH}.lock"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"config.yml"}
+JOBS_PATH=${JOBS_PATH:-"jobs.yml"}
 STATE_DIR=${STATE_DIR:-".orchestrator"}
 
 now_iso() {
@@ -153,79 +154,17 @@ gh_api() {
   return "$rc"
 }
 
-escape_sed() {
-  printf '%s' "$1" | sed -e 's/[\\/&]/\\&/g'
-}
-
 render_template() {
   local template_path="$1"
-  local task_id="$2"
-  local task_title="$3"
-  local task_labels="$4"
-  local task_body="$5"
-  local agent_profile_json="${6:-{}}"
-  local task_summary="${7:-}"
-  local task_files_changed="${8:-}"
-  local task_context="${9:-}"
-
-  local esc_id esc_title esc_labels esc_body esc_profile esc_summary esc_files esc_context
-  esc_id=$(escape_sed "$task_id")
-  esc_title=$(escape_sed "$task_title")
-  esc_labels=$(escape_sed "$task_labels")
-  esc_body=$(escape_sed "$task_body")
-  esc_profile=$(escape_sed "$agent_profile_json")
-  esc_summary=$(escape_sed "$task_summary")
-  esc_files=$(escape_sed "$task_files_changed")
-  esc_context=$(escape_sed "$task_context")
-
-  if command -v python3 >/dev/null 2>&1; then
-    TASK_ID="$task_id" \
-    TASK_TITLE="$task_title" \
-    TASK_LABELS="$task_labels" \
-    TASK_BODY="$task_body" \
-    AGENT_PROFILE_JSON="$agent_profile_json" \
-    TASK_SUMMARY="$task_summary" \
-    TASK_FILES_CHANGED="$task_files_changed" \
-    TASK_CONTEXT="$task_context" \
-    python3 - "$template_path" <<'PY'
-import os
-import sys
-
+  # All variables passed via environment (already exported by caller)
+  python3 - "$template_path" <<'PY'
+import os, sys, re
 path = sys.argv[1]
 with open(path, "r", encoding="utf-8") as fh:
     data = fh.read()
-
-repl = {
-    "{{TASK_ID}}": os.environ.get("TASK_ID", ""),
-    "{{TASK_TITLE}}": os.environ.get("TASK_TITLE", ""),
-    "{{TASK_LABELS}}": os.environ.get("TASK_LABELS", ""),
-    "{{TASK_BODY}}": os.environ.get("TASK_BODY", ""),
-    "{{AGENT_PROFILE_JSON}}": os.environ.get("AGENT_PROFILE_JSON", ""),
-    "{{TASK_SUMMARY}}": os.environ.get("TASK_SUMMARY", ""),
-    "{{TASK_FILES_CHANGED}}": os.environ.get("TASK_FILES_CHANGED", ""),
-    "{{TASK_CONTEXT}}": os.environ.get("TASK_CONTEXT", ""),
-    "{{SKILLS_CATALOG}}": os.environ.get("TASK_CONTEXT", ""),
-  }
-
-for key, val in repl.items():
-    data = data.replace(key, val)
-
+data = re.sub(r'\{\{(\w+)\}\}', lambda m: os.environ.get(m.group(1), ''), data)
 sys.stdout.write(data)
 PY
-    return 0
-  fi
-
-  sed \
-    -e "s/{{TASK_ID}}/${esc_id}/g" \
-    -e "s/{{TASK_TITLE}}/${esc_title}/g" \
-    -e "s/{{TASK_LABELS}}/${esc_labels}/g" \
-    -e "s/{{TASK_BODY}}/${esc_body}/g" \
-    -e "s/{{AGENT_PROFILE_JSON}}/${esc_profile}/g" \
-    -e "s/{{TASK_SUMMARY}}/${esc_summary}/g" \
-    -e "s/{{TASK_FILES_CHANGED}}/${esc_files}/g" \
-    -e "s/{{TASK_CONTEXT}}/${esc_context}/g" \
-    -e "s/{{SKILLS_CATALOG}}/${esc_context}/g" \
-    "$template_path"
 }
 
 require_yq() {
@@ -272,6 +211,16 @@ YAML
   fi
 }
 
+init_jobs_file() {
+  if [ ! -f "$JOBS_PATH" ]; then
+    if [ -f "jobs.example.yml" ]; then
+      cp "jobs.example.yml" "$JOBS_PATH"
+    else
+      printf 'jobs: []\n' > "$JOBS_PATH"
+    fi
+  fi
+}
+
 init_config_file() {
   if [ ! -f "$CONFIG_PATH" ]; then
     if [ -f "config.example.yml" ]; then
@@ -296,12 +245,37 @@ YAML
   fi
 }
 
+GLOBAL_CONFIG_PATH="$CONFIG_PATH"
+
+load_project_config() {
+  local project_config="${PROJECT_DIR:+${PROJECT_DIR}/.orchestrator.yml}"
+  if [ -z "$project_config" ] || [ ! -f "$project_config" ]; then
+    return 0
+  fi
+  ensure_state_dir
+  local merged="${STATE_DIR}/config-merged.yml"
+  # Deep merge: global config * project config (project wins)
+  yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' \
+    "$CONFIG_PATH" "$project_config" > "$merged"
+  CONFIG_PATH="$merged"
+}
+
 config_get() {
   local key="$1"
   if [ -f "$CONFIG_PATH" ]; then
     yq -r "$key" "$CONFIG_PATH"
   else
     echo ""
+  fi
+}
+
+repo_owner() {
+  local repo="${1:-}"
+  if [ -z "$repo" ]; then
+    repo=$(config_get '.gh.repo // ""')
+  fi
+  if [ -n "$repo" ] && [ "$repo" != "null" ]; then
+    printf '%s' "$repo" | cut -d'/' -f1
   fi
 }
 
@@ -422,6 +396,100 @@ retry_delay_seconds() {
     delay=$max
   fi
   echo "$delay"
+}
+
+build_repo_tree() {
+  local dir="${1:-$PROJECT_DIR}"
+  if [ -z "$dir" ] || [ ! -d "$dir" ]; then return; fi
+  (cd "$dir" && find . -type f \
+    -not -path './.git/*' \
+    -not -path './node_modules/*' \
+    -not -path './vendor/*' \
+    -not -path './.orchestrator/*' \
+    -not -path './target/*' \
+    -not -path './__pycache__/*' \
+    -not -path './.venv/*' \
+    | head -200 | sort)
+}
+
+build_project_instructions() {
+  local dir="${1:-$PROJECT_DIR}"
+  if [ -z "$dir" ] || [ ! -d "$dir" ]; then return; fi
+  local out=""
+  for f in CLAUDE.md README.md; do
+    if [ -f "$dir/$f" ]; then
+      out+="## $f\n$(cat "$dir/$f")\n\n"
+    fi
+  done
+  printf '%b' "$out"
+}
+
+build_skills_docs() {
+  local skills_csv="$1"
+  if [ -z "$skills_csv" ]; then return; fi
+  local out=""
+  IFS=',' read -ra skills <<< "$skills_csv"
+  for skill_id in "${skills[@]}"; do
+    local skill_file
+    skill_file=$(find skills/ -path "*/${skill_id}/SKILL.md" 2>/dev/null | head -1)
+    if [ -n "$skill_file" ] && [ -f "$skill_file" ]; then
+      out+="### ${skill_id}\n$(cat "$skill_file")\n\n"
+    fi
+  done
+  printf '%b' "$out"
+}
+
+build_parent_context() {
+  local task_id="$1"
+  local parent_id
+  parent_id=$(yq -r ".tasks[] | select(.id == $task_id) | .parent_id // \"\"" "$TASKS_PATH")
+  if [ -z "$parent_id" ] || [ "$parent_id" = "null" ]; then return; fi
+
+  local out=""
+  local parent_title parent_summary
+  parent_title=$(yq -r ".tasks[] | select(.id == $parent_id) | .title // \"\"" "$TASKS_PATH")
+  parent_summary=$(yq -r ".tasks[] | select(.id == $parent_id) | .summary // \"\"" "$TASKS_PATH")
+
+  if [ -n "$parent_title" ] && [ "$parent_title" != "null" ]; then
+    out+="Parent task #${parent_id}: ${parent_title}\n"
+    if [ -n "$parent_summary" ] && [ "$parent_summary" != "null" ]; then
+      out+="Parent summary: ${parent_summary}\n"
+    fi
+
+    # Sibling summaries
+    local siblings
+    siblings=$(yq -r ".tasks[] | select(.parent_id == $parent_id and .id != $task_id) | \"\(.id): \(.title) [\(.status)]\"" "$TASKS_PATH" 2>/dev/null || true)
+    if [ -n "$siblings" ]; then
+      out+="\nSibling tasks:\n${siblings}\n"
+    fi
+  fi
+  printf '%b' "$out"
+}
+
+build_git_diff() {
+  local dir="${1:-$PROJECT_DIR}"
+  if [ -z "$dir" ] || [ ! -d "$dir" ]; then return; fi
+  (cd "$dir" && git diff --stat HEAD 2>/dev/null | head -50) || true
+}
+
+load_task() {
+  local task_id="$1"
+  local json
+  json=$(yq -o=json -I=0 '.' "$TASKS_PATH")
+  eval "$(printf '%s' "$json" | jq -r --argjson id "$task_id" '
+    .tasks[] | select(.id == $id) |
+    "export TASK_TITLE=" + (.title | @sh) +
+    "\nexport TASK_BODY=" + (.body | @sh) +
+    "\nexport TASK_LABELS=" + ((.labels // []) | join(",") | @sh) +
+    "\nexport TASK_AGENT=" + (.agent // "" | @sh) +
+    "\nexport AGENT_MODEL=" + (.agent_model // "" | @sh) +
+    "\nexport AGENT_PROFILE_JSON=" + (.agent_profile // {} | tojson | @sh) +
+    "\nexport ATTEMPTS=" + (.attempts // 0 | tostring | @sh) +
+    "\nexport SELECTED_SKILLS=" + ((.selected_skills // []) | join(",") | @sh) +
+    "\nexport TASK_PARENT_ID=" + (.parent_id // "" | tostring | @sh)
+  ')"
+  ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | jq -r '.role // "general"')
+  export ROLE
 }
 
 run_with_timeout() {

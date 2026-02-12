@@ -10,6 +10,7 @@ mkdir -p "$TARGET_DIR" "$BIN_DIR"
 rsync -a --delete \
   --exclude '.git' \
   --exclude 'tasks.yml' \
+  --exclude 'jobs.yml' \
   --exclude 'config.yml' \
   --exclude 'contexts/' \
   --exclude 'skills/' \
@@ -221,6 +222,7 @@ fi
 cat > "$BIN_DIR/orchestrator" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 cd "$HOME/.orchestrator"
 just "$@"
 EOF
@@ -271,3 +273,12 @@ fi
 
 echo "Installed to $TARGET_DIR"
 echo "Binary: $BIN_DIR/orchestrator"
+
+# Offer launchd service on macOS
+if [ "$(uname)" = "Darwin" ] && [ -t 0 ]; then
+  echo
+  read -r -p "Install macOS background service (auto-start + restart on crash)? (y/N): " INSTALL_SERVICE
+  if [ "${INSTALL_SERVICE}" = "y" ] || [ "${INSTALL_SERVICE}" = "Y" ]; then
+    "$TARGET_DIR/scripts/service_install.sh"
+  fi
+fi

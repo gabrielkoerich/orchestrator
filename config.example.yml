@@ -1,3 +1,4 @@
+project_dir: ""  # Auto-detected from CWD, override if needed
 workflow:
   auto_close: true
   review_owner: "@owner"

@@ -9,6 +9,7 @@ setup() {
   mkdir -p "$STATE_DIR"
   export TASKS_PATH="${TMP_DIR}/tasks.yml"
   export CONFIG_PATH="${TMP_DIR}/config.yml"
+  export PROJECT_DIR="${TMP_DIR}"
   cat > "$CONFIG_PATH" <<'YAML'
 router:
   agent: "codex"
@@ -79,10 +80,11 @@ SH
   run "${REPO_DIR}/scripts/add_task.sh" "Run Me" "Run body" ""
   [ "$status" -eq 0 ]
 
+  # Stub writes output file instead of printing to stdout
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<'SH'
+  cat > "$CODEX_STUB" <<SH
 #!/usr/bin/env bash
-cat <<'JSON'
+cat > "${STATE_DIR}/output-2.json" <<'JSON'
 {"status":"in_progress","summary":"scoped work","files_changed":[],"needs_help":true,"delegations":[{"title":"Child Task","body":"Do subtask","labels":["sub"],"suggested_agent":"codex"}]}
 JSON
 SH
@@ -92,7 +94,7 @@ SH
   run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
-  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/run_task.sh" 2
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
   run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
@@ -121,17 +123,18 @@ SH
   run yq -i '(.tasks[] | select(.id == 3) | .status) = "done" | (.tasks[] | select(.id == 3) | .agent) = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
+  # Stub writes output file (task 2 will be re-run after rejoin)
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<'SH'
+  cat > "$CODEX_STUB" <<SH
 #!/usr/bin/env bash
-cat <<'JSON'
+cat > "${STATE_DIR}/output-2.json" <<'JSON'
 {"status":"done","summary":"ok","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
 SH
   chmod +x "$CODEX_STUB"
   export PATH="${TMP_DIR}:${PATH}"
 
-  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/poll.sh"
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/poll.sh"
   [ "$status" -eq 0 ]
 
   run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
@@ -281,26 +284,326 @@ SH
   run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
+  # Execution stub writes output file; review stub prints to stdout
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<'SH'
+  cat > "$CODEX_STUB" <<SH
 #!/usr/bin/env bash
-prompt="$*"
-if printf '%s' "$prompt" | rg -q "reviewing agent"; then
+prompt="\$*"
+if printf '%s' "\$prompt" | grep -q "reviewing agent"; then
   cat <<'JSON'
 {"decision":"approve","notes":"looks good"}
 JSON
 else
-  cat <<'JSON'
+  cat > "${STATE_DIR}/output-2.json" <<'JSON'
 {"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
 fi
 SH
   chmod +x "$CODEX_STUB"
 
-  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/run_task.sh" 2
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
   run yq -r '.tasks[] | select(.id == 2) | .review_decision' "$TASKS_PATH"
   [ "$status" -eq 0 ]
   [ "$output" = "approve" ]
+}
+
+@test "run_task.sh reads output from file" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Output File" "Test output file reading" ""
+  [ "$status" -eq 0 ]
+
+  # Stub writes JSON to output file
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<SH
+#!/usr/bin/env bash
+cat > "${STATE_DIR}/output-2.json" <<'JSON'
+{"status":"done","summary":"wrote output file","accomplished":["task completed"],"remaining":[],"blockers":[],"files_changed":["test.txt"],"needs_help":false,"delegations":[]}
+JSON
+echo "agent stdout (should be ignored)"
+SH
+  chmod +x "$CODEX_STUB"
+
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .summary' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "wrote output file" ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .files_changed[0]' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "test.txt" ]
+}
+
+@test "run_task.sh falls back to stdout when no output file" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Stdout Fallback" "Test stdout fallback" ""
+  [ "$status" -eq 0 ]
+
+  # Stub prints JSON to stdout (no output file)
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"status":"done","summary":"stdout mode","accomplished":[],"remaining":[],"blockers":[],"files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .summary' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "stdout mode" ]
+}
+
+@test "cron_match.py matches wildcard expression" {
+  # "* * * * *" always matches
+  run python3 "${REPO_DIR}/scripts/cron_match.py" "* * * * *"
+  [ "$status" -eq 0 ]
+}
+
+@test "cron_match.py rejects impossible expression" {
+  # minute=99 never matches
+  run python3 "${REPO_DIR}/scripts/cron_match.py" "99 99 99 99 9"
+  [ "$status" -eq 1 ]
+}
+
+@test "cron_match.py handles aliases" {
+  # @hourly = "0 * * * *", matches only at minute 0
+  current_minute=$(date +%M | sed 's/^0//')
+  if [ "${current_minute:-0}" -eq 0 ]; then
+    run python3 "${REPO_DIR}/scripts/cron_match.py" "@hourly"
+    [ "$status" -eq 0 ]
+  else
+    run python3 "${REPO_DIR}/scripts/cron_match.py" "@hourly"
+    [ "$status" -eq 1 ]
+  fi
+}
+
+@test "jobs_add.sh creates a job" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  printf 'jobs: []\n' > "$JOBS_PATH"
+
+  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "Daily Sync" "Run sync" "sync" ""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Added job"* ]]
+
+  run yq -r '.jobs | length' "$JOBS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+
+  run yq -r '.jobs[0].id' "$JOBS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "daily-sync" ]
+
+  run yq -r '.jobs[0].schedule' "$JOBS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0 9 * * *" ]
+
+  run yq -r '.jobs[0].enabled' "$JOBS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+}
+
+@test "jobs_add.sh rejects duplicate job IDs" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  printf 'jobs: []\n' > "$JOBS_PATH"
+
+  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "My Job" "body" "" ""
+  [ "$status" -eq 0 ]
+
+  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "0 10 * * *" "My Job" "body2" "" ""
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"already exists"* ]]
+}
+
+@test "jobs_tick.sh creates task when schedule matches" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  cat > "$JOBS_PATH" <<'YAML'
+jobs:
+  - id: test-always
+    schedule: "* * * * *"
+    task:
+      title: "Always Run"
+      body: "Test job body"
+      labels: [test]
+      agent: null
+    enabled: true
+    last_run: null
+    last_task_status: null
+    active_task_id: null
+YAML
+
+  run env JOBS_PATH="$JOBS_PATH" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  # Should have created a task
+  run yq -r '.tasks[] | select(.title == "Always Run") | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  # Should have job:test-always label
+  run yq -r '.tasks[] | select(.title == "Always Run") | .labels[]' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"job:test-always"* ]]
+
+  # Job should have active_task_id set
+  run yq -r '.jobs[0].active_task_id' "$JOBS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" != "null" ]
+}
+
+@test "jobs_tick.sh skips when active task is in-flight" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  cat > "$JOBS_PATH" <<'YAML'
+jobs:
+  - id: test-dedup
+    schedule: "* * * * *"
+    task:
+      title: "Dedup Test"
+      body: "Should not duplicate"
+      labels: []
+      agent: null
+    enabled: true
+    last_run: null
+    last_task_status: null
+    active_task_id: 1
+YAML
+
+  # Task 1 (Init) is status "new" — in-flight
+  run yq -r '.tasks[] | select(.id == 1) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  TASK_COUNT_BEFORE=$(yq -r '.tasks | length' "$TASKS_PATH")
+
+  run env JOBS_PATH="$JOBS_PATH" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  # No new task should have been created
+  TASK_COUNT_AFTER=$(yq -r '.tasks | length' "$TASKS_PATH")
+  [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
+}
+
+@test "jobs_tick.sh creates task after previous completes" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  cat > "$JOBS_PATH" <<'YAML'
+jobs:
+  - id: test-after-done
+    schedule: "* * * * *"
+    task:
+      title: "After Done"
+      body: "Run after previous finishes"
+      labels: []
+      agent: null
+    enabled: true
+    last_run: null
+    last_task_status: null
+    active_task_id: 1
+YAML
+
+  # Mark task 1 as done
+  run yq -i '(.tasks[] | select(.id == 1) | .status) = "done"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  run env JOBS_PATH="$JOBS_PATH" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  # Should have created a new task
+  run yq -r '.tasks[] | select(.title == "After Done") | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  # Last task status should be recorded
+  run yq -r '.jobs[0].last_task_status' "$JOBS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+}
+
+@test "jobs_tick.sh skips disabled jobs" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  cat > "$JOBS_PATH" <<'YAML'
+jobs:
+  - id: test-disabled
+    schedule: "* * * * *"
+    task:
+      title: "Disabled Job"
+      body: "Should not run"
+      labels: []
+      agent: null
+    enabled: false
+    last_run: null
+    last_task_status: null
+    active_task_id: null
+YAML
+
+  TASK_COUNT_BEFORE=$(yq -r '.tasks | length' "$TASKS_PATH")
+
+  run env JOBS_PATH="$JOBS_PATH" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  TASK_COUNT_AFTER=$(yq -r '.tasks | length' "$TASKS_PATH")
+  [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
+}
+
+@test "load_project_config merges project override" {
+  # Global config has router.model = ""
+  run yq -r '.router.model' "$CONFIG_PATH"
+  [ "$output" = "" ]
+
+  # Create project override
+  cat > "${TMP_DIR}/.orchestrator.yml" <<'YAML'
+gh:
+  repo: "myorg/myproject"
+router:
+  model: "sonnet"
+YAML
+
+  # Load merged config and check overridden values
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; PROJECT_DIR='${TMP_DIR}'; STATE_DIR='${STATE_DIR}'; load_project_config; config_get '.router.model'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sonnet" ]
+
+  # Non-overridden values should still come from global
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; PROJECT_DIR='${TMP_DIR}'; STATE_DIR='${STATE_DIR}'; load_project_config; config_get '.router.agent'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+
+  # gh.repo should come from project override
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; PROJECT_DIR='${TMP_DIR}'; STATE_DIR='${STATE_DIR}'; load_project_config; config_get '.gh.repo // \"\"'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "myorg/myproject" ]
+}
+
+@test "jobs_remove.sh removes a job" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  printf 'jobs: []\n' > "$JOBS_PATH"
+
+  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "@daily" "To Remove" "" "" ""
+  [ "$status" -eq 0 ]
+
+  run yq -r '.jobs | length' "$JOBS_PATH"
+  [ "$output" -eq 1 ]
+
+  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_remove.sh" "to-remove"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.jobs | length' "$JOBS_PATH"
+  [ "$output" -eq 0 ]
 }

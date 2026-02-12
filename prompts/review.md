@@ -8,6 +8,9 @@ Summary:
 Files changed:
 {{TASK_FILES_CHANGED}}
 
+Git diff:
+{{GIT_DIFF}}
+
 Return ONLY JSON with the following keys:
 decision: approve|request_changes
 notes: short feedback

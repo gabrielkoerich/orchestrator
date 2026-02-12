@@ -12,6 +12,7 @@ require_gh() {
 
 require_gh
 init_config_file
+load_project_config
 
 PROJECT_ID=${GITHUB_PROJECT_ID:-$(config_get '.gh.project_id // ""')}
 if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
@@ -47,12 +48,12 @@ REVIEW_ID=$(find_option_id "$FIELDS_JSON" "Review" "In Review" "In review" "Need
 DONE_ID=$(find_option_id "$FIELDS_JSON" "Done" "Completed" "Closed" "Finished")
 
 export STATUS_FIELD_ID
-yq -i ".gh.project_status_field_id = env(STATUS_FIELD_ID)" "$CONFIG_PATH"
+yq -i ".gh.project_status_field_id = env(STATUS_FIELD_ID)" "$GLOBAL_CONFIG_PATH"
 
 export BACKLOG_ID INPROG_ID REVIEW_ID DONE_ID
-[ -n "$BACKLOG_ID" ] && [ "$BACKLOG_ID" != "null" ] && yq -i '.gh.project_status_map.backlog = env(BACKLOG_ID)' "$CONFIG_PATH"
-[ -n "$INPROG_ID" ] && [ "$INPROG_ID" != "null" ] && yq -i '.gh.project_status_map.in_progress = env(INPROG_ID)' "$CONFIG_PATH"
-[ -n "$REVIEW_ID" ] && [ "$REVIEW_ID" != "null" ] && yq -i '.gh.project_status_map.review = env(REVIEW_ID)' "$CONFIG_PATH"
-[ -n "$DONE_ID" ] && [ "$DONE_ID" != "null" ] && yq -i '.gh.project_status_map.done = env(DONE_ID)' "$CONFIG_PATH"
+[ -n "$BACKLOG_ID" ] && [ "$BACKLOG_ID" != "null" ] && yq -i '.gh.project_status_map.backlog = env(BACKLOG_ID)' "$GLOBAL_CONFIG_PATH"
+[ -n "$INPROG_ID" ] && [ "$INPROG_ID" != "null" ] && yq -i '.gh.project_status_map.in_progress = env(INPROG_ID)' "$GLOBAL_CONFIG_PATH"
+[ -n "$REVIEW_ID" ] && [ "$REVIEW_ID" != "null" ] && yq -i '.gh.project_status_map.review = env(REVIEW_ID)' "$GLOBAL_CONFIG_PATH"
+[ -n "$DONE_ID" ] && [ "$DONE_ID" != "null" ] && yq -i '.gh.project_status_map.done = env(DONE_ID)' "$GLOBAL_CONFIG_PATH"
 
 echo "Applied Status field and option IDs to config.yml"

@@ -4,6 +4,7 @@ source "$(dirname "$0")/lib.sh"
 require_yq
 require_jq
 init_config_file
+load_project_config
 
 require_gh() {
   if ! command -v gh >/dev/null 2>&1; then
@@ -116,10 +117,13 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   GH_NUM=$(yq -r ".tasks[$i].gh_issue_number // \"\"" "$TASKS_PATH")
   GH_STATE=$(yq -r ".tasks[$i].gh_state // \"\"" "$TASKS_PATH")
   SUMMARY=$(yq -r ".tasks[$i].summary // \"\"" "$TASKS_PATH")
+  REASON=$(yq -r ".tasks[$i].reason // \"\"" "$TASKS_PATH")
   ACCOMPLISHED=$(yq -r ".tasks[$i].accomplished // [] | join(\", \" )" "$TASKS_PATH")
   REMAINING=$(yq -r ".tasks[$i].remaining // [] | join(\", \" )" "$TASKS_PATH")
   BLOCKERS=$(yq -r ".tasks[$i].blockers // [] | join(\", \" )" "$TASKS_PATH")
   FILES_CHANGED_JSON=$(yq -o=json -I=0 ".tasks[$i].files_changed // []" "$TASKS_PATH")
+  LAST_ERROR=$(yq -r ".tasks[$i].last_error // \"\"" "$TASKS_PATH")
+  ATTEMPTS=$(yq -r ".tasks[$i].attempts // 0" "$TASKS_PATH")
   UPDATED_AT=$(yq -r ".tasks[$i].updated_at // \"\"" "$TASKS_PATH")
   GH_SYNCED_AT=$(yq -r ".tasks[$i].gh_synced_at // \"\"" "$TASKS_PATH")
 
@@ -199,22 +203,69 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     "(.tasks[] | select(.id == $ID) | .gh_synced_at) = env(NOW)" \
     "$TASKS_PATH"
 
-  # Post a comment if summary updated
-  if [ -n "$SUMMARY" ] && [ "$UPDATED_AT" != "" ] && [ "$UPDATED_AT" != "$GH_SYNCED_AT" ]; then
+  # Post a comment if task updated
+  if [ "$UPDATED_AT" != "" ] && [ "$UPDATED_AT" != "$GH_SYNCED_AT" ]; then
     FILES_CHANGED=$(printf '%s' "$FILES_CHANGED_JSON" | yq -r 'join(", ")')
-    COMMENT=$(cat <<EOF
-Status: $STATUS
-Summary: $SUMMARY
-Accomplished: $ACCOMPLISHED
-Remaining: $REMAINING
-Blockers: $BLOCKERS
-Files: $FILES_CHANGED
-EOF
-)
-    if [ "$STATUS" = "blocked" ] && [ -n "$REVIEW_OWNER" ]; then
-      COMMENT="$COMMENT\n\nBlocking owner: ${REVIEW_OWNER}"
+    OWNER_TAG="@$(repo_owner "$REPO")"
+
+    if [ "$STATUS" = "blocked" ] || [ "$STATUS" = "needs_review" ]; then
+      # Detailed comment for stuck/blocked tasks, tagging the repo owner
+      COMMENT="## Agent needs help"
+      COMMENT="$COMMENT
+
+**Status:** \`$STATUS\`"
+      if [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
+        COMMENT="$COMMENT
+**Summary:** $SUMMARY"
+      fi
+      if [ -n "$REASON" ] && [ "$REASON" != "null" ]; then
+        COMMENT="$COMMENT
+**Reason:** $REASON"
+      fi
+      if [ -n "$LAST_ERROR" ] && [ "$LAST_ERROR" != "null" ]; then
+        COMMENT="$COMMENT
+**Error:** $LAST_ERROR"
+      fi
+      if [ -n "$BLOCKERS" ]; then
+        COMMENT="$COMMENT
+**Blockers:** $BLOCKERS"
+      fi
+      if [ -n "$ACCOMPLISHED" ]; then
+        COMMENT="$COMMENT
+**Accomplished so far:** $ACCOMPLISHED"
+      fi
+      if [ -n "$REMAINING" ]; then
+        COMMENT="$COMMENT
+**Remaining:** $REMAINING"
+      fi
+      if [ -n "$FILES_CHANGED" ]; then
+        COMMENT="$COMMENT
+**Files changed:** $FILES_CHANGED"
+      fi
+      COMMENT="$COMMENT
+**Attempts:** $ATTEMPTS
+
+${OWNER_TAG} — this task needs your attention."
+      gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
+    elif [ -n "$SUMMARY" ]; then
+      # Standard progress/completion comment
+      COMMENT="**Status:** \`$STATUS\`
+**Summary:** $SUMMARY"
+      if [ -n "$ACCOMPLISHED" ]; then
+        COMMENT="$COMMENT
+**Accomplished:** $ACCOMPLISHED"
+      fi
+      if [ -n "$REMAINING" ]; then
+        COMMENT="$COMMENT
+**Remaining:** $REMAINING"
+      fi
+      if [ -n "$FILES_CHANGED" ]; then
+        COMMENT="$COMMENT
+**Files:** $FILES_CHANGED"
+      fi
+      gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
     fi
-    gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
+
     NOW=$(now_iso)
     export NOW
     with_lock yq -i \
@@ -224,7 +275,10 @@ EOF
 
   # Review/close behavior
   if [ "$STATUS" = "done" ] && [ "$AUTO_CLOSE" != "true" ]; then
-    if [ -n "$REVIEW_OWNER" ]; then
+    OWNER_TAG="@$(repo_owner "$REPO")"
+    if [ -n "$OWNER_TAG" ] && [ "$OWNER_TAG" != "@" ]; then
+      gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="Review requested ${OWNER_TAG}" >/dev/null
+    elif [ -n "$REVIEW_OWNER" ]; then
       gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="Review requested ${REVIEW_OWNER}" >/dev/null
     fi
     sync_project_status "$GH_NUM" "needs_review"

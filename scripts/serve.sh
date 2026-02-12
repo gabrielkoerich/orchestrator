@@ -142,6 +142,7 @@ snapshot_hash() {
   find "$ROOT_DIR" -type f \
     -not -path "$ROOT_DIR/.git/*" \
     -not -path "$ROOT_DIR/tasks.yml" \
+    -not -path "$ROOT_DIR/jobs.yml" \
     -not -path "$ROOT_DIR/config.yml" \
     -not -path "$STATE_DIR/orchestrator.log" \
     -not -path "$STATE_DIR/orchestrator.archive.log" \
@@ -158,6 +159,11 @@ snapshot_hash() {
 }
 
 LAST_CONFIG_MTIME=$(lock_mtime "$CONFIG_PATH")
+PROJECT_CONFIG="${PROJECT_DIR:+${PROJECT_DIR}/.orchestrator.yml}"
+LAST_PROJECT_CONFIG_MTIME=0
+if [ -n "$PROJECT_CONFIG" ] && [ -f "$PROJECT_CONFIG" ]; then
+  LAST_PROJECT_CONFIG_MTIME=$(lock_mtime "$PROJECT_CONFIG")
+fi
 LAST_SNAPSHOT=$(snapshot_hash)
 LAST_GH_PULL=0
 
@@ -190,6 +196,7 @@ while true; do
   echo "[serve] tick ${ts}" >> "$LOG_FILE"
   clear_stale_task_lock
   "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
+  "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
   NOW_EPOCH=$(date +%s)
   if [ $((NOW_EPOCH - LAST_GH_PULL)) -ge "$GH_PULL_INTERVAL" ]; then
     "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
@@ -200,6 +207,14 @@ while true; do
   if [ "$CURRENT_MTIME" -ne "$LAST_CONFIG_MTIME" ]; then
     echo "[serve] config.yml changed; restarting" >> "$LOG_FILE"
     exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
+  fi
+
+  if [ -n "$PROJECT_CONFIG" ] && [ -f "$PROJECT_CONFIG" ]; then
+    CURRENT_PROJECT_MTIME=$(lock_mtime "$PROJECT_CONFIG")
+    if [ "$CURRENT_PROJECT_MTIME" -ne "$LAST_PROJECT_CONFIG_MTIME" ]; then
+      echo "[serve] .orchestrator.yml changed; restarting" >> "$LOG_FILE"
+      exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
+    fi
   fi
 
   CURRENT_SNAPSHOT=$(snapshot_hash)

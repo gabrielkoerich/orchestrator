@@ -104,6 +104,46 @@ gh-project-info-fix:
 gh-project-list org="" user="":
   @scripts/gh_project_list.sh "{{org}}" "{{user}}"
 
+# Add a scheduled job (cron expression + task template)
+jobs-add schedule title body="" labels="" agent="":
+  @scripts/jobs_add.sh "{{schedule}}" "{{title}}" "{{body}}" "{{labels}}" "{{agent}}"
+
+# List all scheduled jobs
+jobs-list:
+  @scripts/jobs_list.sh
+
+# Remove a scheduled job
+jobs-remove id:
+  @scripts/jobs_remove.sh "{{id}}"
+
+# Enable a scheduled job
+jobs-enable id:
+  @yq -i '(.jobs[] | select(.id == "{{id}}") | .enabled) = true' jobs.yml && echo "Enabled job '{{id}}'"
+
+# Disable a scheduled job
+jobs-disable id:
+  @yq -i '(.jobs[] | select(.id == "{{id}}") | .enabled) = false' jobs.yml && echo "Disabled job '{{id}}'"
+
+# Check and run due scheduled jobs
+jobs-tick:
+  @scripts/jobs_tick.sh
+
+# Install crontab entry to tick every minute
+jobs-install:
+  @scripts/jobs_install.sh
+
+# Remove crontab entry
+jobs-uninstall:
+  @scripts/jobs_uninstall.sh
+
+# Install macOS launchd service (auto-start + restart on crash)
+service-install:
+  @scripts/service_install.sh
+
+# Uninstall macOS launchd service
+service-uninstall:
+  @scripts/service_uninstall.sh
+
 # Run tests
 # (bats test suite)
 test:

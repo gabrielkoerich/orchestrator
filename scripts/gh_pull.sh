@@ -3,6 +3,7 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_yq
 init_config_file
+load_project_config
 if [ "${DEBUG_GH:-0}" = "1" ]; then
   set -x
 fi
