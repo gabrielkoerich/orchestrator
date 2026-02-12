@@ -22,23 +22,37 @@ fi
 FIELDS_JSON=$(gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:100){ nodes{ ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }' -f project="$PROJECT_ID")
 
 STATUS_FIELD_ID=$(printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .id' | head -n1)
-BACKLOG_ID=$(printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Backlog") | .id' | head -n1)
-INPROG_ID=$(printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "In progress") | .id' | head -n1)
-REVIEW_ID=$(printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "In review") | .id' | head -n1)
-DONE_ID=$(printf '%s' "$FIELDS_JSON" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Done") | .id' | head -n1)
 
 if [ -z "$STATUS_FIELD_ID" ] || [ "$STATUS_FIELD_ID" = "null" ]; then
   echo "Status field not found in project." >&2
   exit 1
 fi
 
-export STATUS_FIELD_ID BACKLOG_ID INPROG_ID REVIEW_ID DONE_ID
-yq -i \
-  ".gh.project_status_field_id = env(STATUS_FIELD_ID) | \
-   .gh.project_status_map.backlog = env(BACKLOG_ID) | \
-   .gh.project_status_map.in_progress = env(INPROG_ID) | \
-   .gh.project_status_map.review = env(REVIEW_ID) | \
-   .gh.project_status_map.done = env(DONE_ID)" \
-  "$CONFIG_PATH"
+# Helper: find option ID matching any of the given names (case-insensitive)
+find_option_id() {
+  local json="$1"; shift
+  for name in "$@"; do
+    local id
+    id=$(printf '%s' "$json" | yq -r ".data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"^${name}$\"; \"i\")) | .id" 2>/dev/null | head -n1)
+    if [ -n "$id" ] && [ "$id" != "null" ]; then
+      echo "$id"
+      return
+    fi
+  done
+}
+
+BACKLOG_ID=$(find_option_id "$FIELDS_JSON" "Backlog" "Todo" "To Do" "New")
+INPROG_ID=$(find_option_id "$FIELDS_JSON" "In Progress" "In progress" "Doing" "Active" "Working")
+REVIEW_ID=$(find_option_id "$FIELDS_JSON" "Review" "In Review" "In review" "Needs Review")
+DONE_ID=$(find_option_id "$FIELDS_JSON" "Done" "Completed" "Closed" "Finished")
+
+export STATUS_FIELD_ID
+yq -i ".gh.project_status_field_id = env(STATUS_FIELD_ID)" "$CONFIG_PATH"
+
+export BACKLOG_ID INPROG_ID REVIEW_ID DONE_ID
+[ -n "$BACKLOG_ID" ] && [ "$BACKLOG_ID" != "null" ] && yq -i '.gh.project_status_map.backlog = env(BACKLOG_ID)' "$CONFIG_PATH"
+[ -n "$INPROG_ID" ] && [ "$INPROG_ID" != "null" ] && yq -i '.gh.project_status_map.in_progress = env(INPROG_ID)' "$CONFIG_PATH"
+[ -n "$REVIEW_ID" ] && [ "$REVIEW_ID" != "null" ] && yq -i '.gh.project_status_map.review = env(REVIEW_ID)' "$CONFIG_PATH"
+[ -n "$DONE_ID" ] && [ "$DONE_ID" != "null" ] && yq -i '.gh.project_status_map.done = env(DONE_ID)' "$CONFIG_PATH"
 
 echo "Applied Status field and option IDs to config.yml"

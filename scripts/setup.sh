@@ -132,7 +132,10 @@ if [ -t 0 ]; then
                 if [ -n "$status_field_id" ] && [ "$status_field_id" != "null" ]; then
                   yq -i ".gh.project_status_field_id = env(status_field_id)" "$TARGET_DIR/config.yml"
                 fi
-                yq -i '.gh.project_status_map.backlog = env(backlog_id) | .gh.project_status_map.in_progress = env(inprog_id) | .gh.project_status_map.review = env(review_id) | .gh.project_status_map.done = env(done_id)' "$TARGET_DIR/config.yml"
+                [ -n "$backlog_id" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = env(backlog_id)' "$TARGET_DIR/config.yml"
+                [ -n "$inprog_id" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = env(inprog_id)' "$TARGET_DIR/config.yml"
+                [ -n "$review_id" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = env(review_id)' "$TARGET_DIR/config.yml"
+                [ -n "$done_id" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = env(done_id)' "$TARGET_DIR/config.yml"
               fi
             fi
           fi
@@ -149,17 +152,40 @@ if [ -t 0 ]; then
       status_json=$(gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:100){ nodes{ ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }' -f project="$GH_PROJECT_ID_INPUT" 2>/dev/null || true)
       if [ -n "$status_json" ]; then
         status_field_id=$(printf '%s' "$status_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .id' 2>/dev/null | head -n1)
-        backlog_id=$(printf '%s' "$status_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Backlog") | .id' 2>/dev/null | head -n1)
-        inprog_id=$(printf '%s' "$status_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "In Progress") | .id' 2>/dev/null | head -n1)
-        review_id=$(printf '%s' "$status_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Review") | .id' 2>/dev/null | head -n1)
-        done_id=$(printf '%s' "$status_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | select(.name == "Done") | .id' 2>/dev/null | head -n1)
+
+        # Helper: find option ID matching any of the given names (case-insensitive)
+        find_option_id() {
+          local json="$1"; shift
+          for name in "$@"; do
+            local id
+            id=$(printf '%s' "$json" | yq -r ".data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"^${name}$\"; \"i\")) | .id" 2>/dev/null | head -n1)
+            if [ -n "$id" ] && [ "$id" != "null" ]; then
+              echo "$id"
+              return
+            fi
+          done
+        }
+
+        backlog_id=$(find_option_id "$status_json" "Backlog" "Todo" "To Do" "New")
+        inprog_id=$(find_option_id "$status_json" "In Progress" "In progress" "Doing" "Active" "Working")
+        review_id=$(find_option_id "$status_json" "Review" "In Review" "Needs Review")
+        done_id=$(find_option_id "$status_json" "Done" "Completed" "Closed" "Finished")
+
         export status_field_id backlog_id inprog_id review_id done_id
         if [ -n "$status_field_id" ] && [ "$status_field_id" != "null" ]; then
           yq -i ".gh.project_status_field_id = env(status_field_id)" "$TARGET_DIR/config.yml"
         fi
-        if [ -n "$backlog_id" ] || [ -n "$inprog_id" ] || [ -n "$review_id" ] || [ -n "$done_id" ]; then
-          yq -i '.gh.project_status_map.backlog = env(backlog_id) | .gh.project_status_map.in_progress = env(inprog_id) | .gh.project_status_map.review = env(review_id) | .gh.project_status_map.done = env(done_id)' "$TARGET_DIR/config.yml"
-        fi
+        [ -n "$backlog_id" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = env(backlog_id)' "$TARGET_DIR/config.yml"
+        [ -n "$inprog_id" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = env(inprog_id)' "$TARGET_DIR/config.yml"
+        [ -n "$review_id" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = env(review_id)' "$TARGET_DIR/config.yml"
+        [ -n "$done_id" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = env(done_id)' "$TARGET_DIR/config.yml"
+
+        # Show what was detected
+        echo "Detected status options:"
+        [ -n "$backlog_id" ] && echo "  backlog -> $backlog_id" || echo "  backlog -> (not found)"
+        [ -n "$inprog_id" ] && echo "  in_progress -> $inprog_id" || echo "  in_progress -> (not found)"
+        [ -n "$review_id" ] && echo "  review -> $review_id" || echo "  review -> (not found)"
+        [ -n "$done_id" ] && echo "  done -> $done_id" || echo "  done -> (not found)"
       fi
 
       # If still missing, offer manual input
@@ -178,8 +204,10 @@ if [ -t 0 ]; then
             yq -i ".gh.project_status_field_id = env(STATUS_FIELD_ID)" "$TARGET_DIR/config.yml"
           fi
 
-          export OPT_BACKLOG OPT_INPROG OPT_REVIEW OPT_DONE
-          yq -i '.gh.project_status_map.backlog = env(OPT_BACKLOG) | .gh.project_status_map.in_progress = env(OPT_INPROG) | .gh.project_status_map.review = env(OPT_REVIEW) | .gh.project_status_map.done = env(OPT_DONE)' "$TARGET_DIR/config.yml"
+          if [ -n "$OPT_BACKLOG" ]; then export OPT_BACKLOG; yq -i '.gh.project_status_map.backlog = env(OPT_BACKLOG)' "$TARGET_DIR/config.yml"; fi
+          if [ -n "$OPT_INPROG" ]; then export OPT_INPROG; yq -i '.gh.project_status_map.in_progress = env(OPT_INPROG)' "$TARGET_DIR/config.yml"; fi
+          if [ -n "$OPT_REVIEW" ]; then export OPT_REVIEW; yq -i '.gh.project_status_map.review = env(OPT_REVIEW)' "$TARGET_DIR/config.yml"; fi
+          if [ -n "$OPT_DONE" ]; then export OPT_DONE; yq -i '.gh.project_status_map.done = env(OPT_DONE)' "$TARGET_DIR/config.yml"; fi
         fi
       fi
     fi
