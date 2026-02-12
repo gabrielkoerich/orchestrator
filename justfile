@@ -23,6 +23,10 @@ tree:
 add title body="" labels="":
   @scripts/add_task.sh "{{title}}" "{{body}}" "{{labels}}"
 
+# Add a task that will be decomposed into subtasks before execution
+plan title body="" labels="":
+  @scripts/add_task.sh "{{title}}" "{{body}}" "plan,{{labels}}"
+
 # Route a task (choose agent/profile/skills)
 route id="":
   @scripts/route_task.sh {{id}}

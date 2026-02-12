@@ -40,10 +40,18 @@ if [ -f "skills.yml" ]; then
   SKILLS_CATALOG=$(yq -o=json -I=0 '.skills // []' "skills.yml")
 fi
 
-export TASK_ID TASK_TITLE TASK_LABELS TASK_BODY SKILLS_CATALOG
+AVAILABLE_AGENTS=$(available_agents)
+if [ -z "$AVAILABLE_AGENTS" ]; then
+  echo "No agent CLIs found in PATH." >&2
+  exit 1
+fi
+
+export TASK_ID TASK_TITLE TASK_LABELS TASK_BODY SKILLS_CATALOG AVAILABLE_AGENTS
 PROMPT=$(render_template "prompts/route.md")
 PROMPT_FILE=".orchestrator/route-prompt-${TASK_ID}.txt"
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
+
+require_agent "$ROUTER_AGENT"
 
 run_router_cmd() {
   if [ -n "${ROUTER_TIMEOUT:-}" ] && [ "${ROUTER_TIMEOUT}" != "0" ]; then
@@ -92,8 +100,12 @@ printf '%s\n' "$RESPONSE" | sed 's/^/[route] > /' >&2
 if [ "${CMD_STATUS:-0}" -ne 0 ]; then
   echo "[route] router failed exit=${CMD_STATUS}" >&2
   if [ -n "${ROUTER_FALLBACK:-}" ]; then
-    ROUTED_AGENT="$ROUTER_FALLBACK"
-    REASON="router failed (exit $CMD_STATUS); fallback to $ROUTER_FALLBACK"
+    if command -v "$ROUTER_FALLBACK" >/dev/null 2>&1; then
+      ROUTED_AGENT="$ROUTER_FALLBACK"
+    else
+      ROUTED_AGENT=$(printf '%s' "$AVAILABLE_AGENTS" | cut -d',' -f1)
+    fi
+    REASON="router failed (exit $CMD_STATUS); fallback to $ROUTED_AGENT"
     ROUTE_WARNING=""
     PROFILE_JSON='{}'
     SELECTED_SKILLS_CSV=""
@@ -163,7 +175,16 @@ REASON=$(printf '%s' "$RESPONSE_JSON" | jq -r '.reason // ""')
 PROFILE_JSON=$(printf '%s' "$RESPONSE_JSON" | jq -c '.profile // {}')
 SELECTED_SKILLS_CSV=$(printf '%s' "$RESPONSE_JSON" | jq -r '.selected_skills // [] | join(",")')
 MODEL=$(printf '%s' "$RESPONSE_JSON" | jq -r '.model // ""')
+DECOMPOSE=$(printf '%s' "$RESPONSE_JSON" | jq -r '.decompose // false')
 NOW=$(now_iso)
+
+# Validate routed agent is installed
+if [ -n "$ROUTED_AGENT" ] && ! command -v "$ROUTED_AGENT" >/dev/null 2>&1; then
+  FIRST_AVAILABLE=$(printf '%s' "$AVAILABLE_AGENTS" | cut -d',' -f1)
+  echo "[route] $ROUTED_AGENT not installed, falling back to $FIRST_AVAILABLE" >&2
+  REASON="$REASON (router picked $ROUTED_AGENT but not installed; using $FIRST_AVAILABLE)"
+  ROUTED_AGENT="$FIRST_AVAILABLE"
+fi
 
 # Apply static defaults
 if [ -n "$ALLOWED_TOOLS_CSV" ]; then
@@ -211,7 +232,18 @@ if [ -n "$MODEL" ] && [ "$MODEL" != "null" ]; then
   MODEL_LABEL="model:${MODEL}"
 fi
 
-export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV MODEL MODEL_LABEL
+# Decompose: router decision or manual "plan" label
+DECOMPOSE_LABEL=""
+if [ "$DECOMPOSE" = "true" ]; then
+  DECOMPOSE_LABEL="plan"
+fi
+# Manual "plan" label always wins
+if echo "$LABELS_LOWER" | grep -qE '(^|,)plan(,|$)'; then
+  DECOMPOSE="true"
+  DECOMPOSE_LABEL="plan"
+fi
+
+export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV MODEL MODEL_LABEL DECOMPOSE_LABEL
 
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .agent) = (strenv(ROUTED_AGENT) | select(length > 0)) | \
@@ -221,7 +253,7 @@ with_lock yq -i \
    (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (strenv(ROUTE_WARNING) | select(length > 0) // null) | \
    (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = load(\"$TMP_PROFILE\") | \
    (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (strenv(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0)) | unique) | \
-   (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL)] + (strenv(MODEL_LABEL) | select(length > 0) | [.] // [])) | unique) | \
+   (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL)] + (strenv(MODEL_LABEL) | select(length > 0) | [.] // []) + (strenv(DECOMPOSE_LABEL) | select(length > 0) | [.] // [])) | unique) | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
 

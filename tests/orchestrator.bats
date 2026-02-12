@@ -591,6 +591,46 @@ YAML
   [ "$output" = "myorg/myproject" ]
 }
 
+@test "run_task.sh uses plan prompt for decompose mode" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Big Feature" "Build the whole thing" "plan"
+  [ "$status" -eq 0 ]
+
+  # Stub that checks which prompt it receives
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<SH
+#!/usr/bin/env bash
+# Check if the plan prompt is being used (contains "planning agent")
+prompt="\$*"
+if printf '%s' "\$prompt" | grep -q "planning agent"; then
+  cat > "${STATE_DIR}/output-2.json" <<'JSON'
+{"status":"done","summary":"planned the work","accomplished":["analyzed task"],"remaining":[],"blockers":[],"files_changed":[],"needs_help":false,"reason":"","delegations":[{"title":"Step 1","body":"Do first thing","labels":["backend"],"suggested_agent":"codex"},{"title":"Step 2","body":"Do second thing","labels":["tests"],"suggested_agent":"codex"}]}
+JSON
+else
+  cat > "${STATE_DIR}/output-2.json" <<'JSON'
+{"status":"done","summary":"executed directly","accomplished":[],"remaining":[],"blockers":[],"files_changed":[],"needs_help":false,"reason":"","delegations":[]}
+JSON
+fi
+SH
+  chmod +x "$CODEX_STUB"
+
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Should have created child tasks from delegation
+  run yq -r '.tasks[] | select(.parent_id == 2) | .title' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Step 1"* ]]
+  [[ "$output" == *"Step 2"* ]]
+
+  # Parent should be blocked
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "blocked" ]
+}
+
 @test "jobs_remove.sh removes a job" {
   export JOBS_PATH="${TMP_DIR}/jobs.yml"
   printf 'jobs: []\n' > "$JOBS_PATH"

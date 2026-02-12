@@ -37,6 +37,7 @@ orchestrator status
 - `skills/` — cloned skill repositories (via `skills-sync`)
 - `prompts/system.md` — system prompt (output format, constraints)
 - `prompts/agent.md` — execution prompt (task details + enriched context)
+- `prompts/plan.md` — planning/decomposition prompt (break task into subtasks)
 - `prompts/route.md` — routing + profile generation prompt
 - `prompts/review.md` — optional review agent prompt
 - `scripts/*.sh` — orchestration commands
@@ -161,6 +162,7 @@ The agent writes results to `.orchestrator/output-{task_id}.json`. If the file i
 | Command | Description |
 | --- | --- |
 | `just add "Build router" "Add LLM router" "orchestration"` | Add a task (title required, body/labels optional). |
+| `just plan "Implement auth" "Add login, signup, reset" "backend"` | Add a task that will be decomposed into subtasks first. |
 | `just list` | List tasks (id, status, agent, parent, title). |
 | `just status` | Show status counts and recent tasks. |
 | `just tree` | Show parent/child task tree. |
@@ -440,6 +442,37 @@ Task and profile contexts are persisted under `contexts/`:
 
 The orchestrator loads both into the prompt and appends a log entry after each run.
 
+## Task Decomposition (Plan Mode)
+
+Complex tasks can be broken down into smaller subtasks before execution. This happens in two ways:
+
+### Automatic (router decides)
+The router evaluates task complexity and sets `decompose: true` when a task touches multiple systems, requires many file changes, or has multiple deliverables. The task gets a `plan` label automatically.
+
+### Manual (user decides)
+Add the `plan` label when creating a task:
+```bash
+orchestrator plan "Implement user auth" "Add login, signup, password reset with JWT tokens" "backend"
+```
+
+Or add a task with the `plan` label directly:
+```bash
+orchestrator add "Redesign the API" "..." "plan,backend"
+```
+
+### How It Works
+1. The agent receives `prompts/plan.md` instead of the execution prompt
+2. It reads the codebase, analyzes the task, and returns only delegations (no code changes)
+3. Each subtask gets a clear title, detailed body with acceptance criteria, labels for routing, and a suggested agent
+4. The parent blocks until all children complete, then resumes with the execution prompt
+
+### Guidelines in the planning prompt
+- Each subtask should be completable in a single agent run
+- Subtasks are listed in dependency order
+- Bodies include specific file paths, function names, and expected behavior
+- Prefers 3-7 subtasks (not too granular, not too broad)
+- Includes a testing/verification subtask at the end
+
 ## Delegation
 If the agent returns this:
 ```json
@@ -625,6 +658,13 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 - GitHub push posts detailed comments on blocked/needs_review tasks tagging `@owner` (extracted from `gh.repo` slug).
 - Comments include: status, summary, reason, error, blockers, accomplished, remaining, files, attempt count.
 
+#### Task Decomposition (Plan Mode)
+- New `prompts/plan.md` — planning-only prompt that analyzes tasks and returns delegations without writing code.
+- Router gains `decompose` flag — automatically set for complex tasks (multi-system, many files, multiple deliverables).
+- `plan` label — manual override to force decomposition. Added via `just plan` or `just add "title" "body" "plan"`.
+- `run_task.sh` uses planning prompt on first attempt when `plan` label present, switches to execution prompt on retry/rejoin.
+- Router prompt updated with decomposition criteria.
+
 #### Background Service (macOS)
 - `just service-install` / `just service-uninstall` for launchd integration.
 - Auto-starts on login, auto-restarts on crash (KeepAlive + 10s throttle).
@@ -648,4 +688,4 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 - `jobs.yml` preserved across `just install` (rsync exclude).
 
 #### Tests
-- 24 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay.
+- 25 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay, plan/decompose mode.

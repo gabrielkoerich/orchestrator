@@ -271,6 +271,25 @@ if [ -f "$TARGET_DIR/config.yml" ]; then
   fi
 fi
 
+# Check available agents
+echo
+echo "Agent CLIs:"
+has_agent=false
+for agent in claude codex opencode; do
+  if command -v "$agent" >/dev/null 2>&1; then
+    echo "  $agent: $(command -v "$agent")"
+    has_agent=true
+  else
+    echo "  $agent: not found"
+  fi
+done
+if [ "$has_agent" = false ]; then
+  echo
+  echo "Error: No agent CLIs found. Install at least one (claude, codex, or opencode)." >&2
+  exit 1
+fi
+
+echo
 echo "Installed to $TARGET_DIR"
 echo "Binary: $BIN_DIR/orchestrator"
 

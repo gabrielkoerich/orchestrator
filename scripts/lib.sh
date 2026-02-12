@@ -181,6 +181,29 @@ require_jq() {
   fi
 }
 
+require_agent() {
+  local agent="$1"
+  if ! command -v "$agent" >/dev/null 2>&1; then
+    echo "$agent is required but not found in PATH." >&2
+    echo "Install it or choose a different agent." >&2
+    exit 1
+  fi
+}
+
+available_agents() {
+  local agents=""
+  for agent in claude codex opencode; do
+    if command -v "$agent" >/dev/null 2>&1; then
+      if [ -n "$agents" ]; then
+        agents="$agents,$agent"
+      else
+        agents="$agent"
+      fi
+    fi
+  done
+  echo "$agents"
+}
+
 normalize_json_response() {
   local raw="$1"
   if command -v python3 >/dev/null 2>&1; then
@@ -416,7 +439,7 @@ build_project_instructions() {
   local dir="${1:-$PROJECT_DIR}"
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then return; fi
   local out=""
-  for f in CLAUDE.md README.md; do
+  for f in CLAUDE.md AGENTS.md README.md; do
     if [ -f "$dir/$f" ]; then
       out+="## $f\n$(cat "$dir/$f")\n\n"
     fi

@@ -117,9 +117,23 @@ with_lock yq -i \
 
 append_history "$TASK_ID" "in_progress" "started attempt $ATTEMPTS"
 
+# Detect decompose/plan mode
+DECOMPOSE=false
+LABELS_LOWER=$(printf '%s' "$TASK_LABELS" | tr '[:upper:]' '[:lower:]')
+if printf '%s' "$LABELS_LOWER" | grep -qE '(^|,)plan(,|$)'; then
+  DECOMPOSE=true
+fi
+
 # Build system prompt and agent message
-SYSTEM_PROMPT=$(render_template "prompts/system.md")
+if [ "$DECOMPOSE" = true ] && [ "$ATTEMPTS" -le 1 ]; then
+  echo "[run] task=$TASK_ID using plan/decompose mode" >&2
+  SYSTEM_PROMPT=$(render_template "prompts/plan.md")
+else
+  SYSTEM_PROMPT=$(render_template "prompts/system.md")
+fi
 AGENT_MESSAGE=$(render_template "prompts/agent.md")
+
+require_agent "$TASK_AGENT"
 
 RESPONSE=""
 CMD_STATUS=0
