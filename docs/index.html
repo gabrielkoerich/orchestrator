@@ -49,8 +49,9 @@
 
       <p>This installs all dependencies (<code>yq</code>, <code>jq</code>, <code>just</code>, <code>python3</code>) automatically. You still need at least one agent CLI:</p>
 
-<pre><code><span class="command">npm install -g</span> @anthropic-ai/claude-code   <span class="comment"># Claude</span>
-<span class="command">npm install -g</span> @openai/codex               <span class="comment"># Codex</span></code></pre>
+<pre><code><span class="command">brew install --cask</span> claude-code   <span class="comment"># Claude</span>
+<span class="command">brew install --cask</span> codex         <span class="comment"># Codex</span>
+<span class="command">brew install</span> opencode             <span class="comment"># OpenCode</span></code></pre>
 
       <p>Optional: <code>brew install gh && gh auth login</code> for GitHub sync.</p>
 
@@ -185,6 +186,23 @@
 <span class="command">orchestrator init</span>                          <span class="comment"># Initialize project</span>
 <span class="command">orchestrator projects</span>                      <span class="comment"># List all projects</span>
 <span class="command">brew services start</span> orchestrator            <span class="comment"># macOS auto-start</span></code></pre>
+
+      <h2>Scheduled Jobs</h2>
+
+      <p>Define recurring tasks with cron expressions. Each job creates tasks on schedule, with per-job dedup to prevent duplicates while tasks are in-flight.</p>
+
+<pre><code><span class="comment"># Add a scheduled job</span>
+<span class="command">orchestrator jobs-add</span> <span class="string">"0 9 * * *"</span> <span class="string">"Daily sync"</span> <span class="string">"Pull and check"</span> <span class="string">"sync"</span>
+
+<span class="comment"># List jobs</span>
+<span class="command">orchestrator jobs-list</span>
+
+<span class="comment"># Manage jobs</span>
+<span class="command">orchestrator jobs-enable</span> daily-sync
+<span class="command">orchestrator jobs-disable</span> daily-sync
+<span class="command">orchestrator jobs-remove</span> daily-sync</code></pre>
+
+      <p>Jobs run automatically when the server is running, or install a crontab entry with <code>orchestrator jobs-install</code>.</p>
 
       <p><a href="https://github.com/gabrielkoerich/orchestrator" target="_blank">View full documentation and source on GitHub &rarr;</a></p>
 

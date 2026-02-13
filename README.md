@@ -27,8 +27,9 @@ Requires `yq`, `jq`, `just`, `python3` in your PATH.
 
 Install at least one:
 ```bash
-npm install -g @anthropic-ai/claude-code   # Claude
-npm install -g @openai/codex               # Codex
+brew install --cask claude-code   # Claude
+brew install --cask codex         # Codex
+brew install opencode             # OpenCode
 ```
 
 Optional: `gh` for GitHub sync, `bats` for tests.

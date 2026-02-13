@@ -58,8 +58,9 @@ class Orchestrator < Formula
         brew services start orchestrator
 
       Required agent CLIs (install at least one):
-        npm install -g @anthropic-ai/claude-code   # Claude
-        npm install -g @openai/codex               # Codex
+        brew install --cask claude-code   # Claude
+        brew install --cask codex         # Codex
+        brew install opencode             # OpenCode
 
       Optional for GitHub sync:
         brew install gh && gh auth login
