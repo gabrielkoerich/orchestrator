@@ -165,31 +165,31 @@ jobs:
 
           # Update formula with new url + sha256
           python3 - "$VERSION" "$SHA256" "$REPO" <<'PYEOF'
-import re, sys
+          import re, sys
 
-version = sys.argv[1]
-sha256 = sys.argv[2]
-repo = sys.argv[3]
+          version = sys.argv[1]
+          sha256 = sys.argv[2]
+          repo = sys.argv[3]
 
-url_val = f"https://github.com/{repo}/archive/refs/tags/{version}.tar.gz"
-url_line = f'  url "{url_val}"'
-sha_line = f'  sha256 "{sha256}"'
+          url_val = f"https://github.com/{repo}/archive/refs/tags/{version}.tar.gz"
+          url_line = f'  url "{url_val}"'
+          sha_line = f'  sha256 "{sha256}"'
 
-with open("Formula/orchestrator.rb") as f:
-    content = f.read()
+          with open("Formula/orchestrator.rb") as f:
+              content = f.read()
 
-if 'url "' in content:
-    content = re.sub(r'  url ".*"', url_line, content)
-    content = re.sub(r'  sha256 ".*"', sha_line, content)
-else:
-    content = content.replace(
-        '  head "',
-        f'{url_line}\n{sha_line}\n  head "'
-    )
+          if 'url "' in content:
+              content = re.sub(r'  url ".*"', url_line, content)
+              content = re.sub(r'  sha256 ".*"', sha_line, content)
+          else:
+              content = content.replace(
+                  '  head "',
+                  f'{url_line}\n{sha_line}\n  head "'
+              )
 
-with open("Formula/orchestrator.rb", "w") as f:
-    f.write(content)
-PYEOF
+          with open("Formula/orchestrator.rb", "w") as f:
+              f.write(content)
+          PYEOF
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -4,27 +4,43 @@
 
 A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex`, `claude`, and `opencode`) in full agentic mode with tool access, and can delegate subtasks dynamically.
 
-## Quick Setup
+## Install
+
+### Homebrew (recommended)
 ```bash
-just install
-```
-Then run from any project directory:
-```bash
-cd /path/to/your/project
-orchestrator status
+brew tap gabrielkoerich/orchestrator
+brew install orchestrator
 ```
 
-## Requirements
-- `yq` (mikefarah)
-- `jq`
-- `just`
-- `python3`
-- Agent CLIs in your PATH:
-  - `codex`
-  - `claude`
-  - `opencode`
-- Optional: `gh` for GitHub sync
-- Optional: `bats` for tests
+All dependencies (`yq`, `jq`, `just`, `python3`) are installed automatically.
+
+### From source
+```bash
+git clone https://github.com/gabrielkoerich/orchestrator.git
+cd orchestrator
+just install
+```
+
+Requires `yq`, `jq`, `just`, `python3` in your PATH.
+
+### Agent CLIs
+
+Install at least one:
+```bash
+npm install -g @anthropic-ai/claude-code   # Claude
+npm install -g @openai/codex               # Codex
+```
+
+Optional: `gh` for GitHub sync, `bats` for tests.
+
+## Quick Start
+```bash
+cd ~/projects/my-app
+orchestrator init          # configure project (optional GitHub setup)
+orchestrator add "title"   # add a task
+orchestrator next          # route + run next task
+orchestrator serve         # start background server
+```
 
 ## Files
 - `tasks.yml` — task database (YAML)
@@ -67,7 +83,7 @@ GitHub metadata fields (optional):
 - `gh_issue_number`, `gh_url`, `gh_state`, `gh_updated_at`, `gh_synced_at`
 
 ## How It Works
-1. **Add a task** to `tasks.yml` (or via `just add`).
+1. **Add a task** to `tasks.yml` (or via `orchestrator add`).
 2. **Route the task** with an LLM that chooses executor + builds a specialized profile and selects skills.
 3. **Run the task** with the chosen executor in agentic mode. The agent runs inside `$PROJECT_DIR` with full tool access (read files, edit code, run commands).
 4. **Output**: the agent writes its results to `.orchestrator/output-{task_id}.json` (with stdout fallback for backward compatibility).
@@ -161,52 +177,61 @@ The agent writes results to `.orchestrator/output-{task_id}.json`. If the file i
 
 | Command | Description |
 | --- | --- |
-| `just add "Build router" "Add LLM router" "orchestration"` | Add a task (title required, body/labels optional). |
-| `just plan "Implement auth" "Add login, signup, reset" "backend"` | Add a task that will be decomposed into subtasks first. |
-| `just list` | List tasks (id, status, agent, parent, title). |
-| `just status` | Show status counts and recent tasks. |
-| `just tree` | Show parent/child task tree. |
-| `just dashboard` | Grouped dashboard view by status. |
-| `just route 1` | Route task `1`. If no ID, route next `new` task. |
-| `just run 1` | Run task `1`. If no ID, run next runnable. |
-| `just next` | Route + run the next task in one step. |
-| `just poll` | Run all runnable tasks in parallel (default 4 workers). |
-| `just poll 8` | Run all runnable tasks with 8 workers. |
-| `just rejoin` | Re-run blocked parents whose children are done. |
-| `just watch` | Poll loop every 10s. |
-| `just watch 5` | Poll loop every 5s. |
-| `just serve` | Start server (poll + jobs + GitHub sync + auto-restart). |
-| `just stop` | Stop server. |
-| `just restart` | Restart server. |
-| `just service-install` | Install macOS background service (launchd, auto-restart). |
-| `just service-uninstall` | Remove macOS background service. |
-| `just log` | Tail orchestrator log. |
-| `just log 200` | Tail last 200 lines of log. |
-| `just set-agent 1 claude` | Force a task to use a specific agent. |
-| `just skills-sync` | Sync skills from registry to `skills/`. |
-| `just test` | Run tests. |
+| `orchestrator add "Build router" "Add LLM router" "orchestration"` | Add a task (title required, body/labels optional). |
+| `orchestrator plan "Implement auth" "Add login, signup, reset" "backend"` | Add a task that will be decomposed into subtasks first. |
+| `orchestrator list` | List tasks (id, status, agent, parent, title). |
+| `orchestrator status` | Show status counts and recent tasks. |
+| `orchestrator tree` | Show parent/child task tree. |
+| `orchestrator dashboard` | Grouped dashboard view by status. |
+| `orchestrator route 1` | Route task `1`. If no ID, route next `new` task. |
+| `orchestrator run 1` | Run task `1`. If no ID, run next runnable. |
+| `orchestrator next` | Route + run the next task in one step. |
+| `orchestrator poll` | Run all runnable tasks in parallel (default 4 workers). |
+| `orchestrator poll 8` | Run all runnable tasks with 8 workers. |
+| `orchestrator rejoin` | Re-run blocked parents whose children are done. |
+| `orchestrator watch` | Poll loop every 10s. |
+| `orchestrator watch 5` | Poll loop every 5s. |
+| `orchestrator init` | Initialize orchestrator for current project. |
+| `orchestrator projects` | List all projects with tasks. |
+| `orchestrator serve` | Start server (poll + jobs + GitHub sync + auto-restart). |
+| `orchestrator stop` | Stop server. |
+| `orchestrator restart` | Restart server. |
+| `brew services start orchestrator` | macOS background service (Homebrew). |
+| `orchestrator service-install` | macOS background service (from-source install). |
+| `orchestrator service-uninstall` | Remove macOS background service. |
+| `orchestrator log` | Tail orchestrator log. |
+| `orchestrator log 200` | Tail last 200 lines of log. |
+| `orchestrator set-agent 1 claude` | Force a task to use a specific agent. |
+| `orchestrator skills-sync` | Sync skills from registry to `skills/`. |
+| `orchestrator test` | Run tests. |
 
 ### Scheduled Jobs
 
 | Command | Description |
 | --- | --- |
-| `just jobs-add "0 9 * * *" "Daily Sync" "Pull and check" "sync"` | Add a scheduled job. |
-| `just jobs-list` | List all jobs with status and next run. |
-| `just jobs-remove daily-sync` | Remove a job. |
-| `just jobs-enable daily-sync` | Enable a job. |
-| `just jobs-disable daily-sync` | Disable a job. |
-| `just jobs-tick` | Check and run due jobs (called automatically). |
-| `just jobs-install` | Install crontab entry (ticks every minute). |
-| `just jobs-uninstall` | Remove crontab entry. |
+| `orchestrator jobs-add "0 9 * * *" "Daily Sync" "Pull and check" "sync"` | Add a scheduled job. |
+| `orchestrator jobs-list` | List all jobs with status and next run. |
+| `orchestrator jobs-remove daily-sync` | Remove a job. |
+| `orchestrator jobs-enable daily-sync` | Enable a job. |
+| `orchestrator jobs-disable daily-sync` | Disable a job. |
+| `orchestrator jobs-tick` | Check and run due jobs (called automatically). |
+| `orchestrator jobs-install` | Install crontab entry (ticks every minute). |
+| `orchestrator jobs-uninstall` | Remove crontab entry. |
 
 ## Install As Global Tool
+
+### Via Homebrew (recommended)
+```bash
+brew tap gabrielkoerich/orchestrator
+brew install orchestrator
+```
+
+### From source
 ```bash
 just install
 ```
 
 This installs to `~/.orchestrator` and creates a wrapper at `~/.bin/orchestrator`.
-The wrapper captures `PROJECT_DIR` from your current directory before switching to the orchestrator.
-
 Make sure `~/.bin` is on your `PATH`:
 ```bash
 export PATH="$HOME/.bin:$PATH"
@@ -215,33 +240,49 @@ export PATH="$HOME/.bin:$PATH"
 Then run from any project:
 ```bash
 cd ~/projects/my-app
+orchestrator init    # optional: configure GitHub integration
 orchestrator serve
+```
+
+## Per-Project Isolation
+
+Each task is tagged with its project directory. When you run commands from a project, you only see that project's tasks:
+
+```bash
+cd ~/projects/app-a && orchestrator add "Task A"
+cd ~/projects/app-b && orchestrator add "Task B"
+
+cd ~/projects/app-a && orchestrator list  # shows only Task A
+cd ~/projects/app-b && orchestrator list  # shows only Task B
+```
+
+A single `orchestrator serve` handles all projects — it reads each task's `dir` field and runs agents in the correct directory.
+
+List all projects with tasks:
+```bash
+orchestrator projects
 ```
 
 ## Background Service (macOS)
 
-On macOS, the orchestrator can run as a launchd service that starts automatically on login and restarts on crashes.
-
+### Via Homebrew (recommended)
 ```bash
-just service-install    # install and start
-just service-uninstall  # stop and remove
+brew services start orchestrator    # start (auto-starts on login)
+brew services stop orchestrator     # stop
+brew services restart orchestrator  # restart
 ```
 
-Or during initial setup:
+### Via launchd (from-source installs)
 ```bash
-just install  # prompts to install the service at the end
+orchestrator service-install    # install and start
+orchestrator service-uninstall  # stop and remove
 ```
 
-The service runs `orchestrator serve` in the background. Logs go to:
-- `.orchestrator/launchd.out.log` — stdout
-- `.orchestrator/launchd.err.log` — stderr
-
-Check service status:
+The service runs `orchestrator serve` in the background. Check status:
 ```bash
-launchctl list | grep orchestrator
+brew services list | grep orchestrator   # Homebrew
+launchctl list | grep orchestrator       # launchd
 ```
-
-The plist is installed at `~/Library/LaunchAgents/com.orchestrator.serve.plist` with `KeepAlive` enabled and a 10-second throttle interval.
 
 ## Scheduled Jobs (Cron)
 
@@ -256,13 +297,13 @@ Jobs are defined in `jobs.yml` and create regular tasks on a schedule. They flow
 ### Running the Scheduler
 **Option A: Crontab** (standalone, works without the server):
 ```bash
-just jobs-install
+orchestrator jobs-install
 ```
 This adds `* * * * * orchestrator jobs-tick` to your crontab.
 
 **Option B: Server** (integrated, no crontab needed):
 ```bash
-just serve
+orchestrator serve
 ```
 The server runs `jobs-tick` on every poll cycle automatically.
 
@@ -314,7 +355,7 @@ agent_profile:
 `skills.yml` defines approved skill repositories and a catalog of skills. The router selects skill ids and stores them in `selected_skills`.
 Clone or update skills with:
 ```bash
-just skills-sync
+orchestrator skills-sync
 ```
 
 ## Stuck Agent Detection & Owner Notification
@@ -340,18 +381,18 @@ All state lives under `~/.orchestrator` (the install dir). Logs and runtime file
 | File | Path | Description |
 |---|---|---|
 | **Server log** | `.orchestrator/orchestrator.log` | Main loop output: ticks, poll, jobs, gh sync, restarts |
-| **Archive log** | `.orchestrator/orchestrator.archive.log` | Previous server sessions (rotated on each `just serve` start) |
-| **Jobs log** | `.orchestrator/jobs.log` | Crontab tick output (when using `just jobs-install`) |
+| **Archive log** | `.orchestrator/orchestrator.archive.log` | Previous server sessions (rotated on each `orchestrator serve` start) |
+| **Jobs log** | `.orchestrator/jobs.log` | Crontab tick output (when using `orchestrator jobs-install`) |
 
 View the server log:
 ```bash
-just log          # tail last 50 lines
-just log 200      # tail last 200 lines
+orchestrator log          # tail last 50 lines
+orchestrator log 200      # tail last 200 lines
 ```
 
 Or tail it live while the server runs:
 ```bash
-TAIL_LOG=1 just serve
+TAIL_LOG=1 orchestrator serve
 ```
 
 ### Per-Task Logs
@@ -549,26 +590,26 @@ gh:
 ```
 To discover Project field and option IDs:
 ```bash
-just gh-project-info
+orchestrator gh-project-info
 ```
 To auto-fill the Status field/options into config:
 ```bash
-just gh-project-info-fix
+orchestrator gh-project-info-fix
 ```
 
 ### Pull issues into tasks.yml
 ```bash
-just gh-pull
+orchestrator gh-pull
 ```
 
 ### Push tasks to GitHub issues
 ```bash
-just gh-push
+orchestrator gh-push
 ```
 
 ### Sync both directions
 ```bash
-just gh-sync
+orchestrator gh-sync
 ```
 
 ### Owner Tagging
@@ -608,7 +649,7 @@ Provide in `config.yml`:
 ```bash
 gh api graphql -f query='query($org:String!, $num:Int!){ organization(login:$org){ projectV2(number:$num){ id } } }' -f org=YOUR_ORG -f num=PROJECT_NUMBER
 ```
-2. Status field ID + option IDs (or use `just gh-project-info`):
+2. Status field ID + option IDs (or use `orchestrator gh-project-info`):
 ```bash
 gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:50){ nodes{ ... on ProjectV2SingleSelectField { id name options{ id name } } } } } } }' -f project=YOUR_PROJECT_ID
 ```
@@ -623,7 +664,7 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 
 ## Changelog
 
-### Unreleased
+### v0.1.0
 
 #### Agentic Mode
 - Agents now run in full agentic mode with tool access instead of single-turn `--print`/`exec --json`.
@@ -661,14 +702,14 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 #### Task Decomposition (Plan Mode)
 - New `prompts/plan.md` — planning-only prompt that analyzes tasks and returns delegations without writing code.
 - Router gains `decompose` flag — automatically set for complex tasks (multi-system, many files, multiple deliverables).
-- `plan` label — manual override to force decomposition. Added via `just plan` or `just add "title" "body" "plan"`.
+- `plan` label — manual override to force decomposition. Added via `orchestrator plan` or `orchestrator add "title" "body" "plan"`.
 - `run_task.sh` uses planning prompt on first attempt when `plan` label present, switches to execution prompt on retry/rejoin.
 - Router prompt updated with decomposition criteria.
 
 #### Background Service (macOS)
-- `just service-install` / `just service-uninstall` for launchd integration.
+- `orchestrator service-install` / `orchestrator service-uninstall` for launchd integration.
 - Auto-starts on login, auto-restarts on crash (KeepAlive + 10s throttle).
-- Offered during `just install` on macOS.
+- Offered during `orchestrator install` on macOS.
 - Logs to `.orchestrator/launchd.{out,err}.log`.
 
 #### Per-Project Config
@@ -685,7 +726,19 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 - `load_task()` replaces triple yq fallback with single JSON load + jq extraction.
 - `repo_owner()` helper extracts username from `gh.repo` config.
 - `init_jobs_file()` helper for jobs.yml initialization.
-- `jobs.yml` preserved across `just install` (rsync exclude).
+- `jobs.yml` preserved across `orchestrator install` (rsync exclude).
+
+#### Per-Project Isolation
+- Tasks and jobs tagged with `dir` field (project directory).
+- `orchestrator init` for per-project setup with optional GitHub configuration.
+- `list`, `status`, `dashboard`, `tree`, `next` filter by current project directory.
+- `serve` polls all projects globally; `run_task.sh` reads task's `dir` and runs agents in the correct directory.
+- GitHub sync runs per-project (iterates unique dirs from tasks).
+
+#### Homebrew
+- `brew tap gabrielkoerich/orchestrator && brew install orchestrator` — installs with all dependencies.
+- `brew services start orchestrator` — macOS background service.
+- Auto-release workflow: tags new versions every Friday using conventional commits, updates formula automatically.
 
 #### Tests
-- 25 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay, plan/decompose mode.
+- 28 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay, plan/decompose mode, per-project filtering, init, dir field on jobs.

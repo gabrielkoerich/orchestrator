@@ -43,17 +43,30 @@
 
       <h2>Quick Start</h2>
 
-      <h3>Install</h3>
+      <h3>Install via Homebrew</h3>
+<pre><code><span class="command">brew tap</span> gabrielkoerich/orchestrator
+<span class="command">brew install</span> orchestrator</code></pre>
+
+      <p>This installs all dependencies (<code>yq</code>, <code>jq</code>, <code>just</code>, <code>python3</code>) automatically. You still need at least one agent CLI:</p>
+
+<pre><code><span class="command">npm install -g</span> @anthropic-ai/claude-code   <span class="comment"># Claude</span>
+<span class="command">npm install -g</span> @openai/codex               <span class="comment"># Codex</span></code></pre>
+
+      <p>Optional: <code>brew install gh && gh auth login</code> for GitHub sync.</p>
+
+      <h3>Background service</h3>
+<pre><code><span class="command">brew services start</span> orchestrator</code></pre>
+
+      <h3>Alternative: install from source</h3>
 <pre><code><span class="command">git clone</span> <span class="string">https://github.com/gabrielkoerich/orchestrator.git</span>
 <span class="command">cd</span> orchestrator
 <span class="command">just</span> install</code></pre>
 
-      <p>Requires <code>yq</code>, <code>jq</code>, <code>just</code>, <code>python3</code>, and at least one agent CLI (<code>claude</code>, <code>codex</code>, or <code>opencode</code>). Optional: <code>gh</code> for GitHub sync.</p>
-
       <h3>Usage</h3>
 
-<pre><code><span class="comment"># From any project directory</span>
+<pre><code><span class="comment"># Initialize a project</span>
 <span class="command">cd</span> ~/projects/my-app
+<span class="command">orchestrator init</span>
 
 <span class="comment"># Add a task and let it run</span>
 <span class="command">orchestrator add</span> <span class="string">"Fix auth bug"</span> <span class="string">"Login returns 500 on expired tokens"</span> <span class="string">"backend"</span>
@@ -169,7 +182,9 @@
 <span class="command">orchestrator next</span>                          <span class="comment"># Route + run next task</span>
 <span class="command">orchestrator serve</span>                         <span class="comment"># Start background server</span>
 <span class="command">orchestrator jobs-add</span> <span class="string">"0 9 * * *"</span> <span class="string">"title"</span>  <span class="comment"># Schedule a recurring task</span>
-<span class="command">orchestrator service-install</span>               <span class="comment"># macOS auto-start</span></code></pre>
+<span class="command">orchestrator init</span>                          <span class="comment"># Initialize project</span>
+<span class="command">orchestrator projects</span>                      <span class="comment"># List all projects</span>
+<span class="command">brew services start</span> orchestrator            <span class="comment"># macOS auto-start</span></code></pre>
 
       <p><a href="https://github.com/gabrielkoerich/orchestrator" target="_blank">View full documentation and source on GitHub &rarr;</a></p>
 
