@@ -169,46 +169,109 @@ jobs:
       - name: Update Homebrew formula
         if: steps.check.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           REPO="gabrielkoerich/orchestrator"
           URL="https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz"
+          TAP_REPO="gabrielkoerich/homebrew-tap"
 
           # Download archive and compute sha256
           SHA256=$(curl -sL "$URL" | sha256sum | awk '{print $1}')
           echo "SHA256: $SHA256"
 
-          # Update formula with new url + sha256
-          python3 - "$VERSION" "$SHA256" "$REPO" <<'PYEOF'
-          import re, sys
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "HOMEBREW_TAP_TOKEN secret is required to push to ${TAP_REPO}"
+            exit 1
+          fi
 
-          version = sys.argv[1]
-          sha256 = sys.argv[2]
-          repo = sys.argv[3]
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" tap-repo
+          mkdir -p tap-repo/Formula
 
-          url_val = f"https://github.com/{repo}/archive/refs/tags/{version}.tar.gz"
-          url_line = f'  url "{url_val}"'
-          sha_line = f'  sha256 "{sha256}"'
+          cat > tap-repo/Formula/orchestrator.rb <<EOF
+          class Orchestrator < Formula
+            desc "Multi-agent task orchestrator for AI coding agents (claude, codex, opencode)"
+            homepage "https://github.com/gabrielkoerich/orchestrator"
+            url "https://github.com/gabrielkoerich/orchestrator/archive/refs/tags/${VERSION}.tar.gz"
+            sha256 "${SHA256}"
+            head "https://github.com/gabrielkoerich/orchestrator.git", branch: "main"
+            license "MIT"
 
-          with open("Formula/orchestrator.rb") as f:
-              content = f.read()
+            depends_on "yq"
+            depends_on "jq"
+            depends_on "just"
+            depends_on "python@3"
 
-          if 'url "' in content:
-              content = re.sub(r'  url ".*"', url_line, content)
-              content = re.sub(r'  sha256 ".*"', sha_line, content)
-          else:
-              content = content.replace(
-                  '  head "',
-                  f'{url_line}\n{sha_line}\n  head "'
-              )
+            def install
+              libexec.install "scripts", "prompts", "justfile"
+              libexec.install Dir["*.example.yml"]
+              libexec.install "tests" if (buildpath/"tests").exist?
 
-          with open("Formula/orchestrator.rb", "w") as f:
-              f.write(content)
-          PYEOF
+              (bin/"orchestrator").write <<~EOS
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                export PROJECT_DIR="\${PROJECT_DIR:-\$(pwd)}"
+                export ORCH_HOME="\${ORCH_HOME:-\$HOME/.orchestrator}"
+
+                mkdir -p "\$ORCH_HOME"
+
+                # State paths (persistent in user home)
+                export TASKS_PATH="\${TASKS_PATH:-\$ORCH_HOME/tasks.yml}"
+                export JOBS_PATH="\${JOBS_PATH:-\$ORCH_HOME/jobs.yml}"
+                export CONFIG_PATH="\${CONFIG_PATH:-\$ORCH_HOME/config.yml}"
+                export STATE_DIR="\${STATE_DIR:-\$ORCH_HOME/.orchestrator}"
+                export CONTEXTS_DIR="\${CONTEXTS_DIR:-\$ORCH_HOME/contexts}"
+                export LOCK_PATH="\${LOCK_PATH:-\$TASKS_PATH.lock}"
+
+                # Code lives in Homebrew libexec
+                cd "#{libexec}"
+                exec just "\$@"
+              EOS
+            end
+
+            service do
+              run [opt_bin/"orchestrator", "serve"]
+              keep_alive true
+              log_path var/"log/orchestrator.log"
+              error_log_path var/"log/orchestrator.error.log"
+            end
+
+            def caveats
+              <<~EOS
+                To get started:
+                  cd ~/your-project
+                  orchestrator init         # configure project
+                  orchestrator add "title"  # add a task
+                  orchestrator serve        # start the server
+
+                Background service (auto-start on login):
+                  brew services start orchestrator
+
+                Required agent CLIs (install at least one):
+                  brew install --cask claude-code   # Claude
+                  brew install --cask codex         # Codex
+                  brew install opencode             # OpenCode
+
+                Optional for GitHub sync:
+                  brew install gh && gh auth login
+              EOS
+            end
+
+            test do
+              assert_match "orchestrator", shell_output("#{bin}/orchestrator 2>&1", 0)
+            end
+          end
+          EOF
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/orchestrator.rb
-          git commit -m "chore: update homebrew formula for ${VERSION}"
-          git push origin main
+          git -C tap-repo config user.name "github-actions[bot]"
+          git -C tap-repo config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C tap-repo add Formula/orchestrator.rb
+          if git -C tap-repo diff --cached --quiet; then
+            echo "Homebrew formula unchanged"
+            exit 0
+          fi
+          git -C tap-repo commit -m "chore: update orchestrator formula for ${VERSION}"
+          git -C tap-repo push origin main
