@@ -74,7 +74,15 @@ unlock:
 
 # Tail orchestrator.log
 log tail="50":
-  @tail -n {{tail}} .orchestrator/orchestrator.log
+  @tail -n {{tail}} "${STATE_DIR:-.orchestrator}/orchestrator.log"
+
+# Initialize orchestrator for current project
+init:
+  @scripts/init.sh
+
+# List all projects with tasks
+projects:
+  @yq -r '[.tasks[].dir // ""] | unique | map(select(length > 0)) | .[]' "${TASKS_PATH:-tasks.yml}"
 
 # Install to ~/.orchestrator and add wrapper to ~/.bin
 install:
@@ -122,11 +130,11 @@ jobs-remove id:
 
 # Enable a scheduled job
 jobs-enable id:
-  @yq -i '(.jobs[] | select(.id == "{{id}}") | .enabled) = true' jobs.yml && echo "Enabled job '{{id}}'"
+  @yq -i '(.jobs[] | select(.id == "{{id}}") | .enabled) = true' "${JOBS_PATH:-jobs.yml}" && echo "Enabled job '{{id}}'"
 
 # Disable a scheduled job
 jobs-disable id:
-  @yq -i '(.jobs[] | select(.id == "{{id}}") | .enabled) = false' jobs.yml && echo "Disabled job '{{id}}'"
+  @yq -i '(.jobs[] | select(.id == "{{id}}") | .enabled) = false' "${JOBS_PATH:-jobs.yml}" && echo "Disabled job '{{id}}'"
 
 # Check and run due scheduled jobs
 jobs-tick:

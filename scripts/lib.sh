@@ -515,6 +515,16 @@ load_task() {
   export ROLE
 }
 
+dir_filter() {
+  local project_dir="${PROJECT_DIR:-}"
+  local orch_home="${ORCH_HOME:-$HOME/.orchestrator}"
+  if [ -z "$project_dir" ] || [ "$project_dir" = "$orch_home" ]; then
+    echo '.tasks[]'
+  else
+    echo ".tasks[] | select(.dir == \"$project_dir\" or .dir == null or .dir == \"\")"
+  fi
+}
+
 run_with_timeout() {
   local timeout_seconds=${AGENT_TIMEOUT_SECONDS:-900}
   if command -v timeout >/dev/null 2>&1; then

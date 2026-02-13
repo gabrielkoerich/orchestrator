@@ -16,9 +16,17 @@ require_gh() {
 require_gh
 init_tasks_file
 
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+export PROJECT_DIR
+
 REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
-  REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+  if [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR/.git" ]; then
+    REPO=$(cd "$PROJECT_DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+  fi
+  if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
+    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+  fi
 fi
 
 SYNC_LABEL=${GITHUB_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}

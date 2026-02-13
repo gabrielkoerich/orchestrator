@@ -44,6 +44,10 @@ teardown() {
   run yq -r '.tasks[1].title' "$TASKS_PATH"
   [ "$status" -eq 0 ]
   [ "$output" = "Test Title" ]
+
+  run yq -r '.tasks[1].dir' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TMP_DIR" ]
 }
 
 @test "route_task.sh sets agent, status, and profile" {
@@ -646,4 +650,45 @@ SH
 
   run yq -r '.jobs | length' "$JOBS_PATH"
   [ "$output" -eq 0 ]
+}
+
+@test "init.sh prints project info" {
+  run env PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/init.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Initialized orchestrator"* ]]
+  [[ "$output" == *"$TMP_DIR"* ]]
+}
+
+@test "list_tasks.sh filters by PROJECT_DIR" {
+  # Task 1 (Init) already has dir=$TMP_DIR from setup()
+  # Add a task for a different project
+  OTHER_DIR=$(mktemp -d)
+  run env PROJECT_DIR="$OTHER_DIR" TASKS_PATH="$TASKS_PATH" "${REPO_DIR}/scripts/add_task.sh" "Other Project" "other body" ""
+  [ "$status" -eq 0 ]
+
+  # Listing from TMP_DIR should only show the Init task
+  run env PROJECT_DIR="$TMP_DIR" TASKS_PATH="$TASKS_PATH" "${REPO_DIR}/scripts/list_tasks.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Init"* ]]
+  [[ "$output" != *"Other Project"* ]]
+
+  # Listing from OTHER_DIR should only show the Other task
+  run env PROJECT_DIR="$OTHER_DIR" TASKS_PATH="$TASKS_PATH" "${REPO_DIR}/scripts/list_tasks.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Other Project"* ]]
+  [[ "$output" != *"Init"* ]]
+
+  rm -rf "$OTHER_DIR"
+}
+
+@test "jobs_add.sh records dir field" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  printf 'jobs: []\n' > "$JOBS_PATH"
+
+  run env JOBS_PATH="$JOBS_PATH" PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "Dir Job" "" "" ""
+  [ "$status" -eq 0 ]
+
+  run yq -r '.jobs[0].dir' "$JOBS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TMP_DIR" ]
 }

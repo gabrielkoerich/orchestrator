@@ -199,7 +199,23 @@ while true; do
   "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
   NOW_EPOCH=$(date +%s)
   if [ $((NOW_EPOCH - LAST_GH_PULL)) -ge "$GH_PULL_INTERVAL" ]; then
-    "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+    # Run gh_sync for each unique project dir
+    TASKS_FILE="${TASKS_PATH:-tasks.yml}"
+    if [ -f "$TASKS_FILE" ]; then
+      DIRS=$(yq -r '[.tasks[].dir // ""] | unique | .[]' "$TASKS_FILE" 2>/dev/null || true)
+      SYNCED_DEFAULT=false
+      for dir in $DIRS; do
+        if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
+          PROJECT_DIR="$dir" "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+          SYNCED_DEFAULT=true
+        fi
+      done
+      if [ "$SYNCED_DEFAULT" = false ]; then
+        "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+      fi
+    else
+      "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+    fi
     LAST_GH_PULL=$NOW_EPOCH
   fi
 

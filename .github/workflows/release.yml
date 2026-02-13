@@ -1,0 +1,198 @@
+name: Release
+
+on:
+  schedule:
+    - cron: '0 12 * * 5' # Every Friday at noon UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for new commits since last tag
+        id: check
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$LAST_TAG" ]; then
+            COMMIT_COUNT=$(git rev-list "$LAST_TAG"..HEAD --count)
+          else
+            COMMIT_COUNT=$(git rev-list HEAD --count)
+          fi
+          echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "No new commits since $LAST_TAG — skipping release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$COMMIT_COUNT new commits since ${LAST_TAG:-beginning}"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine version bump from conventional commits
+        if: steps.check.outputs.skip == 'false'
+        id: version
+        run: |
+          LAST_TAG="${{ steps.check.outputs.last_tag }}"
+
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s")
+          else
+            COMMITS=$(git log --pretty=format:"%s")
+          fi
+
+          # Default to patch bump
+          BUMP="patch"
+
+          # feat: or feat(scope): → minor
+          if echo "$COMMITS" | grep -qE '^feat(\(.*\))?!?:'; then
+            BUMP="minor"
+          fi
+
+          # BREAKING CHANGE in body or type!: → major
+          HAS_BREAKING=false
+          if echo "$COMMITS" | grep -qE '^[a-z]+(\(.*\))?!:'; then
+            HAS_BREAKING=true
+          fi
+          if [ -n "$LAST_TAG" ]; then
+            if git log "$LAST_TAG"..HEAD --pretty=format:"%b" | grep -q "BREAKING CHANGE"; then
+              HAS_BREAKING=true
+            fi
+          fi
+          if [ "$HAS_BREAKING" = true ]; then
+            BUMP="major"
+          fi
+
+          if [ -z "$LAST_TAG" ]; then
+            NEW_VERSION="v0.1.0"
+          else
+            CURRENT="${LAST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            case "$BUMP" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $NEW_VERSION (${BUMP} bump)"
+
+      - name: Generate changelog
+        if: steps.check.outputs.skip == 'false'
+        id: changelog
+        run: |
+          LAST_TAG="${{ steps.check.outputs.last_tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          if [ -n "$LAST_TAG" ]; then
+            RAW=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s|%h")
+          else
+            RAW=$(git log --pretty=format:"%s|%h")
+          fi
+
+          BREAKING=""
+          FEATURES=""
+          FIXES=""
+          OTHER=""
+
+          while IFS='|' read -r msg hash; do
+            [ -n "$msg" ] || continue
+            entry="- ${msg} (${hash})"
+            if echo "$msg" | grep -qE '^[a-z]+(\(.*\))?!:'; then
+              BREAKING+="${entry}"$'\n'
+            elif echo "$msg" | grep -qE '^feat(\(.*\))?:'; then
+              FEATURES+="${entry}"$'\n'
+            elif echo "$msg" | grep -qE '^fix(\(.*\))?:'; then
+              FIXES+="${entry}"$'\n'
+            else
+              OTHER+="${entry}"$'\n'
+            fi
+          done <<< "$RAW"
+
+          CHANGELOG="## ${VERSION}"$'\n\n'
+          [ -n "$BREAKING" ] && CHANGELOG+="### Breaking Changes"$'\n'"${BREAKING}"$'\n'
+          [ -n "$FEATURES" ] && CHANGELOG+="### Features"$'\n'"${FEATURES}"$'\n'
+          [ -n "$FIXES" ] && CHANGELOG+="### Bug Fixes"$'\n'"${FIXES}"$'\n'
+          [ -n "$OTHER" ] && CHANGELOG+="### Other Changes"$'\n'"${OTHER}"$'\n'
+
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$CHANGELOG"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and release
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "$VERSION"
+          git push origin "$VERSION"
+
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "${{ steps.changelog.outputs.body }}"
+
+          echo "Created release $VERSION"
+
+      - name: Update Homebrew formula
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          REPO="gabrielkoerich/orchestrator"
+          URL="https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz"
+
+          # Download archive and compute sha256
+          SHA256=$(curl -sL "$URL" | sha256sum | awk '{print $1}')
+          echo "SHA256: $SHA256"
+
+          # Update formula with new url + sha256
+          python3 - "$VERSION" "$SHA256" "$REPO" <<'PYEOF'
+import re, sys
+
+version = sys.argv[1]
+sha256 = sys.argv[2]
+repo = sys.argv[3]
+
+url_val = f"https://github.com/{repo}/archive/refs/tags/{version}.tar.gz"
+url_line = f'  url "{url_val}"'
+sha_line = f'  sha256 "{sha256}"'
+
+with open("Formula/orchestrator.rb") as f:
+    content = f.read()
+
+if 'url "' in content:
+    content = re.sub(r'  url ".*"', url_line, content)
+    content = re.sub(r'  sha256 ".*"', sha_line, content)
+else:
+    content = content.replace(
+        '  head "',
+        f'{url_line}\n{sha_line}\n  head "'
+    )
+
+with open("Formula/orchestrator.rb", "w") as f:
+    f.write(content)
+PYEOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/orchestrator.rb
+          git commit -m "chore: update homebrew formula for ${VERSION}"
+          git push origin main

@@ -51,7 +51,8 @@ if [ -n "$EXISTING" ]; then
   exit 1
 fi
 
-export JOB_ID SCHEDULE TITLE BODY LABELS AGENT
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+export JOB_ID SCHEDULE TITLE BODY LABELS AGENT PROJECT_DIR
 
 yq -i \
   '.jobs += [{
@@ -63,6 +64,7 @@ yq -i \
       "labels": (strenv(LABELS) | split(",") | map(select(length > 0))),
       "agent": (strenv(AGENT) | select(length > 0) // null)
     },
+    "dir": env(PROJECT_DIR),
     "enabled": true,
     "last_run": null,
     "last_task_status": null,

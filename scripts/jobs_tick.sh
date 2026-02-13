@@ -74,7 +74,9 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
     JOB_LABELS="scheduled,job:${JOB_ID}"
   fi
 
-  ADD_OUTPUT=$("${SCRIPT_DIR}/add_task.sh" "$JOB_TITLE" "$JOB_BODY" "$JOB_LABELS")
+  JOB_DIR=$(yq -r ".jobs[$i].dir // \"\"" "$JOBS_PATH")
+
+  ADD_OUTPUT=$(PROJECT_DIR="$JOB_DIR" "${SCRIPT_DIR}/add_task.sh" "$JOB_TITLE" "$JOB_BODY" "$JOB_LABELS")
   NEW_TASK_ID=$(printf '%s' "$ADD_OUTPUT" | grep -oE '[0-9]+$')
 
   # Set agent if specified

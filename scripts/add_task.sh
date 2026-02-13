@@ -17,7 +17,8 @@ NOW=$(now_iso)
 
 BODY=${BODY:-}
 LABELS=${LABELS:-}
-export NEXT_ID TITLE BODY LABELS NOW
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+export NEXT_ID TITLE BODY LABELS NOW PROJECT_DIR
 
 with_lock yq -i \
   '.tasks += [{
@@ -47,6 +48,7 @@ with_lock yq -i \
     "review_decision": null,
     "review_notes": null,
     "history": [],
+    "dir": env(PROJECT_DIR),
     "created_at": env(NOW),
     "updated_at": env(NOW)
   }]' \

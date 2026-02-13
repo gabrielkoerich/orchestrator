@@ -51,6 +51,14 @@ fi
 echo "$$" > "$TASK_LOCK/pid"
 trap 'rm -f "$TASK_LOCK/pid"; rmdir "$TASK_LOCK" 2>/dev/null || true' EXIT
 
+# Read task's dir field and override PROJECT_DIR if set
+TASK_DIR=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .dir // \"\"" "$TASKS_PATH")
+if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ] && [ -d "$TASK_DIR" ]; then
+  PROJECT_DIR="$TASK_DIR"
+  export PROJECT_DIR
+  load_project_config
+fi
+
 # Load all task fields in one pass
 load_task "$TASK_ID"
 
@@ -397,6 +405,7 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
         "review_decision": null,
         "review_notes": null,
         "history": [],
+        "dir": env(PROJECT_DIR),
         "created_at": env(NOW),
         "updated_at": env(NOW)
       }]' \

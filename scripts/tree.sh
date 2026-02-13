@@ -40,7 +40,11 @@ print_tree() {
   fi
 }
 
-ROOTS=$(yq -r '.tasks[] | select(.parent_id == null) | .id' "$TASKS_PATH")
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+export PROJECT_DIR
+FILTER=$(dir_filter)
+
+ROOTS=$(yq -r "${FILTER} | select(.parent_id == null) | .id" "$TASKS_PATH")
 if [ -z "$ROOTS" ]; then
   echo "No tasks."
   exit 0
