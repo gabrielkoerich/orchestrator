@@ -12,46 +12,16 @@ if [ -z "$TITLE" ]; then
   exit 1
 fi
 
-NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
-NOW=$(now_iso)
-
 BODY=${BODY:-}
 LABELS=${LABELS:-}
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
-export NEXT_ID TITLE BODY LABELS NOW PROJECT_DIR
+NOW=$(now_iso)
+export NOW PROJECT_DIR
 
-with_lock yq -i \
-  '.tasks += [{
-    "id": (env(NEXT_ID) | tonumber),
-    "title": env(TITLE),
-    "body": strenv(BODY),
-    "labels": (strenv(LABELS) | split(",") | map(select(length > 0))),
-    "status": "new",
-    "agent": null,
-    "agent_model": null,
-    "agent_profile": null,
-    "selected_skills": [],
-    "parent_id": null,
-    "children": [],
-    "route_reason": null,
-    "route_warning": null,
-    "summary": null,
-    "reason": null,
-    "accomplished": [],
-    "remaining": [],
-    "blockers": [],
-    "files_changed": [],
-    "needs_help": false,
-    "attempts": 0,
-    "last_error": null,
-    "retry_at": null,
-    "review_decision": null,
-    "review_notes": null,
-    "history": [],
-    "dir": env(PROJECT_DIR),
-    "created_at": env(NOW),
-    "updated_at": env(NOW)
-  }]' \
-  "$TASKS_PATH"
+# Compute ID inside lock to prevent race conditions
+acquire_lock
+NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
+create_task_entry "$NEXT_ID" "$TITLE" "$BODY" "$LABELS"
+release_lock
 
 echo "Added task $NEXT_ID"

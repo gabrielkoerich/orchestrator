@@ -19,6 +19,8 @@ echo "[route] task=$TASK_ID starting" >&2
 mkdir -p .orchestrator
 CMD_STATUS=0
 ROUTED_AGENT=""
+TMP_PROFILE=""
+trap 'rm -f "$TMP_PROFILE"' EXIT
 
 TASK_TITLE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .title" "$TASKS_PATH")
 TASK_BODY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .body" "$TASKS_PATH")
@@ -61,6 +63,8 @@ run_router_cmd() {
   "$@"
 }
 
+start_spinner "Routing task $TASK_ID"
+
 case "$ROUTER_AGENT" in
   codex)
     echo "[route] using codex model=${ROUTER_MODEL:-default}" >&2
@@ -94,6 +98,7 @@ case "$ROUTER_AGENT" in
     ;;
 esac
 
+stop_spinner
 echo "[route] raw response:" >&2
 printf '%s\n' "$RESPONSE" | sed 's/^/[route] > /' >&2
 
@@ -134,7 +139,6 @@ if [ "${CMD_STATUS:-0}" -ne 0 ]; then
        (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL)]) | unique) | \
        (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
       "$TASKS_PATH"
-    rm -f "$TMP_PROFILE"
     append_history "$TASK_ID" "routed" "$REASON"
     echo "[route] task=$TASK_ID fallback to ${ROUTED_AGENT}" >&2
     echo "$ROUTED_AGENT"
@@ -256,8 +260,6 @@ with_lock yq -i \
    (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL)] + (strenv(MODEL_LABEL) | select(length > 0) | [.] // []) + (strenv(DECOMPOSE_LABEL) | select(length > 0) | [.] // [])) | unique) | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
-
-rm -f "$TMP_PROFILE"
 
 NOTE="routed to $ROUTED_AGENT"
 if [ -n "$MODEL" ] && [ "$MODEL" != "null" ]; then

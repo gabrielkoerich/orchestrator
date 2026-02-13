@@ -77,8 +77,16 @@ log tail="50":
   @tail -n {{tail}} "${STATE_DIR:-.orchestrator}/orchestrator.log"
 
 # Initialize orchestrator for current project
-init:
-  @scripts/init.sh
+init *args="":
+  @scripts/init.sh {{args}}
+
+# Interactive chat with the orchestrator
+chat:
+  @scripts/chat.sh
+
+# List installed agent CLIs
+agents:
+  @scripts/agents.sh
 
 # List all projects with tasks
 projects:

@@ -156,8 +156,12 @@ gh_api() {
 
 render_template() {
   local template_path="$1"
-  # All variables passed via environment (already exported by caller)
-  python3 - "$template_path" <<'PY'
+  if [ ! -f "$template_path" ]; then
+    echo "[render_template] template not found: $template_path" >&2
+    return 1
+  fi
+  local output
+  output=$(python3 - "$template_path" <<'PY'
 import os, sys, re
 path = sys.argv[1]
 with open(path, "r", encoding="utf-8") as fh:
@@ -165,6 +169,17 @@ with open(path, "r", encoding="utf-8") as fh:
 data = re.sub(r'\{\{(\w+)\}\}', lambda m: os.environ.get(m.group(1), ''), data)
 sys.stdout.write(data)
 PY
+  )
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "[render_template] python3 failed (exit $rc) for $template_path" >&2
+    return "$rc"
+  fi
+  if [ -z "$output" ]; then
+    echo "[render_template] empty output for $template_path" >&2
+    return 1
+  fi
+  printf '%s' "$output"
 }
 
 require_yq() {
@@ -519,10 +534,119 @@ dir_filter() {
   local project_dir="${PROJECT_DIR:-}"
   local orch_home="${ORCH_HOME:-$HOME/.orchestrator}"
   if [ -z "$project_dir" ] || [ "$project_dir" = "$orch_home" ]; then
+    # No project context — show all tasks
     echo '.tasks[]'
   else
+    # Filter to current project. The null/empty check handles pre-v0.1.0 tasks
+    # that were created before the dir field existed.
     echo ".tasks[] | select(.dir == \"$project_dir\" or .dir == null or .dir == \"\")"
   fi
+}
+
+max_attempts() {
+  local max
+  max=$(config_get '.workflow.max_attempts // ""')
+  if [ -z "$max" ] || [ "$max" = "null" ]; then
+    echo "${MAX_ATTEMPTS:-10}"
+  else
+    echo "$max"
+  fi
+}
+
+# Shared task creation — used by add_task.sh and run_task.sh delegations.
+# Caller must hold the lock if calling inside a locked section.
+# Args: id title body labels_csv [parent_id] [suggested_agent]
+# Expects PROJECT_DIR and NOW in environment.
+create_task_entry() {
+  local id="$1" title="$2" body="$3" labels_csv="$4"
+  local parent_id="${5:-}" suggested_agent="${6:-}"
+
+  export id title body labels_csv parent_id suggested_agent
+  local parent_expr="null"
+  if [ -n "$parent_id" ]; then
+    parent_expr="(env(parent_id) | tonumber)"
+  fi
+
+  yq -i \
+    ".tasks += [{
+      \"id\": (env(id) | tonumber),
+      \"title\": env(title),
+      \"body\": strenv(body),
+      \"labels\": (strenv(labels_csv) | split(\",\") | map(select(length > 0))),
+      \"status\": \"new\",
+      \"agent\": (strenv(suggested_agent) | select(length > 0) // null),
+      \"agent_model\": null,
+      \"agent_profile\": null,
+      \"selected_skills\": [],
+      \"parent_id\": ${parent_expr},
+      \"children\": [],
+      \"route_reason\": null,
+      \"route_warning\": null,
+      \"summary\": null,
+      \"reason\": null,
+      \"accomplished\": [],
+      \"remaining\": [],
+      \"blockers\": [],
+      \"files_changed\": [],
+      \"needs_help\": false,
+      \"attempts\": 0,
+      \"last_error\": null,
+      \"retry_at\": null,
+      \"review_decision\": null,
+      \"review_notes\": null,
+      \"history\": [],
+      \"dir\": env(PROJECT_DIR),
+      \"created_at\": env(NOW),
+      \"updated_at\": env(NOW)
+    }]" \
+    "$TASKS_PATH"
+}
+
+# Simple spinner for long-running operations.
+# Usage: start_spinner "message"; long_command; stop_spinner
+SPINNER_PID=""
+start_spinner() {
+  local msg="${1:-Working}"
+  if [ ! -t 2 ]; then return; fi  # skip if not a terminal
+  (
+    chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    i=0
+    while true; do
+      printf '\r\033[K  %s %s' "${chars:i%${#chars}:1}" "$msg" >&2
+      i=$((i + 1))
+      sleep 0.1
+    done
+  ) &
+  SPINNER_PID=$!
+  disown "$SPINNER_PID" 2>/dev/null || true
+}
+
+stop_spinner() {
+  if [ -n "${SPINNER_PID:-}" ]; then
+    kill "$SPINNER_PID" 2>/dev/null || true
+    wait "$SPINNER_PID" 2>/dev/null || true
+    SPINNER_PID=""
+    printf '\r\033[K' >&2
+  fi
+}
+
+# Mark a task as needs_review with retry backoff.
+# Usage: mark_needs_review TASK_ID ATTEMPTS "error message" ["history note"]
+mark_needs_review() {
+  local task_id="$1" attempts="$2" error="$3" note="${4:-$3}"
+  local now_epoch now delay retry_at
+  now_epoch=$(now_epoch)
+  delay=$(retry_delay_seconds "$attempts")
+  retry_at=$((now_epoch + delay))
+  now=$(now_iso)
+  export now retry_at
+  with_lock yq -i \
+    "(.tasks[] | select(.id == $task_id) | .status) = \"needs_review\" | \
+     (.tasks[] | select(.id == $task_id) | .last_error) = \"$error\" | \
+     (.tasks[] | select(.id == $task_id) | .retry_at) = (env(retry_at) | tonumber) | \
+     (.tasks[] | select(.id == $task_id) | .updated_at) = env(now)" \
+    "$TASKS_PATH"
+  append_history "$task_id" "needs_review" "$note"
 }
 
 run_with_timeout() {

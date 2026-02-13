@@ -193,7 +193,9 @@ The agent writes results to `.orchestrator/output-{task_id}.json`. If the file i
 | `orchestrator watch` | Poll loop every 10s. |
 | `orchestrator watch 5` | Poll loop every 5s. |
 | `orchestrator init` | Initialize orchestrator for current project. |
+| `orchestrator init --repo "org/repo"` | Non-interactive init with GitHub repo. |
 | `orchestrator projects` | List all projects with tasks. |
+| `orchestrator agents` | List installed agent CLIs. |
 | `orchestrator serve` | Start server (poll + jobs + GitHub sync + auto-restart). |
 | `orchestrator stop` | Stop server. |
 | `orchestrator restart` | Restart server. |
@@ -459,6 +461,7 @@ All runtime configuration lives in `config.yml`.
 | `workflow` | `review_owner` | GitHub handle to tag when review is needed. | `@owner` |
 | `workflow` | `enable_review_agent` | Run a review agent after completion. | `false` |
 | `workflow` | `review_agent` | Executor for the review agent. | `claude` |
+| `workflow` | `max_attempts` | Max retry attempts before marking task as blocked. | `10` |
 | `router` | `agent` | Default router executor. | `claude` |
 | `router` | `model` | Router model name. | `haiku` |
 | `router` | `timeout_seconds` | Router timeout (0 disables timeout). | `120` |

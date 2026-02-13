@@ -74,18 +74,7 @@ fi
 
 if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
   echo "[run] task=$TASK_ID missing agent after routing" >&2
-  NOW_EPOCH=$(now_epoch)
-  DELAY=$(retry_delay_seconds "$ATTEMPTS")
-  RETRY_AT=$((NOW_EPOCH + DELAY))
-  NOW=$(now_iso)
-  export NOW RETRY_AT
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"router did not set agent\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .retry_at) = (env(RETRY_AT) | tonumber) | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
-    "$TASKS_PATH"
-  append_history "$TASK_ID" "needs_review" "router did not set agent"
+  mark_needs_review "$TASK_ID" "$ATTEMPTS" "router did not set agent"
   exit 0
 fi
 
@@ -117,6 +106,20 @@ ATTEMPTS=$((ATTEMPTS + 1))
 NOW=$(now_iso)
 export NOW ATTEMPTS
 
+# Check max attempts before starting
+MAX=$(max_attempts)
+if [ "$ATTEMPTS" -gt "$MAX" ]; then
+  echo "[run] task=$TASK_ID exceeded max attempts ($MAX)" >&2
+  with_lock yq -i \
+    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
+     (.tasks[] | select(.id == $TASK_ID) | .reason) = \"exceeded max attempts ($MAX)\" | \
+     (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"max attempts exceeded\" | \
+     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+    "$TASKS_PATH"
+  append_history "$TASK_ID" "blocked" "exceeded max attempts ($MAX)"
+  exit 0
+fi
+
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .status) = \"in_progress\" | \
    (.tasks[] | select(.id == $TASK_ID) | .attempts) = (env(ATTEMPTS) | tonumber) | \
@@ -142,6 +145,8 @@ fi
 AGENT_MESSAGE=$(render_template "prompts/agent.md")
 
 require_agent "$TASK_AGENT"
+
+start_spinner "Running task $TASK_ID ($TASK_AGENT)"
 
 RESPONSE=""
 CMD_STATUS=0
@@ -176,22 +181,12 @@ ${AGENT_MESSAGE}"
     ;;
 esac
 
+stop_spinner
 echo "[run] agent finished (exit=$CMD_STATUS)" >&2
 
 if [ "$CMD_STATUS" -ne 0 ]; then
   echo "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS" >&2
-  NOW_EPOCH=$(now_epoch)
-  DELAY=$(retry_delay_seconds "$ATTEMPTS")
-  RETRY_AT=$((NOW_EPOCH + DELAY))
-  NOW=$(now_iso)
-  export NOW RETRY_AT
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"agent command failed (exit $CMD_STATUS)\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .retry_at) = (env(RETRY_AT) | tonumber) | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
-    "$TASKS_PATH"
-  append_history "$TASK_ID" "needs_review" "agent command failed (exit $CMD_STATUS)"
+  mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent command failed (exit $CMD_STATUS)"
   exit 0
 fi
 
@@ -207,20 +202,9 @@ fi
 
 if [ -z "$RESPONSE_JSON" ]; then
   echo "[run] task=$TASK_ID invalid JSON response" >&2
-  NOW_EPOCH=$(now_epoch)
-  DELAY=$(retry_delay_seconds "$ATTEMPTS")
-  RETRY_AT=$((NOW_EPOCH + DELAY))
-  NOW=$(now_iso)
-  export NOW RETRY_AT
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"agent response invalid YAML/JSON\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .retry_at) = (env(RETRY_AT) | tonumber) | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
-    "$TASKS_PATH"
   mkdir -p "$CONTEXTS_DIR"
   printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/response-${TASK_ID}.md"
-  append_history "$TASK_ID" "needs_review" "agent response invalid YAML/JSON"
+  mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response invalid YAML/JSON"
   exit 0
 fi
 
@@ -239,18 +223,7 @@ REASON=$(printf '%s' "$RESPONSE_JSON" | jq -r '.reason // ""')
 DELEGATIONS_JSON=$(printf '%s' "$RESPONSE_JSON" | jq -c '.delegations // []')
 
 if [ -z "$AGENT_STATUS" ] || [ "$AGENT_STATUS" = "null" ]; then
-  NOW_EPOCH=$(now_epoch)
-  DELAY=$(retry_delay_seconds "$ATTEMPTS")
-  RETRY_AT=$((NOW_EPOCH + DELAY))
-  NOW=$(now_iso)
-  export NOW RETRY_AT
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"agent response missing status\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .retry_at) = (env(RETRY_AT) | tonumber) | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
-    "$TASKS_PATH"
-  append_history "$TASK_ID" "needs_review" "agent response missing status"
+  mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response missing status"
   exit 0
 fi
 
@@ -312,20 +285,7 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
   esac
 
   if [ "$REVIEW_STATUS" -ne 0 ]; then
-    NOW_EPOCH=$(now_epoch)
-    DELAY=$(retry_delay_seconds "$ATTEMPTS")
-    RETRY_AT=$((NOW_EPOCH + DELAY))
-    NOW=$(now_iso)
-    export NOW RETRY_AT
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
-       (.tasks[] | select(.id == $TASK_ID) | .review_decision) = \"request_changes\" | \
-       (.tasks[] | select(.id == $TASK_ID) | .review_notes) = \"review agent failed\" | \
-       (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"review agent failed\" | \
-       (.tasks[] | select(.id == $TASK_ID) | .retry_at) = (env(RETRY_AT) | tonumber) | \
-       (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
-      "$TASKS_PATH"
-    append_history "$TASK_ID" "needs_review" "review agent failed"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review agent failed"
     exit 0
   fi
 
@@ -333,20 +293,7 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
   REVIEW_NOTES=$(printf '%s' "$REVIEW_RESPONSE" | yq -r '.notes // ""')
 
   if [ "$REVIEW_DECISION" = "request_changes" ]; then
-    NOW_EPOCH=$(now_epoch)
-    DELAY=$(retry_delay_seconds "$ATTEMPTS")
-    RETRY_AT=$((NOW_EPOCH + DELAY))
-    NOW=$(now_iso)
-    export NOW RETRY_AT REVIEW_NOTES
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
-       (.tasks[] | select(.id == $TASK_ID) | .review_decision) = \"request_changes\" | \
-       (.tasks[] | select(.id == $TASK_ID) | .review_notes) = env(REVIEW_NOTES) | \
-       (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"review requested changes\" | \
-       (.tasks[] | select(.id == $TASK_ID) | .retry_at) = (env(RETRY_AT) | tonumber) | \
-       (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
-      "$TASKS_PATH"
-    append_history "$TASK_ID" "needs_review" "review requested changes"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review requested changes"
     exit 0
   fi
 
@@ -368,48 +315,16 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
   MAX_ID=$(yq -r '(.tasks | map(.id) | max) // 0' "$TASKS_PATH")
   CHILD_IDS=()
   for i in $(seq 0 $((DELEG_COUNT - 1))); do
-    TITLE=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].title // \"\"")
-    BODY=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].body // \"\"")
-    LABELS_CSV=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].labels // [] | join(\",\")")
-    SUGGESTED_AGENT=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].suggested_agent // \"\"")
+    D_TITLE=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].title // \"\"")
+    D_BODY=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].body // \"\"")
+    D_LABELS=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].labels // [] | join(\",\")")
+    D_AGENT=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].suggested_agent // \"\"")
 
     MAX_ID=$((MAX_ID + 1))
     NOW=$(now_iso)
-    export MAX_ID TITLE BODY LABELS_CSV SUGGESTED_AGENT NOW
+    export NOW PROJECT_DIR
 
-    yq -i \
-      '.tasks += [{
-        "id": (env(MAX_ID) | tonumber),
-        "title": strenv(TITLE),
-        "body": strenv(BODY),
-        "labels": (strenv(LABELS_CSV) | split(",") | map(select(length > 0))),
-        "status": "new",
-        "agent": (strenv(SUGGESTED_AGENT) | select(length > 0) // null),
-        "agent_model": null,
-        "agent_profile": null,
-        "selected_skills": [],
-        "parent_id": (env(TASK_ID) | tonumber),
-        "children": [],
-        "route_reason": null,
-        "route_warning": null,
-        "summary": null,
-        "reason": null,
-        "accomplished": [],
-        "remaining": [],
-        "blockers": [],
-        "files_changed": [],
-        "needs_help": false,
-        "attempts": 0,
-        "last_error": null,
-        "retry_at": null,
-        "review_decision": null,
-        "review_notes": null,
-        "history": [],
-        "dir": env(PROJECT_DIR),
-        "created_at": env(NOW),
-        "updated_at": env(NOW)
-      }]' \
-      "$TASKS_PATH"
+    create_task_entry "$MAX_ID" "$D_TITLE" "$D_BODY" "$D_LABELS" "$TASK_ID" "$D_AGENT"
 
     yq -i \
       "(.tasks[] | select(.id == $TASK_ID) | .children) += [$MAX_ID]" \

@@ -4,6 +4,7 @@ workflow:
   review_owner: "@owner"
   enable_review_agent: false
   review_agent: "claude"
+  max_attempts: 10
 router:
   agent: "claude"
   model: "haiku"

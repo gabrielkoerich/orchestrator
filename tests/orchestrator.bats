@@ -692,3 +692,254 @@ SH
   [ "$status" -eq 0 ]
   [ "$output" = "$TMP_DIR" ]
 }
+
+@test "run_task.sh blocks task after max_attempts exceeded" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Max Retry" "Should block after max" ""
+  [ "$status" -eq 0 ]
+
+  # Set task to already have 10 attempts (max default) and agent assigned
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex" | (.tasks[] | select(.id == 2) | .attempts) = 10' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "should not be called" >&2
+exit 1
+SH
+  chmod +x "$CODEX_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "blocked" ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .reason' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"max attempts"* ]]
+}
+
+@test "init.sh accepts --repo flag for non-interactive mode" {
+  INIT_DIR=$(mktemp -d)
+  run env PROJECT_DIR="$INIT_DIR" "${REPO_DIR}/scripts/init.sh" --repo "myorg/myapp" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Initialized orchestrator"* ]]
+  [ -f "$INIT_DIR/.orchestrator.yml" ]
+
+  run yq -r '.gh.repo' "$INIT_DIR/.orchestrator.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "myorg/myapp" ]
+
+  rm -rf "$INIT_DIR"
+}
+
+@test "agents.sh lists agent availability" {
+  run "${REPO_DIR}/scripts/agents.sh"
+  [ "$status" -eq 0 ]
+  # Should mention all three agents regardless of availability
+  [[ "$output" == *"claude"* ]]
+  [[ "$output" == *"codex"* ]]
+  [[ "$output" == *"opencode"* ]]
+}
+
+@test "concurrent task additions don't corrupt tasks.yml" {
+  # Run 10 parallel add_task.sh calls
+  pids=()
+  for i in $(seq 1 10); do
+    env TASKS_PATH="$TASKS_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/add_task.sh" "Concurrent $i" "body $i" "" >/dev/null 2>&1 &
+    pids+=($!)
+  done
+
+  # Wait for all to complete
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  # All 10 tasks should exist (plus the Init task = 11)
+  run yq -r '.tasks | length' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 11 ]
+
+  # IDs should be unique
+  run bash -c "yq -r '.tasks[].id' '$TASKS_PATH' | sort -u | wc -l"
+  [ "$status" -eq 0 ]
+  UNIQUE_COUNT=$(echo "$output" | tr -d ' ')
+  [ "$UNIQUE_COUNT" -eq 11 ]
+}
+
+@test "performance: list_tasks.sh handles 100+ tasks" {
+  # Create 100 tasks via yq batch
+  for i in $(seq 2 100); do
+    export i NOW="2026-01-01T00:00:00Z"
+    yq -i ".tasks += [{\"id\": $i, \"title\": \"Task $i\", \"body\": \"\", \"labels\": [], \"status\": \"new\", \"agent\": null, \"agent_model\": null, \"agent_profile\": null, \"selected_skills\": [], \"parent_id\": null, \"children\": [], \"route_reason\": null, \"route_warning\": null, \"summary\": null, \"reason\": null, \"accomplished\": [], \"remaining\": [], \"blockers\": [], \"files_changed\": [], \"needs_help\": false, \"attempts\": 0, \"last_error\": null, \"retry_at\": null, \"review_decision\": null, \"review_notes\": null, \"history\": [], \"dir\": \"$TMP_DIR\", \"created_at\": \"$NOW\", \"updated_at\": \"$NOW\"}]" "$TASKS_PATH"
+  done
+
+  run yq -r '.tasks | length' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 100 ]
+
+  # list should complete in reasonable time (< 10s)
+  SECONDS=0
+  run env TASKS_PATH="$TASKS_PATH" PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/list_tasks.sh"
+  [ "$status" -eq 0 ]
+  [ "$SECONDS" -lt 10 ]
+}
+
+@test "render_template fails on missing template" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; render_template '/tmp/nonexistent_template_xyz.md'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"template not found"* ]]
+}
+
+@test "create_task_entry creates task via shared helper" {
+  NOW="2026-01-01T00:00:00Z"
+  export NOW PROJECT_DIR="$TMP_DIR"
+
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    TASKS_PATH='$TASKS_PATH'
+    create_task_entry 99 'Helper Task' 'Created by helper' 'test,helper' '' ''
+  "
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 99) | .title' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Helper Task" ]
+
+  run yq -r '.tasks[] | select(.id == 99) | .dir' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TMP_DIR" ]
+}
+
+@test "chat.sh dispatches add_task action" {
+  # Stub agent that returns a chat JSON response
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"action":"add_task","params":{"title":"Fix login page","body":"The login page has a broken CSS layout","labels":"bug,frontend"},"response":"I've created a task to fix the login page."}
+JSON
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  # Feed "add a task" then "exit" via stdin
+  run bash -c "
+    printf 'add a task to fix the login page\nexit\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        JOBS_PATH='${TMP_DIR}/jobs.yml' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/chat.sh' 2>/dev/null
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Fix login page"* ]]
+
+  # Verify task was actually created
+  run yq -r '.tasks[] | select(.title == "Fix login page") | .title' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Fix login page" ]
+}
+
+@test "chat.sh handles invalid JSON gracefully" {
+  # Stub agent that returns non-JSON
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "I don't know how to respond in JSON right now."
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run bash -c "
+    printf 'hello\nexit\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        JOBS_PATH='${TMP_DIR}/jobs.yml' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/chat.sh' 2>/dev/null
+  "
+  [ "$status" -eq 0 ]
+  # Should show the raw response as fallback
+  [[ "$output" == *"I don't know how to respond"* ]]
+}
+
+@test "chat.sh exits on quit command" {
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"action":"answer","params":{},"response":"hi"}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run bash -c "
+    printf 'quit\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        JOBS_PATH='${TMP_DIR}/jobs.yml' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/chat.sh' 2>/dev/null
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Goodbye!"* ]]
+}
+
+@test "chat.sh dispatches status action" {
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"action":"status","params":{},"response":"Here's your current status."}
+JSON
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run bash -c "
+    printf 'show me the status\nexit\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        JOBS_PATH='${TMP_DIR}/jobs.yml' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/chat.sh' 2>/dev/null
+  "
+  [ "$status" -eq 0 ]
+  # Should contain status output (Total: N)
+  [[ "$output" == *"Total:"* ]]
+}
+
+@test "chat.sh cleans up history file on exit" {
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"action":"answer","params":{},"response":"hi"}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  bash -c "
+    printf 'exit\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        JOBS_PATH='${TMP_DIR}/jobs.yml' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/chat.sh' 2>/dev/null
+  "
+
+  # No chat-history files should remain
+  run bash -c "ls '${STATE_DIR}'/chat-history-* 2>/dev/null | wc -l"
+  [ "$(echo "$output" | tr -d ' ')" = "0" ]
+}

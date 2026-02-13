@@ -16,46 +16,30 @@ RESTARTING=${RESTARTING:-0}
 
 mkdir -p "$STATE_DIR"
 
-if [ -d "$SERVE_LOCK" ] && [ "$RESTARTING" != "1" ]; then
+# Single ownership check: PID file takes precedence over lock dir.
+if [ "$RESTARTING" != "1" ]; then
   if [ -f "$PID_FILE" ]; then
     EXISTING_PID=$(cat "$PID_FILE")
-    if kill -0 "$EXISTING_PID" >/dev/null 2>&1; then
+    if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" >/dev/null 2>&1; then
       if [ "$EXISTING_PID" != "$$" ]; then
         echo "Orchestrator already running (pid $EXISTING_PID)."
-        echo "Tip: use 'just restart' to stop and start again."
+        echo "Tip: use 'orchestrator restart' to stop and start again."
         exit 0
       fi
-      # If this process already owns the lock, continue.
     else
+      # Stale PID file — process is gone
       rm -f "$PID_FILE"
     fi
   fi
+  # Clean stale lock dir if no live process owns it
   rm -rf "$SERVE_LOCK"
 fi
 
 if ! mkdir "$SERVE_LOCK" 2>/dev/null; then
-  if [ "$RESTARTING" = "1" ]; then
-    :
-  else
+  if [ "$RESTARTING" != "1" ]; then
     echo "Orchestrator already running (lock exists)."
-    echo "Tip: use 'just restart' to stop and start again."
+    echo "Tip: use 'orchestrator restart' to stop and start again."
     exit 0
-  fi
-fi
-
-if [ "$RESTARTING" != "1" ]; then
-  if [ -f "$PID_FILE" ]; then
-  EXISTING_PID=$(cat "$PID_FILE")
-  if kill -0 "$EXISTING_PID" >/dev/null 2>&1; then
-    if [ "$EXISTING_PID" != "$$" ]; then
-      echo "Orchestrator already running (pid $EXISTING_PID)."
-      echo "Tip: use 'just restart' to stop and start again."
-      rm -rf "$SERVE_LOCK"
-      exit 0
-    fi
-  else
-    rm -f "$PID_FILE"
-  fi
   fi
 fi
 
