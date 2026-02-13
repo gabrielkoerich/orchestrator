@@ -24,4 +24,4 @@ NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
 create_task_entry "$NEXT_ID" "$TITLE" "$BODY" "$LABELS"
 release_lock
 
-echo "Added task $NEXT_ID"
+echo "Added task $NEXT_ID: $TITLE"

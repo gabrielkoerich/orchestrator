@@ -2,14 +2,30 @@ name: Release
 
 on:
   schedule:
-    - cron: '0 12 * * 5' # Every Friday at noon UTC
+    - cron: '0 18 * * *' # Every day at 6pm UTC
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq ripgrep
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Run tests
+        run: bats tests
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
