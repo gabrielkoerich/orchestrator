@@ -943,3 +943,109 @@ SH
   run bash -c "ls '${STATE_DIR}'/chat-history-* 2>/dev/null | wc -l"
   [ "$(echo "$output" | tr -d ' ')" = "0" ]
 }
+
+# --- plan_chat.sh tests ---
+
+@test "plan_chat.sh shows usage on missing title" {
+  run "${REPO_DIR}/scripts/plan_chat.sh"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"usage:"* ]]
+}
+
+@test "plan_chat.sh proposes plan on first turn" {
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"action":"ask","params":{},"response":"Here is my proposed plan:\n1. Set up database schema\n2. Implement API endpoints\n3. Add tests"}
+JSON
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run bash -c "
+    printf 'exit\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/plan_chat.sh' 'Build auth system' 'Need user authentication' '' 2>/dev/null
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"proposed plan"* ]]
+}
+
+@test "plan_chat.sh creates tasks on approval" {
+  # Call-counting stub: first call returns ask, second returns create_tasks
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<SH
+#!/usr/bin/env bash
+count_file="${STATE_DIR}/plan_call_count"
+count=0
+if [ -f "\$count_file" ]; then
+  count=\$(cat "\$count_file")
+fi
+count=\$((count + 1))
+echo "\$count" > "\$count_file"
+
+if [ "\$count" -eq 1 ]; then
+  cat <<'JSON'
+{"action":"ask","params":{},"response":"Here is my plan:\n1. Create user model\n2. Add login endpoint"}
+JSON
+else
+  cat <<'JSON'
+{"action":"create_tasks","params":{"tasks":[{"title":"Create user model","body":"Set up User table","labels":"backend","suggested_agent":""},{"title":"Add login endpoint","body":"POST /login","labels":"backend,api","suggested_agent":""}]},"response":"Creating 2 tasks."}
+JSON
+fi
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run bash -c "
+    printf 'looks good\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/plan_chat.sh' 'Build auth' 'Auth system' '' 2>/dev/null
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Created 2 task(s)"* ]]
+
+  # Verify tasks were actually created
+  run yq -r '.tasks[] | select(.title == "Create user model") | .title' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Create user model" ]
+
+  run yq -r '.tasks[] | select(.title == "Add login endpoint") | .title' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Add login endpoint" ]
+}
+
+@test "plan_chat.sh cleans up history on exit" {
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"action":"ask","params":{},"response":"What kind of auth?"}
+JSON
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  bash -c "
+    printf 'exit\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/plan_chat.sh' 'Build auth' '' '' 2>/dev/null
+  "
+
+  # No plan-history files should remain
+  run bash -c "ls '${STATE_DIR}'/plan-history-* 2>/dev/null | wc -l"
+  [ "$(echo "$output" | tr -d ' ')" = "0" ]
+}

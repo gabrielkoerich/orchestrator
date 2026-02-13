@@ -23,9 +23,14 @@ tree:
 add title body="" labels="":
   @scripts/add_task.sh "{{title}}" "{{body}}" "{{labels}}"
 
-# Add a task that will be decomposed into subtasks before execution
+# Interactively plan and decompose a goal into subtasks
 plan title body="" labels="":
-  @scripts/add_task.sh "{{title}}" "{{body}}" "plan,{{labels}}"
+  #!/usr/bin/env bash
+  if [ "${PLAN_INTERACTIVE:-1}" = "0" ]; then
+    scripts/add_task.sh "{{title}}" "{{body}}" "plan,{{labels}}"
+  else
+    scripts/plan_chat.sh "{{title}}" "{{body}}" "{{labels}}"
+  fi
 
 # Route a task (choose agent/profile/skills)
 route id="":
