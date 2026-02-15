@@ -735,6 +735,88 @@ SH
   rm -rf "$INIT_DIR"
 }
 
+@test "init.sh is idempotent with existing config" {
+  INIT_DIR=$(mktemp -d)
+
+  # First init creates config
+  run env PROJECT_DIR="$INIT_DIR" "${REPO_DIR}/scripts/init.sh" --repo "myorg/myapp" </dev/null
+  [ "$status" -eq 0 ]
+  [ -f "$INIT_DIR/.orchestrator.yml" ]
+
+  run yq -r '.gh.repo' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "myorg/myapp" ]
+
+  # Second init preserves existing repo
+  run env PROJECT_DIR="$INIT_DIR" "${REPO_DIR}/scripts/init.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"existing"* ]]
+
+  # Config should still have the repo
+  run yq -r '.gh.repo' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "myorg/myapp" ]
+
+  rm -rf "$INIT_DIR"
+}
+
+@test "init.sh re-init with --repo updates existing config" {
+  INIT_DIR=$(mktemp -d)
+
+  # First init
+  run env PROJECT_DIR="$INIT_DIR" "${REPO_DIR}/scripts/init.sh" --repo "old/repo" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Re-init with different repo
+  run env PROJECT_DIR="$INIT_DIR" "${REPO_DIR}/scripts/init.sh" --repo "new/repo" </dev/null
+  [ "$status" -eq 0 ]
+
+  run yq -r '.gh.repo' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "new/repo" ]
+
+  rm -rf "$INIT_DIR"
+}
+
+@test "gh_pull.sh handles paginated JSON arrays" {
+  # Simulate gh api returning two separate JSON arrays (one per page)
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ]; then
+  if printf '%s' "$*" | grep -q "repos/"; then
+    # Simulate paginated output: two arrays
+    printf '[{"number":1,"title":"Issue 1","body":"body1","labels":[],"state":"open","html_url":"https://github.com/test/repo/issues/1","updated_at":"2026-01-01T00:00:00Z","pull_request":null}]\n'
+    printf '[{"number":2,"title":"Issue 2","body":"body2","labels":[],"state":"open","html_url":"https://github.com/test/repo/issues/2","updated_at":"2026-01-01T00:00:00Z","pull_request":null}]\n'
+    exit 0
+  fi
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  # Create a minimal project config with gh.repo
+  cat > "${TMP_DIR}/.orchestrator.yml" <<'YAML'
+gh:
+  repo: "test/repo"
+YAML
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_pull.sh"
+  [ "$status" -eq 0 ]
+
+  # Both issues should have been imported
+  run yq -r '.tasks[] | select(.title == "Issue 1") | .gh_issue_number' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+
+  run yq -r '.tasks[] | select(.title == "Issue 2") | .gh_issue_number' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "2" ]
+}
+
 @test "agents.sh lists agent availability" {
   run "${REPO_DIR}/scripts/agents.sh"
   [ "$status" -eq 0 ]
@@ -942,6 +1024,56 @@ SH
   # No chat-history files should remain
   run bash -c "ls '${STATE_DIR}'/chat-history-* 2>/dev/null | wc -l"
   [ "$(echo "$output" | tr -d ' ')" = "0" ]
+}
+
+@test "chat.sh quick_task runs agent in PROJECT_DIR not cwd" {
+  # Call-counting stub: first call is the LLM (returns quick_task action),
+  # second call is the dispatched agent (records its working directory).
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<SH
+#!/usr/bin/env bash
+count_file="${STATE_DIR}/chat_call_count"
+count=0
+if [ -f "\$count_file" ]; then
+  count=\$(cat "\$count_file")
+fi
+count=\$((count + 1))
+echo "\$count" > "\$count_file"
+
+if [ "\$count" -eq 1 ]; then
+  cat <<'JSON'
+{"action":"quick_task","params":{"prompt":"list files"},"response":"Running quick task..."}
+JSON
+else
+  pwd > "${STATE_DIR}/agent_cwd"
+  echo "done"
+fi
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  # Create a different directory to simulate brew's cd to libexec
+  FAKE_LIBEXEC=$(mktemp -d)
+
+  run bash -c "
+    cd '$FAKE_LIBEXEC' && \
+    printf 'list files\nexit\n' | \
+    env PATH='${TMP_DIR}:${PATH}' \
+        TASKS_PATH='$TASKS_PATH' \
+        CONFIG_PATH='$CONFIG_PATH' \
+        JOBS_PATH='${TMP_DIR}/jobs.yml' \
+        PROJECT_DIR='$TMP_DIR' \
+        STATE_DIR='$STATE_DIR' \
+        CHAT_AGENT=claude \
+        '${REPO_DIR}/scripts/chat.sh' 2>/dev/null
+  "
+  [ "$status" -eq 0 ]
+
+  # Agent should have run in PROJECT_DIR, not FAKE_LIBEXEC
+  [ -f "${STATE_DIR}/agent_cwd" ]
+  agent_dir=$(cat "${STATE_DIR}/agent_cwd")
+  [ "$agent_dir" = "$TMP_DIR" ]
+
+  rm -rf "$FAKE_LIBEXEC"
 }
 
 # --- plan_chat.sh tests ---

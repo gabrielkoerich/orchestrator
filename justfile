@@ -98,6 +98,7 @@ projects:
   @yq -r '[.tasks[].dir // ""] | unique | map(select(length > 0)) | .[]' "${TASKS_PATH:-tasks.yml}"
 
 # Install to ~/.orchestrator and add wrapper to ~/.bin
+[private]
 install:
   @scripts/setup.sh
 
@@ -124,6 +125,10 @@ gh-project-info:
 # Auto-apply Status field/option IDs to config.yml
 gh-project-info-fix:
   @scripts/gh_project_info.sh --fix
+
+# Create a new GitHub Project for the current repo
+gh-project-create title="":
+  @scripts/gh_project_create.sh "{{title}}"
 
 # List GitHub Projects for an org or user
 gh-project-list org="" user="":
@@ -169,7 +174,7 @@ service-install:
 service-uninstall:
   @scripts/service_uninstall.sh
 
-# Run tests
-# (bats test suite)
+# Run tests (bats test suite)
+[private]
 test:
   @bats tests

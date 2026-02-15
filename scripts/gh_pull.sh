@@ -39,6 +39,8 @@ export GH_BACKOFF_MODE GH_BACKOFF_BASE_SECONDS GH_BACKOFF_MAX_SECONDS
 
 echo "[gh_pull] repo=$REPO"
 ISSUES_JSON=$(gh_api -X GET "repos/$REPO/issues" --paginate -f state=all -f per_page=100)
+# gh api --paginate may return one JSON array per page; merge into one
+ISSUES_JSON=$(printf '%s' "$ISSUES_JSON" | yq ea -p=json -o=json -I=0 '[.[]]')
 FILTERED=$(printf '%s' "$ISSUES_JSON" | yq -o=json -I=0 'map(select(.pull_request == null))')
 if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
   FILTERED=$(printf '%s' "$FILTERED" | yq -o=json -I=0 "map(select(.labels | map(.name) | index(\"$SYNC_LABEL\") != null))")
