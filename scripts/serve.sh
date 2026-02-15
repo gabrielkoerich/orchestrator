@@ -16,6 +16,8 @@ RESTARTING=${RESTARTING:-0}
 
 mkdir -p "$STATE_DIR"
 
+_log() { echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $*"; }
+
 # Single ownership check: PID file takes precedence over lock dir.
 if [ "$RESTARTING" != "1" ]; then
   if [ -f "$PID_FILE" ]; then
@@ -115,7 +117,7 @@ clear_stale_task_lock() {
       now=$(date +%s)
       if [ $((now - mtime)) -ge "$stale_seconds" ]; then
         rm -rf "$lock_dir"
-        echo "[serve] cleared stale task lock" >> "$LOG_FILE"
+        _log "[serve] cleared stale task lock" >> "$LOG_FILE"
       fi
     fi
   fi
@@ -154,7 +156,7 @@ LAST_GH_PULL=0
 # Sync skills on start
 "$SCRIPT_DIR/skills_sync.sh" >> "$LOG_FILE" 2>&1 || true
 
-echo "[serve] starting with interval=${INTERVAL}s" >> "$LOG_FILE"
+_log "[serve] starting with interval=${INTERVAL}s" >> "$LOG_FILE"
 
 echo "Orchestrator started, listening to tasks and delegating agents." \
   "(pid $(cat "$PID_FILE"), interval ${INTERVAL}s)"
@@ -176,8 +178,7 @@ if [ "${TAIL_LOG:-0}" = "1" ]; then
 fi
 
 while true; do
-  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  echo "[serve] tick ${ts}" >> "$LOG_FILE"
+  _log "[serve] tick" >> "$LOG_FILE"
   clear_stale_task_lock
   "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
   "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
@@ -205,21 +206,21 @@ while true; do
 
   CURRENT_MTIME=$(lock_mtime "$CONFIG_PATH")
   if [ "$CURRENT_MTIME" -ne "$LAST_CONFIG_MTIME" ]; then
-    echo "[serve] config.yml changed; restarting" >> "$LOG_FILE"
+    _log "[serve] config.yml changed; restarting" >> "$LOG_FILE"
     exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
   fi
 
   if [ -n "$PROJECT_CONFIG" ] && [ -f "$PROJECT_CONFIG" ]; then
     CURRENT_PROJECT_MTIME=$(lock_mtime "$PROJECT_CONFIG")
     if [ "$CURRENT_PROJECT_MTIME" -ne "$LAST_PROJECT_CONFIG_MTIME" ]; then
-      echo "[serve] .orchestrator.yml changed; restarting" >> "$LOG_FILE"
+      _log "[serve] .orchestrator.yml changed; restarting" >> "$LOG_FILE"
       exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
     fi
   fi
 
   CURRENT_SNAPSHOT=$(snapshot_hash)
   if [ "$CURRENT_SNAPSHOT" != "$LAST_SNAPSHOT" ]; then
-    echo "[serve] code changed; restarting" >> "$LOG_FILE"
+    _log "[serve] code changed; restarting" >> "$LOG_FILE"
     exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
   fi
 

@@ -126,7 +126,7 @@ sync_project_status() {
     if [ -z "$item_id" ] || [ "$item_id" = "null" ]; then
       return 0
     fi
-    echo "[gh_push] added issue #$issue_number to project"
+    log "[gh_push] added issue #$issue_number to project"
   fi
 
   gh_api graphql -f query='mutation($project:ID!, $item:ID!, $field:ID!, $option:String!){ updateProjectV2ItemFieldValue(input:{projectId:$project, itemId:$item, fieldId:$field, value:{singleSelectOptionId:$option}}){ projectV2Item{id} } }' \
@@ -169,7 +169,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   UPDATED_AT=$(yq -r ".tasks[$i].updated_at // \"\"" "$TASKS_PATH")
   GH_SYNCED_AT=$(yq -r ".tasks[$i].gh_synced_at // \"\"" "$TASKS_PATH")
 
-  echo "[gh_push] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
+  log "[gh_push] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
 
   skip=false
   for lbl in "${SKIP_LABELS[@]}"; do
@@ -197,7 +197,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   if [ -z "$GH_NUM" ] || [ "$GH_NUM" = "null" ]; then
     if [ -z "$TITLE" ] || [ "$TITLE" = "null" ]; then
-      echo "Skipping task $ID: missing title; cannot create GitHub issue." >&2
+      log_err "Skipping task $ID: missing title; cannot create GitHub issue." >&2
       continue
     fi
     # create issue
@@ -222,7 +222,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
        (.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(UPDATED_AT)" \
       "$TASKS_PATH"
 
-    echo "[gh_push] task=$ID created issue #$NUM"
+    log "[gh_push] task=$ID created issue #$NUM"
     sync_project_status "$NUM" "$STATUS"
     continue
   fi
@@ -232,7 +232,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     continue
   fi
 
-  echo "[gh_push] task=$ID syncing (updated_at=$UPDATED_AT gh_synced_at=$GH_SYNCED_AT)"
+  log "[gh_push] task=$ID syncing (updated_at=$UPDATED_AT gh_synced_at=$GH_SYNCED_AT)"
 
   LABEL_ARGS=()
   LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
@@ -303,6 +303,7 @@ ${PROMPT_CONTENT}
 </details>"
       fi
       gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
+      log "[gh_push] task=$ID posted blocked comment on #$GH_NUM (prompt=$PROMPT_HASH)"
     elif [ -n "$SUMMARY" ]; then
       # Standard progress/completion comment
       BADGE=$(agent_badge "$AGENT")
@@ -339,6 +340,7 @@ ${PROMPT_CONTENT}
 </details>"
       fi
       gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
+      log "[gh_push] task=$ID posted progress comment on #$GH_NUM (prompt=$PROMPT_HASH)"
     fi
   fi
 
@@ -347,6 +349,7 @@ ${PROMPT_CONTENT}
   with_lock yq -i \
     "(.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(UPDATED_AT)" \
     "$TASKS_PATH"
+  log "[gh_push] task=$ID synced (gh_synced_at=$UPDATED_AT)"
 
   # Review/close behavior
   if [ "$STATUS" = "done" ] && [ "$AUTO_CLOSE" != "true" ]; then

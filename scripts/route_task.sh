@@ -16,7 +16,7 @@ if [ -z "$TASK_ID" ]; then
   fi
 fi
 
-echo "[route] task=$TASK_ID starting" >&2
+log_err "[route] task=$TASK_ID starting"
 mkdir -p .orchestrator
 CMD_STATUS=0
 ROUTED_AGENT=""
@@ -68,9 +68,9 @@ start_spinner "Routing task $TASK_ID"
 
 case "$ROUTER_AGENT" in
   codex)
-    echo "[route] using codex model=${ROUTER_MODEL:-default}" >&2
-    echo "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s" >&2
-    echo "[route] cmd: codex exec --json ${ROUTER_MODEL:+--model \"$ROUTER_MODEL\"} \"$(cat "$PROMPT_FILE")\"" >&2
+    log_err "[route] using codex model=${ROUTER_MODEL:-default}"
+    log_err "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s"
+    log_err "[route] cmd: codex exec --json ${ROUTER_MODEL:+--model \"$ROUTER_MODEL\"} \"$(cat "$PROMPT_FILE")\""
     if [ -n "$ROUTER_MODEL" ]; then
       RESPONSE=$(run_router_cmd codex exec --model "$ROUTER_MODEL" --json "$PROMPT") || CMD_STATUS=$?
     else
@@ -78,9 +78,9 @@ case "$ROUTER_AGENT" in
     fi
     ;;
   claude)
-    echo "[route] using claude model=${ROUTER_MODEL:-default}" >&2
-    echo "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s" >&2
-    echo "[route] cmd: claude ${ROUTER_MODEL:+--model \"$ROUTER_MODEL\"} --output-format json --print \"$(cat "$PROMPT_FILE")\"" >&2
+    log_err "[route] using claude model=${ROUTER_MODEL:-default}"
+    log_err "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s"
+    log_err "[route] cmd: claude ${ROUTER_MODEL:+--model \"$ROUTER_MODEL\"} --output-format json --print \"$(cat "$PROMPT_FILE")\""
     if [ -n "$ROUTER_MODEL" ]; then
       RESPONSE=$(run_router_cmd claude --model "$ROUTER_MODEL" --output-format json --print "$PROMPT") || CMD_STATUS=$?
     else
@@ -88,9 +88,9 @@ case "$ROUTER_AGENT" in
     fi
     ;;
   opencode)
-    echo "[route] using opencode" >&2
-    echo "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s" >&2
-    echo "[route] cmd: opencode run --format json \"$(cat "$PROMPT_FILE")\"" >&2
+    log_err "[route] using opencode"
+    log_err "[route] timeout=${ROUTER_TIMEOUT:-${AGENT_TIMEOUT_SECONDS:-900}}s"
+    log_err "[route] cmd: opencode run --format json \"$(cat "$PROMPT_FILE")\""
     RESPONSE=$(run_router_cmd opencode run --format json "$PROMPT") || CMD_STATUS=$?
     ;;
   *)
@@ -100,11 +100,11 @@ case "$ROUTER_AGENT" in
 esac
 
 stop_spinner
-echo "[route] raw response:" >&2
+log_err "[route] raw response:"
 printf '%s\n' "$RESPONSE" | sed 's/^/[route] > /' >&2
 
 if [ "${CMD_STATUS:-0}" -ne 0 ]; then
-  echo "[route] router failed exit=${CMD_STATUS}" >&2
+  log_err "[route] router failed exit=${CMD_STATUS}"
   if [ -n "${ROUTER_FALLBACK:-}" ]; then
     if command -v "$ROUTER_FALLBACK" >/dev/null 2>&1; then
       ROUTED_AGENT="$ROUTER_FALLBACK"
@@ -141,7 +141,7 @@ if [ "${CMD_STATUS:-0}" -ne 0 ]; then
        (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
       "$TASKS_PATH"
     append_history "$TASK_ID" "routed" "$REASON"
-    echo "[route] task=$TASK_ID fallback to ${ROUTED_AGENT}" >&2
+    log_err "[route] task=$TASK_ID fallback to ${ROUTED_AGENT}"
     echo "$ROUTED_AGENT"
     exit 0
   fi
@@ -159,7 +159,7 @@ fi
 
 RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
 if [ -z "$RESPONSE_JSON" ] || ! printf '%s' "$RESPONSE_JSON" | jq -e 'type=="object"' >/dev/null 2>&1; then
-  echo "[route] invalid JSON response" >&2
+  log_err "[route] invalid JSON response"
   NOW=$(now_iso)
   export NOW
   with_lock yq -i \
@@ -186,7 +186,7 @@ NOW=$(now_iso)
 # Validate routed agent is installed
 if [ -n "$ROUTED_AGENT" ] && ! command -v "$ROUTED_AGENT" >/dev/null 2>&1; then
   FIRST_AVAILABLE=$(printf '%s' "$AVAILABLE_AGENTS" | cut -d',' -f1)
-  echo "[route] $ROUTED_AGENT not installed, falling back to $FIRST_AVAILABLE" >&2
+  log_err "[route] $ROUTED_AGENT not installed, falling back to $FIRST_AVAILABLE"
   REASON="$REASON (router picked $ROUTED_AGENT but not installed; using $FIRST_AVAILABLE)"
   ROUTED_AGENT="$FIRST_AVAILABLE"
 fi
@@ -271,6 +271,6 @@ if [ -n "$ROUTE_WARNING" ]; then
 fi
 append_history "$TASK_ID" "routed" "$NOTE"
 
-echo "[route] task=$TASK_ID routed to ${ROUTED_AGENT:-unknown}" >&2
+log_err "[route] task=$TASK_ID routed to ${ROUTED_AGENT:-unknown}"
 
 echo "$ROUTED_AGENT"

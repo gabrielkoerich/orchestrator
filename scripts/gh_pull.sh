@@ -37,7 +37,7 @@ GH_BACKOFF_BASE_SECONDS=${GITHUB_BACKOFF_BASE_SECONDS:-$(config_get '.gh.backoff
 GH_BACKOFF_MAX_SECONDS=${GITHUB_BACKOFF_MAX_SECONDS:-$(config_get '.gh.backoff.max_seconds // 900')}
 export GH_BACKOFF_MODE GH_BACKOFF_BASE_SECONDS GH_BACKOFF_MAX_SECONDS
 
-echo "[gh_pull] repo=$REPO"
+log "[gh_pull] repo=$REPO"
 ISSUES_JSON=$(gh_api -X GET "repos/$REPO/issues" --paginate -f state=all -f per_page=100)
 # gh api --paginate may return one JSON array per page; merge into one
 ISSUES_JSON=$(printf '%s' "$ISSUES_JSON" | yq ea -p=json -o=json -I=0 '[.[]]')

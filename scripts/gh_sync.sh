@@ -12,13 +12,13 @@ if [ -z "$GH_ENABLED" ] || [ "$GH_ENABLED" = "null" ]; then
   GH_ENABLED="true"
 fi
 if [ "$GH_ENABLED" != "true" ]; then
-  echo "[gh_sync] GitHub sync disabled."
+  log "[gh_sync] GitHub sync disabled."
   exit 0
 fi
 
-echo "[gh_sync] pull start"
+log "[gh_sync] pull start"
 "$SCRIPT_DIR/gh_pull.sh"
-echo "[gh_sync] pull done"
-echo "[gh_sync] push start"
+log "[gh_sync] pull done"
+log "[gh_sync] push start"
 "$SCRIPT_DIR/gh_push.sh"
-echo "[gh_sync] push done"
+log "[gh_sync] push done"

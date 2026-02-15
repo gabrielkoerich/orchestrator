@@ -33,7 +33,7 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
 
     if [ -z "$TASK_STATUS" ]; then
       # Task no longer exists — clear active_task_id
-      echo "[jobs] job=$JOB_ID active task $ACTIVE_TASK_ID not found, clearing" >&2
+      log_err "[jobs] job=$JOB_ID active task $ACTIVE_TASK_ID not found, clearing"
       yq -i ".jobs[$i].active_task_id = null" "$JOBS_PATH"
       ACTIVE_TASK_ID=""
     elif [ "$TASK_STATUS" != "done" ]; then
@@ -92,10 +92,10 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
   export NOW NEW_TASK_ID
   yq -i ".jobs[$i].last_run = strenv(NOW) | .jobs[$i].active_task_id = (env(NEW_TASK_ID) | tonumber)" "$JOBS_PATH"
 
-  echo "[jobs] job=$JOB_ID created task $NEW_TASK_ID" >&2
+  log_err "[jobs] job=$JOB_ID created task $NEW_TASK_ID"
   CREATED=$((CREATED + 1))
 done
 
 if [ "$CREATED" -gt 0 ]; then
-  echo "[jobs] created $CREATED task(s)" >&2
+  log_err "[jobs] created $CREATED task(s)"
 fi

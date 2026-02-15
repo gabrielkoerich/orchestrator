@@ -23,7 +23,7 @@ if [ -z "$TASK_ID" ]; then
   fi
 fi
 
-echo "[run] task=$TASK_ID starting" >&2
+log_err "[run] task=$TASK_ID starting"
 export TASK_ID
 
 # Per-task lock to avoid double-run across multiple watchers.
@@ -61,7 +61,7 @@ _run_task_cleanup() {
 
   # Recover crashed tasks so they don't stay in_progress forever
   if [ $exit_code -ne 0 ] && [ "$TASK_LOCK_OWNED" = true ]; then
-    echo "[run] task=$TASK_ID crashed (exit=$exit_code) at line ${BASH_LINENO[0]:-?}" >&2
+    log_err "[run] task=$TASK_ID crashed (exit=$exit_code) at line ${BASH_LINENO[0]:-?}"
     local current_status
     current_status=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .status" "$TASKS_PATH" 2>/dev/null || true)
     if [ "$current_status" = "routed" ] || [ "$current_status" = "in_progress" ] || [ "$current_status" = "new" ]; then
@@ -100,7 +100,7 @@ if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
 fi
 
 if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
-  echo "[run] task=$TASK_ID missing agent after routing" >&2
+  log_err "[run] task=$TASK_ID missing agent after routing"
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "router did not set agent"
   exit 0
 fi
@@ -157,7 +157,7 @@ export NOW ATTEMPTS
 # Check max attempts before starting
 MAX=$(max_attempts)
 if [ "$ATTEMPTS" -gt "$MAX" ]; then
-  echo "[run] task=$TASK_ID exceeded max attempts ($MAX)" >&2
+  log_err "[run] task=$TASK_ID exceeded max attempts ($MAX)"
   with_lock yq -i \
     "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
      (.tasks[] | select(.id == $TASK_ID) | .reason) = \"exceeded max attempts ($MAX)\" | \
@@ -185,7 +185,7 @@ fi
 
 # Build system prompt and agent message
 if [ "$DECOMPOSE" = true ] && [ "$ATTEMPTS" -le 1 ]; then
-  echo "[run] task=$TASK_ID using plan/decompose mode" >&2
+  log_err "[run] task=$TASK_ID using plan/decompose mode"
   SYSTEM_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/plan.md")
 else
   SYSTEM_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/system.md")
@@ -206,9 +206,9 @@ export PROMPT_HASH
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .prompt_hash) = strenv(PROMPT_HASH)" \
   "$TASKS_PATH"
-echo "[run] task=$TASK_ID prompt saved to $PROMPT_FILE (hash=$PROMPT_HASH)" >&2
-echo "[run] task=$TASK_ID agent=$TASK_AGENT model=${AGENT_MODEL:-default} attempt=$ATTEMPTS project=$PROJECT_DIR" >&2
-echo "[run] task=$TASK_ID skills=${SELECTED_SKILLS:-none} issue=${GH_ISSUE_REF:-none}" >&2
+log_err "[run] task=$TASK_ID prompt saved to $PROMPT_FILE (hash=$PROMPT_HASH)"
+log_err "[run] task=$TASK_ID agent=$TASK_AGENT model=${AGENT_MODEL:-default} attempt=$ATTEMPTS project=$PROJECT_DIR"
+log_err "[run] task=$TASK_ID skills=${SELECTED_SKILLS:-none} issue=${GH_ISSUE_REF:-none}"
 
 start_spinner "Running task $TASK_ID ($TASK_AGENT)"
 AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -218,7 +218,7 @@ STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}.txt"
 CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
-    echo "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --output-format json --append-system-prompt <prompt> <message>" >&2
+    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --output-format json --append-system-prompt <prompt> <message>"
     DISALLOW_ARGS=()
     if [ -n "$DISALLOWED_TOOLS" ]; then
       IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
@@ -234,7 +234,7 @@ case "$TASK_AGENT" in
       "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   codex)
-    echo "[run] cmd: codex -q ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>" >&2
+    log_err "[run] cmd: codex -q ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
@@ -244,7 +244,7 @@ ${AGENT_MESSAGE}"
       "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   opencode)
-    echo "[run] cmd: opencode run --format json <message>" >&2
+    log_err "[run] cmd: opencode run --format json <message>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
@@ -260,19 +260,19 @@ esac
 
 stop_spinner
 AGENT_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-echo "[run] task=$TASK_ID agent finished (exit=$CMD_STATUS) started=$AGENT_START ended=$AGENT_END" >&2
+log_err "[run] task=$TASK_ID agent finished (exit=$CMD_STATUS) started=$AGENT_START ended=$AGENT_END"
 
 # Save raw response for debugging
 RESPONSE_FILE="${STATE_DIR}/response-${TASK_ID}.txt"
 printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
 RESPONSE_LEN=${#RESPONSE}
-echo "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)" >&2
+log_err "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)"
 
 # Log stderr even on success (agents may print warnings)
 AGENT_STDERR=""
 if [ -f "$STDERR_FILE" ] && [ -s "$STDERR_FILE" ]; then
   AGENT_STDERR=$(cat "$STDERR_FILE")
-  echo "[run] task=$TASK_ID stderr: $AGENT_STDERR" >&2
+  log_err "[run] task=$TASK_ID stderr: $AGENT_STDERR"
 fi
 
 # Classify error from exit code, stderr, and stdout
@@ -281,19 +281,19 @@ if [ "$CMD_STATUS" -ne 0 ]; then
 
   # Detect auth/token/billing errors
   if printf '%s' "$COMBINED_OUTPUT" | grep -qiE 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
-    echo "[run] task=$TASK_ID AUTH/BILLING ERROR detected for agent=$TASK_AGENT" >&2
+    log_err "[run] task=$TASK_ID AUTH/BILLING ERROR detected for agent=$TASK_AGENT"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — check API key or credits"
     exit 0
   fi
 
   # Detect timeout
   if [ "$CMD_STATUS" -eq 124 ]; then
-    echo "[run] task=$TASK_ID TIMEOUT" >&2
+    log_err "[run] task=$TASK_ID TIMEOUT"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent timed out (exit 124)"
     exit 0
   fi
 
-  echo "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS" >&2
+  log_err "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS"
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent command failed (exit $CMD_STATUS)"
   exit 0
 fi
@@ -302,14 +302,14 @@ fi
 RESPONSE_JSON=""
 if [ -f "$OUTPUT_FILE" ]; then
   RESPONSE_JSON=$(cat "$OUTPUT_FILE")
-  echo "[run] read output from $OUTPUT_FILE" >&2
+  log_err "[run] read output from $OUTPUT_FILE"
 else
-  echo "[run] output file not found, trying stdout fallback" >&2
+  log_err "[run] output file not found, trying stdout fallback"
   RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
 fi
 
 if [ -z "$RESPONSE_JSON" ]; then
-  echo "[run] task=$TASK_ID invalid JSON response" >&2
+  log_err "[run] task=$TASK_ID invalid JSON response"
   mkdir -p "$CONTEXTS_DIR"
   printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/response-${TASK_ID}.md"
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response invalid YAML/JSON"
@@ -454,4 +454,4 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
   append_history "$TASK_ID" "blocked" "spawned children: ${CHILD_IDS[*]}"
 fi
 
-echo "[run] task=$TASK_ID DONE status=$AGENT_STATUS agent=$TASK_AGENT attempt=$ATTEMPTS started=$AGENT_START ended=$AGENT_END" >&2
+log_err "[run] task=$TASK_ID DONE status=$AGENT_STATUS agent=$TASK_AGENT attempt=$ATTEMPTS started=$AGENT_START ended=$AGENT_END"

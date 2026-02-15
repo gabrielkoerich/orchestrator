@@ -16,6 +16,15 @@ now_epoch() {
   date -u +"%s"
 }
 
+log() {
+  echo "$(now_iso) $*"
+}
+
+# Log to stderr (for scripts whose stdout is consumed by callers)
+log_err() {
+  echo "$(now_iso) $*" >&2
+}
+
 ensure_state_dir() {
   mkdir -p "$STATE_DIR"
 }
@@ -98,7 +107,7 @@ gh_api() {
     if [ "$mode" = "wait" ]; then
       sleep "$remaining"
     else
-      echo "[gh] backoff active for ${remaining}s; skipping request." >&2
+      log_err "[gh] backoff active for ${remaining}s; skipping request."
       return 75
     fi
   fi
@@ -126,7 +135,7 @@ gh_api() {
     local delay
     delay=$(gh_backoff_next_delay "$base" "$max")
     gh_backoff_set "$delay" "rate_limit"
-    echo "[gh] rate limit detected; backing off for ${delay}s." >&2
+    log_err "[gh] rate limit detected; backing off for ${delay}s."
     if [ "$mode" = "wait" ]; then
       sleep "$delay"
       set +e
@@ -157,7 +166,7 @@ gh_api() {
 render_template() {
   local template_path="$1"
   if [ ! -f "$template_path" ]; then
-    echo "[render_template] template not found: $template_path" >&2
+    log_err "[render_template] template not found: $template_path"
     return 1
   fi
   local output
@@ -172,11 +181,11 @@ PY
   )
   local rc=$?
   if [ "$rc" -ne 0 ]; then
-    echo "[render_template] python3 failed (exit $rc) for $template_path" >&2
+    log_err "[render_template] python3 failed (exit $rc) for $template_path"
     return "$rc"
   fi
   if [ -z "$output" ]; then
-    echo "[render_template] empty output for $template_path" >&2
+    log_err "[render_template] empty output for $template_path"
     return 1
   fi
   printf '%s' "$output"
