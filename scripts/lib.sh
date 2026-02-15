@@ -694,23 +694,70 @@ stop_spinner() {
   fi
 }
 
-# Mark a task as needs_review with retry backoff.
+# Post a comment on a linked GitHub issue.
+# Usage: comment_on_issue TASK_ID "comment body"
+# Requires GH_ISSUE_NUMBER and gh.repo in config. Silently skips if unavailable.
+comment_on_issue() {
+  local task_id="$1" body="$2"
+  local issue_number="${GH_ISSUE_NUMBER:-}"
+  if [ -z "$issue_number" ] || [ "$issue_number" = "null" ] || [ "$issue_number" = "0" ]; then
+    return 0
+  fi
+  local repo
+  repo=$(config_get '.gh.repo // ""')
+  if [ -z "$repo" ] || [ "$repo" = "null" ]; then
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    return 0
+  fi
+  gh_api "repos/${repo}/issues/${issue_number}/comments" \
+    -f body="$body" >/dev/null 2>&1 || true
+}
+
+# Add a label to a linked GitHub issue.
+# Usage: label_issue TASK_ID "label"
+label_issue() {
+  local task_id="$1" label="$2"
+  local issue_number="${GH_ISSUE_NUMBER:-}"
+  if [ -z "$issue_number" ] || [ "$issue_number" = "null" ] || [ "$issue_number" = "0" ]; then
+    return 0
+  fi
+  local repo
+  repo=$(config_get '.gh.repo // ""')
+  if [ -z "$repo" ] || [ "$repo" = "null" ]; then
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    return 0
+  fi
+  gh_api "repos/${repo}/issues/${issue_number}/labels" \
+    --input - <<< "{\"labels\":[\"$label\"]}" >/dev/null 2>&1 || true
+}
+
+# Mark a task as blocked with error details, comment on GitHub issue, and add blocked label.
+# The task will not be retried until manually unblocked.
 # Usage: mark_needs_review TASK_ID ATTEMPTS "error message" ["history note"]
 mark_needs_review() {
   local task_id="$1" attempts="$2" error="$3" note="${4:-$3}"
-  local now_epoch now delay retry_at
-  now_epoch=$(now_epoch)
-  delay=$(retry_delay_seconds "$attempts")
-  retry_at=$((now_epoch + delay))
+  local now
   now=$(now_iso)
-  export now retry_at
+  export now
   with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .status) = \"needs_review\" | \
+    "(.tasks[] | select(.id == $task_id) | .status) = \"blocked\" | \
      (.tasks[] | select(.id == $task_id) | .last_error) = \"$error\" | \
-     (.tasks[] | select(.id == $task_id) | .retry_at) = (env(retry_at) | tonumber) | \
      (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
     "$TASKS_PATH"
-  append_history "$task_id" "needs_review" "$note"
+  append_history "$task_id" "blocked" "$note"
+  # Post error to linked GitHub issue and add blocked label
+  comment_on_issue "$task_id" "**Task #${task_id} failed** (attempt ${attempts})
+
+\`\`\`
+${error}
+\`\`\`
+
+Agent: \`${TASK_AGENT:-unknown}\`"
+  label_issue "$task_id" "blocked"
 }
 
 run_with_timeout() {

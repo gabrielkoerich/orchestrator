@@ -18,10 +18,6 @@ if [ -z "$TASK_ID" ]; then
     TASK_ID=$(yq -r '.tasks[] | select(.status == "routed") | .id' "$TASKS_PATH" | head -n1)
   fi
   if [ -z "$TASK_ID" ]; then
-    NOW_EPOCH=$(now_epoch)
-    TASK_ID=$(yq -r ".tasks[] | select(.status == \"needs_review\" and (.retry_at == null or .retry_at <= $NOW_EPOCH)) | .id" "$TASKS_PATH" | head -n1)
-  fi
-  if [ -z "$TASK_ID" ]; then
     echo "No runnable tasks found" >&2
     exit 1
   fi

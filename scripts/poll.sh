@@ -14,11 +14,11 @@ if [ -n "$STUCK_IDS" ]; then
   while IFS= read -r sid; do
     [ -n "$sid" ] || continue
     with_lock yq -i \
-      "(.tasks[] | select(.id == $sid) | .status) = \"needs_review\" | \
+      "(.tasks[] | select(.id == $sid) | .status) = \"blocked\" | \
        (.tasks[] | select(.id == $sid) | .last_error) = \"task stuck in_progress without agent\" | \
        (.tasks[] | select(.id == $sid) | .updated_at) = strenv(NOW)" \
       "$TASKS_PATH"
-    append_history "$sid" "needs_review" "stuck in_progress without agent"
+    append_history "$sid" "blocked" "stuck in_progress without agent"
   done <<< "$STUCK_IDS"
 fi
 
@@ -26,13 +26,6 @@ fi
 NEW_IDS=$(yq -r '.tasks[] | select(.status == "new" or .status == "routed") | .id' "$TASKS_PATH")
 if [ -n "$NEW_IDS" ]; then
   printf '%s\n' "$NEW_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
-fi
-
-# Run retryable needs_review tasks
-NOW_EPOCH=$(now_epoch)
-RETRY_IDS=$(yq -r ".tasks[] | select(.status == \"needs_review\" and (.retry_at == null or .retry_at <= $NOW_EPOCH)) | .id" "$TASKS_PATH")
-if [ -n "$RETRY_IDS" ]; then
-  printf '%s\n' "$RETRY_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
 fi
 
 # Collect blocked parents ready to rejoin
