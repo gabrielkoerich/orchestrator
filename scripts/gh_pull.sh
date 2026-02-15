@@ -72,12 +72,12 @@ for i in $(seq 0 $((COUNT - 1))); do
   if [ -n "$EXISTS" ] && [ "$EXISTS" != "null" ]; then
     export TITLE BODY LABELS_CSV STATE URL UPDATED
     yq -i \
-      "(.tasks[] | select(.gh_issue_number == $NUM) | .title) = env(TITLE) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .body) = env(BODY) | \
+      "(.tasks[] | select(.gh_issue_number == $NUM) | .title) = strenv(TITLE) | \
+       (.tasks[] | select(.gh_issue_number == $NUM) | .body) = strenv(BODY) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .labels) = (strenv(LABELS_CSV) | split(\",\") | map(select(length > 0))) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_state) = env(STATE) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_url) = env(URL) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_updated_at) = env(UPDATED)" \
+       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_state) = strenv(STATE) | \
+       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_url) = strenv(URL) | \
+       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_updated_at) = strenv(UPDATED)" \
       "$TASKS_PATH"
 
     if [ "$STATE" = "closed" ]; then
@@ -85,7 +85,7 @@ for i in $(seq 0 $((COUNT - 1))); do
       export NOW
       yq -i \
         "(.tasks[] | select(.gh_issue_number == $NUM) | .status) = \"done\" | \
-         (.tasks[] | select(.gh_issue_number == $NUM) | .updated_at) = env(NOW)" \
+         (.tasks[] | select(.gh_issue_number == $NUM) | .updated_at) = strenv(NOW)" \
         "$TASKS_PATH"
     fi
   else
@@ -100,10 +100,10 @@ for i in $(seq 0 $((COUNT - 1))); do
     yq -i \
       '.tasks += [{
         "id": (env(NEXT_ID) | tonumber),
-        "title": env(TITLE),
-        "body": env(BODY),
+        "title": strenv(TITLE),
+        "body": strenv(BODY),
         "labels": (strenv(LABELS_CSV) | split(",") | map(select(length > 0))),
-        "status": env(STATUS),
+        "status": strenv(STATUS),
         "agent": null,
         "agent_profile": null,
         "parent_id": null,
@@ -119,13 +119,13 @@ for i in $(seq 0 $((COUNT - 1))); do
         "review_decision": null,
         "review_notes": null,
         "history": [],
-        "created_at": env(NOW),
-        "updated_at": env(NOW),
+        "created_at": strenv(NOW),
+        "updated_at": strenv(NOW),
         "gh_issue_number": (env(NUM) | tonumber),
-        "gh_state": env(STATE),
-        "gh_url": env(URL),
-        "gh_updated_at": env(UPDATED),
-        "dir": env(PROJECT_DIR),
+        "gh_state": strenv(STATE),
+        "gh_url": strenv(URL),
+        "gh_updated_at": strenv(UPDATED),
+        "dir": strenv(PROJECT_DIR),
         "gh_synced_at": null
       }]' \
       "$TASKS_PATH"

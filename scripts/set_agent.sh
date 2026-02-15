@@ -14,8 +14,8 @@ NOW=$(now_iso)
 export AGENT NOW
 
 with_lock yq -i \
-  "(.tasks[] | select(.id == $TASK_ID) | .agent) = env(AGENT) | \
-   (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+  "(.tasks[] | select(.id == $TASK_ID) | .agent) = strenv(AGENT) | \
+   (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
 
 append_history "$TASK_ID" "routed" "agent manually set to $AGENT"

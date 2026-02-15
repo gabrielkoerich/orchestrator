@@ -38,7 +38,7 @@ write_config() {
   if [ -z "$GH_REPO" ]; then return; fi
   export GH_REPO
   if [ -f "$CONFIG_FILE" ]; then
-    yq -i ".gh.repo = env(GH_REPO)" "$CONFIG_FILE"
+    yq -i ".gh.repo = strenv(GH_REPO)" "$CONFIG_FILE"
   else
     cat > "$CONFIG_FILE" <<YAML
 gh:
@@ -49,7 +49,7 @@ YAML
 
   if [ -n "$GH_PROJECT_ID" ]; then
     export GH_PROJECT_ID
-    yq -i ".gh.project_id = env(GH_PROJECT_ID)" "$CONFIG_FILE"
+    yq -i ".gh.project_id = strenv(GH_PROJECT_ID)" "$CONFIG_FILE"
   fi
 
   # Auto-detect status field if gh is available and project_id is set
@@ -135,12 +135,12 @@ auto_detect_status() {
 
   export status_field_id backlog_id inprog_id review_id done_id
   if [ -n "$status_field_id" ] && [ "$status_field_id" != "null" ]; then
-    yq -i ".gh.project_status_field_id = env(status_field_id)" "$config_file"
+    yq -i ".gh.project_status_field_id = strenv(status_field_id)" "$config_file"
   fi
-  [ -n "$backlog_id" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = env(backlog_id)' "$config_file"
-  [ -n "$inprog_id" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = env(inprog_id)' "$config_file"
-  [ -n "$review_id" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = env(review_id)' "$config_file"
-  [ -n "$done_id" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = env(done_id)' "$config_file"
+  [ -n "$backlog_id" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = strenv(backlog_id)' "$config_file"
+  [ -n "$inprog_id" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = strenv(inprog_id)' "$config_file"
+  [ -n "$review_id" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = strenv(review_id)' "$config_file"
+  [ -n "$done_id" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = strenv(done_id)' "$config_file"
 
   echo "Detected status options:"
   [ -n "$backlog_id" ] && echo "  backlog -> $backlog_id" || echo "  backlog -> (not found)"
@@ -277,7 +277,7 @@ elif [ -t 0 ]; then
         if [ -n "${GH_PROJECT_ID_INPUT:-}" ]; then
           GH_PROJECT_ID="$GH_PROJECT_ID_INPUT"
           export GH_PROJECT_ID
-          yq -i ".gh.project_id = env(GH_PROJECT_ID)" "$CONFIG_FILE"
+          yq -i ".gh.project_id = strenv(GH_PROJECT_ID)" "$CONFIG_FILE"
           auto_detect_status "$CONFIG_FILE" "$GH_PROJECT_ID"
         fi
       fi

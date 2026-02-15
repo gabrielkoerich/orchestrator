@@ -150,7 +150,7 @@ if [ "${CMD_STATUS:-0}" -ne 0 ]; then
   with_lock yq -i \
     "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
      (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"router failed (exit ${CMD_STATUS})\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
     "$TASKS_PATH"
   append_history "$TASK_ID" "needs_review" "router failed (exit ${CMD_STATUS})"
   exit 0
@@ -166,7 +166,7 @@ if [ -z "$RESPONSE_JSON" ] || ! printf '%s' "$RESPONSE_JSON" | jq -e 'type=="obj
      (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"router response invalid JSON\" | \
      (.tasks[] | select(.id == $TASK_ID) | .summary) = \"Router error: invalid JSON response\" | \
      (.tasks[] | select(.id == $TASK_ID) | .blockers) = [\"Router failed to return valid JSON\"] | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
     "$TASKS_PATH"
   mkdir -p "$CONTEXTS_DIR"
   printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/route-response-${TASK_ID}.md"

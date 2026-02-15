@@ -64,7 +64,7 @@ yq -i \
       "labels": (strenv(LABELS) | split(",") | map(select(length > 0))),
       "agent": (strenv(AGENT) | select(length > 0) // null)
     },
-    "dir": env(PROJECT_DIR),
+    "dir": strenv(PROJECT_DIR),
     "enabled": true,
     "last_run": null,
     "last_task_status": null,

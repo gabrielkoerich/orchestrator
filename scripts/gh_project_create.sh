@@ -64,14 +64,14 @@ link_project_to_repo "$PROJECT_ID" "$REPO"
 # Save to config
 export GH_PROJECT_ID="$PROJECT_ID"
 if [ -f "$CONFIG_FILE" ]; then
-  yq -i ".gh.project_id = env(GH_PROJECT_ID)" "$CONFIG_FILE"
+  yq -i ".gh.project_id = strenv(GH_PROJECT_ID)" "$CONFIG_FILE"
 else
   export REPO
   cat > "$CONFIG_FILE" <<YAML
 gh:
   repo: "$REPO"
 YAML
-  yq -i ".gh.project_id = env(GH_PROJECT_ID)" "$CONFIG_FILE"
+  yq -i ".gh.project_id = strenv(GH_PROJECT_ID)" "$CONFIG_FILE"
 fi
 
 # Configure status columns and board view on new project
@@ -102,12 +102,12 @@ if [ -n "$status_json" ]; then
 
   export status_field_id backlog_id inprog_id review_id done_id
   if [ -n "$status_field_id" ] && [ "$status_field_id" != "null" ]; then
-    yq -i ".gh.project_status_field_id = env(status_field_id)" "$CONFIG_FILE"
+    yq -i ".gh.project_status_field_id = strenv(status_field_id)" "$CONFIG_FILE"
   fi
-  [ -n "${backlog_id:-}" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = env(backlog_id)' "$CONFIG_FILE"
-  [ -n "${inprog_id:-}" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = env(inprog_id)' "$CONFIG_FILE"
-  [ -n "${review_id:-}" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = env(review_id)' "$CONFIG_FILE"
-  [ -n "${done_id:-}" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = env(done_id)' "$CONFIG_FILE"
+  [ -n "${backlog_id:-}" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = strenv(backlog_id)' "$CONFIG_FILE"
+  [ -n "${inprog_id:-}" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = strenv(inprog_id)' "$CONFIG_FILE"
+  [ -n "${review_id:-}" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = strenv(review_id)' "$CONFIG_FILE"
+  [ -n "${done_id:-}" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = strenv(done_id)' "$CONFIG_FILE"
 
   echo "Detected status options:"
   [ -n "${backlog_id:-}" ] && echo "  backlog -> $backlog_id" || echo "  backlog -> (not found)"

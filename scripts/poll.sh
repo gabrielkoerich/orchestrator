@@ -16,7 +16,7 @@ if [ -n "$STUCK_IDS" ]; then
     with_lock yq -i \
       "(.tasks[] | select(.id == $sid) | .status) = \"needs_review\" | \
        (.tasks[] | select(.id == $sid) | .last_error) = \"task stuck in_progress without agent\" | \
-       (.tasks[] | select(.id == $sid) | .updated_at) = env(NOW)" \
+       (.tasks[] | select(.id == $sid) | .updated_at) = strenv(NOW)" \
       "$TASKS_PATH"
     append_history "$sid" "needs_review" "stuck in_progress without agent"
   done <<< "$STUCK_IDS"

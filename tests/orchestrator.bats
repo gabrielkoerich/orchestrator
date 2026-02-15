@@ -1317,3 +1317,10 @@ SH
   run bash -c "ls '${STATE_DIR}'/plan-history-* 2>/dev/null | wc -l"
   [ "$(echo "$output" | tr -d ' ')" = "0" ]
 }
+
+@test "scripts use strenv() not env() for yq string values" {
+  # env() parses values as YAML which breaks on markdown content (colons, anchors, etc.)
+  # Only env(X) | tonumber is allowed; all other env() must be strenv()
+  run bash -c "grep -rn 'env(' '${REPO_DIR}/scripts/'*.sh | grep -v strenv | grep -v 'env(.*) | tonumber' | grep -v '^\s*#' | grep -v 'command -v\|export \|:-\|ORCH_HOME\|PATH=' || true"
+  [ -z "$output" ]
+}

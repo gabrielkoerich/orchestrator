@@ -114,7 +114,7 @@ if [ "$ATTEMPTS" -gt "$MAX" ]; then
     "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
      (.tasks[] | select(.id == $TASK_ID) | .reason) = \"exceeded max attempts ($MAX)\" | \
      (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"max attempts exceeded\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
     "$TASKS_PATH"
   append_history "$TASK_ID" "blocked" "exceeded max attempts ($MAX)"
   exit 0
@@ -123,7 +123,7 @@ fi
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .status) = \"in_progress\" | \
    (.tasks[] | select(.id == $TASK_ID) | .attempts) = (env(ATTEMPTS) | tonumber) | \
-   (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+   (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
 
 append_history "$TASK_ID" "in_progress" "started attempt $ATTEMPTS"
@@ -301,8 +301,8 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
   export NOW REVIEW_NOTES
   with_lock yq -i \
     "(.tasks[] | select(.id == $TASK_ID) | .review_decision) = \"approve\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .review_notes) = env(REVIEW_NOTES) | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+     (.tasks[] | select(.id == $TASK_ID) | .review_notes) = strenv(REVIEW_NOTES) | \
+     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
     "$TASKS_PATH"
   append_history "$TASK_ID" "done" "review approved"
 fi
@@ -337,7 +337,7 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
   export NOW
   yq -i \
     "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = env(NOW)" \
+     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
     "$TASKS_PATH"
 
   release_lock

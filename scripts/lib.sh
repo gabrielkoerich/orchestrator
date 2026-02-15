@@ -436,7 +436,7 @@ append_history() {
   export ts status note
 
   with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .history) += [{\"ts\": env(ts), \"status\": env(status), \"note\": env(note)}]" \
+    "(.tasks[] | select(.id == $task_id) | .history) += [{\"ts\": strenv(ts), \"status\": strenv(status), \"note\": strenv(note)}]" \
     "$TASKS_PATH"
 }
 
@@ -616,7 +616,7 @@ create_task_entry() {
   yq -i \
     ".tasks += [{
       \"id\": (env(id) | tonumber),
-      \"title\": env(title),
+      \"title\": strenv(title),
       \"body\": strenv(body),
       \"labels\": (strenv(labels_csv) | split(\",\") | map(select(length > 0))),
       \"status\": \"new\",
@@ -641,9 +641,9 @@ create_task_entry() {
       \"review_decision\": null,
       \"review_notes\": null,
       \"history\": [],
-      \"dir\": env(PROJECT_DIR),
-      \"created_at\": env(NOW),
-      \"updated_at\": env(NOW)
+      \"dir\": strenv(PROJECT_DIR),
+      \"created_at\": strenv(NOW),
+      \"updated_at\": strenv(NOW)
     }]" \
     "$TASKS_PATH"
 }
@@ -690,7 +690,7 @@ mark_needs_review() {
     "(.tasks[] | select(.id == $task_id) | .status) = \"needs_review\" | \
      (.tasks[] | select(.id == $task_id) | .last_error) = \"$error\" | \
      (.tasks[] | select(.id == $task_id) | .retry_at) = (env(retry_at) | tonumber) | \
-     (.tasks[] | select(.id == $task_id) | .updated_at) = env(now)" \
+     (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
     "$TASKS_PATH"
   append_history "$task_id" "needs_review" "$note"
 }

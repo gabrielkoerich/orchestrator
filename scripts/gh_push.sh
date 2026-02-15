@@ -193,9 +193,9 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     export NUM URL STATE NOW
     with_lock yq -i \
       "(.tasks[] | select(.id == $ID) | .gh_issue_number) = (env(NUM) | tonumber) | \
-       (.tasks[] | select(.id == $ID) | .gh_url) = env(URL) | \
-       (.tasks[] | select(.id == $ID) | .gh_state) = env(STATE) | \
-       (.tasks[] | select(.id == $ID) | .gh_synced_at) = env(NOW)" \
+       (.tasks[] | select(.id == $ID) | .gh_url) = strenv(URL) | \
+       (.tasks[] | select(.id == $ID) | .gh_state) = strenv(STATE) | \
+       (.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(NOW)" \
       "$TASKS_PATH"
 
     sync_project_status "$NUM" "$STATUS"
@@ -218,7 +218,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   NOW=$(now_iso)
   export NOW
   with_lock yq -i \
-    "(.tasks[] | select(.id == $ID) | .gh_synced_at) = env(NOW)" \
+    "(.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(NOW)" \
     "$TASKS_PATH"
 
   # Post a comment if task updated
@@ -287,7 +287,7 @@ ${OWNER_TAG} — this task needs your attention."
     NOW=$(now_iso)
     export NOW
     with_lock yq -i \
-      "(.tasks[] | select(.id == $ID) | .gh_synced_at) = env(NOW)" \
+      "(.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(NOW)" \
       "$TASKS_PATH"
   fi
 
@@ -309,7 +309,7 @@ ${OWNER_TAG} — this task needs your attention."
     export NOW
     with_lock yq -i \
       "(.tasks[] | select(.id == $ID) | .gh_state) = \"closed\" | \
-       (.tasks[] | select(.id == $ID) | .gh_synced_at) = env(NOW)" \
+       (.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(NOW)" \
       "$TASKS_PATH"
   fi
 
