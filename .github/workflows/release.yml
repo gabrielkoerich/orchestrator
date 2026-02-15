@@ -70,8 +70,8 @@ jobs:
           # Default to patch bump
           BUMP="patch"
 
-          # Look for feature-related words anywhere in commit messages → minor
-          if echo "$COMMITS" | grep -qiE '\bfeat(ure)?s?\b|\badd(ed|s)?\b|\bnew\b|\bintroduc'; then
+          # Look for conventional commit feat: prefix → minor
+          if echo "$COMMITS" | grep -qiE '^feat(\(.*\))?!?:'; then
             BUMP="minor"
           fi
 
@@ -129,7 +129,7 @@ jobs:
             entry="- ${msg} (${hash})"
             if echo "$msg" | grep -qiE '\bbreaking\b'; then
               BREAKING+="${entry}"$'\n'
-            elif echo "$msg" | grep -qiE '\bfeat(ure)?s?\b|\badd(ed|s)?\b|\bnew\b|\bintroduc'; then
+            elif echo "$msg" | grep -qiE '^feat(\(.*\))?!?:'; then
               FEATURES+="${entry}"$'\n'
             elif echo "$msg" | grep -qiE '\bfix(ed|es)?\b|\bbug\b|\bhotfix\b'; then
               FIXES+="${entry}"$'\n'
