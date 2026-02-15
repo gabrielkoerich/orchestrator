@@ -129,7 +129,7 @@ jobs:
               BREAKING+="${entry}"$'\n'
             elif echo "$msg" | grep -qiE '\bfeat(ure)?s?\b|\badd(ed|s)?\b|\bnew\b|\bintroduc'; then
               FEATURES+="${entry}"$'\n'
-            elif echo "$msg" | grep -qiE '\bfix(ed|es)?\b|\bbug\b|\bpatch\b|\bhotfix\b'; then
+            elif echo "$msg" | grep -qiE '\bfix(ed|es)?\b|\bbug\b|\bhotfix\b'; then
               FIXES+="${entry}"$'\n'
             else
               OTHER+="${entry}"$'\n'
