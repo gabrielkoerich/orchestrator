@@ -15,6 +15,7 @@ fi
 for i in $(seq 0 $((REPO_COUNT - 1))); do
   NAME=$(yq -r ".repositories[$i].name" skills.yml)
   URL=$(yq -r ".repositories[$i].url" skills.yml)
+  PIN=$(yq -r ".repositories[$i].pin // \"\"" skills.yml)
   if [ -z "$NAME" ] || [ -z "$URL" ] || [ "$NAME" = "null" ] || [ "$URL" = "null" ]; then
     continue
   fi
@@ -23,10 +24,19 @@ for i in $(seq 0 $((REPO_COUNT - 1))); do
   if [ -d "$DEST/.git" ]; then
     echo "Updating $NAME"
     git -C "$DEST" fetch --all --prune >/dev/null 2>&1 || true
-    git -C "$DEST" pull --ff-only >/dev/null 2>&1 || true
+    if [ -n "$PIN" ] && [ "$PIN" != "null" ]; then
+      git -C "$DEST" checkout "$PIN" --quiet 2>/dev/null || true
+      echo "  pinned to $PIN"
+    else
+      git -C "$DEST" pull --ff-only >/dev/null 2>&1 || true
+    fi
   else
     echo "Cloning $NAME"
     git clone "$URL" "$DEST" >/dev/null 2>&1 || true
+    if [ -n "$PIN" ] && [ "$PIN" != "null" ]; then
+      git -C "$DEST" checkout "$PIN" --quiet 2>/dev/null || true
+      echo "  pinned to $PIN"
+    fi
   fi
 
 done
