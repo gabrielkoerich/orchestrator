@@ -33,6 +33,9 @@ class Orchestrator < Formula
       export CONTEXTS_DIR="${CONTEXTS_DIR:-$ORCH_HOME/contexts}"
       export LOCK_PATH="${LOCK_PATH:-$TASKS_PATH.lock}"
 
+      # Ensure Homebrew binaries are in PATH (LaunchAgents use minimal PATH)
+      export PATH="#{HOMEBREW_PREFIX}/bin:$PATH"
+
       # Code lives in Homebrew libexec
       cd "#{libexec}"
       exec just "$@"
