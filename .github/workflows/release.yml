@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: '0 18 * * *' # Every day at 6pm UTC
   workflow_dispatch: {}
