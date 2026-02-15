@@ -1418,6 +1418,31 @@ GHSTUB
   rm -rf "$INIT_DIR"
 }
 
+@test "lock_mtime returns 0 for nonexistent path without errors" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; lock_mtime /tmp/nonexistent_lock_$$"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+}
+
+@test "lock_mtime returns mtime for existing directory" {
+  LOCK_DIR=$(mktemp -d)
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; lock_mtime '$LOCK_DIR'"
+  [ "$status" -eq 0 ]
+  # Should be a numeric timestamp
+  [[ "$output" =~ ^[0-9]+$ ]]
+  [ "$output" -gt 0 ]
+  rm -rf "$LOCK_DIR"
+}
+
+@test "lock_is_stale handles missing lock gracefully" {
+  # lock_is_stale returns 1 (not stale) for nonexistent paths — no errors
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; set +e; lock_is_stale /tmp/nonexistent_lock_$$ 2>&1; echo rc=\$?"
+  # No stat errors in output
+  [[ "$output" != *"No such file"* ]]
+  [[ "$output" != *"integer expression"* ]]
+  [[ "$output" == *"rc=1"* ]]
+}
+
 @test "scripts use strenv() not env() for yq string values" {
   # env() parses values as YAML which breaks on markdown content (colons, anchors, etc.)
   # Only env(X) | tonumber is allowed; all other env() must be strenv()

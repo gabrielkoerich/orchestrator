@@ -389,17 +389,9 @@ release_lock() {
 }
 
 lock_mtime() {
-  local path="$1"
-  if command -v stat >/dev/null 2>&1; then
-    if stat -f %m "$path" >/dev/null 2>&1; then
-      stat -f %m "$path"
-      return 0
-    fi
-    if stat -c %Y "$path" >/dev/null 2>&1; then
-      stat -c %Y "$path"
-      return 0
-    fi
-  fi
+  local path="$1" mtime
+  mtime=$(stat -f %m "$path" 2>/dev/null) && { echo "$mtime"; return 0; }
+  mtime=$(stat -c %Y "$path" 2>/dev/null) && { echo "$mtime"; return 0; }
   echo 0
 }
 
@@ -408,7 +400,7 @@ lock_is_stale() {
   local stale_seconds=${LOCK_STALE_SECONDS:-600}
   local mtime
   mtime=$(lock_mtime "$path")
-  if [ "$mtime" -eq 0 ]; then
+  if [ -z "$mtime" ] || [ "$mtime" -eq 0 ] 2>/dev/null; then
     return 1
   fi
   local now
