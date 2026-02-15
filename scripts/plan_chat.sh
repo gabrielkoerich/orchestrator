@@ -111,6 +111,7 @@ create_planned_tasks() {
   export NOW PROJECT_DIR
 
   acquire_lock
+  trap 'release_lock' EXIT
 
   local i=0
   while [ "$i" -lt "$count" ]; do
@@ -138,6 +139,7 @@ create_planned_tasks() {
   done
 
   release_lock
+  trap - EXIT
 
   echo ""
   echo "Created $count task(s)."

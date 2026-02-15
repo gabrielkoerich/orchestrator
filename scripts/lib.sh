@@ -375,8 +375,8 @@ lock_is_stale() {
 
 with_lock() {
   acquire_lock
-  "$@"
-  local status=$?
+  local status=0
+  "$@" || status=$?
   release_lock
   return "$status"
 }
