@@ -58,6 +58,9 @@ fi
 
 echo "Created project #$PROJECT_NUM: $TITLE"
 
+# Link project to repository
+link_project_to_repo "$PROJECT_ID" "$REPO"
+
 # Save to config
 export GH_PROJECT_ID="$PROJECT_ID"
 if [ -f "$CONFIG_FILE" ]; then
@@ -111,3 +114,14 @@ fi
 
 echo ""
 echo "Project ID: $PROJECT_ID"
+
+# Auto-add guidance
+if [ "$owner_type" = "Organization" ]; then
+  workflows_url="https://github.com/orgs/$repo_owner/projects/$PROJECT_NUM/workflows"
+else
+  workflows_url="https://github.com/users/$repo_owner/projects/$PROJECT_NUM/workflows"
+fi
+echo ""
+echo "To enable auto-add (new issues -> project), visit:"
+echo "  $workflows_url"
+echo "and enable 'Auto-add to project' for this repo."

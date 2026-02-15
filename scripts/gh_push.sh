@@ -95,7 +95,17 @@ sync_project_status() {
   local item_id
   item_id=$(printf '%s' "$items_json" | yq -r ".data.node.items.nodes[] | select(.content.id == \"$issue_node\") | .id" | head -n1)
   if [ -z "$item_id" ] || [ "$item_id" = "null" ]; then
-    return 0
+    # Issue not in project — add it
+    local add_json
+    add_json=$(gh_api graphql \
+      -f query='mutation($project:ID!,$contentId:ID!){ addProjectV2ItemById(input:{projectId:$project, contentId:$contentId}){ item{ id } } }' \
+      -f project="$PROJECT_ID" \
+      -f contentId="$issue_node" 2>/dev/null || true)
+    item_id=$(printf '%s' "$add_json" | yq -r '.data.addProjectV2ItemById.item.id // ""' 2>/dev/null)
+    if [ -z "$item_id" ] || [ "$item_id" = "null" ]; then
+      return 0
+    fi
+    echo "[gh_push] added issue #$issue_number to project"
   fi
 
   gh_api graphql -f query='mutation($project:ID!, $item:ID!, $field:ID!, $option:ID!){ updateProjectV2ItemFieldValue(input:{projectId:$project, itemId:$item, fieldId:$field, value:{singleSelectOptionId:$option}}){ projectV2Item{id} } }' \

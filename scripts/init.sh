@@ -62,6 +62,19 @@ YAML
   fi
 }
 
+link_project_to_repo() {
+  local project_id="$1" repo="$2"
+  local repo_node_id
+  repo_node_id=$(gh api "repos/$repo" -q '.node_id' 2>/dev/null || true)
+  if [ -n "$repo_node_id" ] && [ "$repo_node_id" != "null" ]; then
+    gh api graphql \
+      -f query='mutation($projectId:ID!,$repoId:ID!){ linkProjectV2ToRepository(input:{projectId:$projectId, repositoryId:$repoId}){ repository{ id } } }' \
+      -f projectId="$project_id" \
+      -f repoId="$repo_node_id" >/dev/null 2>&1 || true
+    echo "Linked project to $repo"
+  fi
+}
+
 auto_detect_status() {
   local config_file="$1" project_id="$2"
   local status_json
@@ -207,6 +220,16 @@ elif [ -t 0 ]; then
                 new_num=$(printf '%s' "$create_json" | yq -r '.data.createProjectV2.projectV2.number // ""' 2>/dev/null)
                 if [ -n "$new_id" ] && [ "$new_id" != "null" ]; then
                   echo "Created project #$new_num: $PROJECT_TITLE"
+                  link_project_to_repo "$new_id" "$GH_REPO"
+                  if [ "$owner_type" = "Organization" ]; then
+                    workflows_url="https://github.com/orgs/$repo_owner/projects/$new_num/workflows"
+                  else
+                    workflows_url="https://github.com/users/$repo_owner/projects/$new_num/workflows"
+                  fi
+                  echo ""
+                  echo "To enable auto-add (new issues -> project), visit:"
+                  echo "  $workflows_url"
+                  echo "and enable 'Auto-add to project' for this repo."
                   GH_PROJECT_ID_INPUT="$new_id"
                 else
                   echo "Failed to create project." >&2

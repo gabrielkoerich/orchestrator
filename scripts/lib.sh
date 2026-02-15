@@ -182,6 +182,19 @@ PY
   printf '%s' "$output"
 }
 
+link_project_to_repo() {
+  local project_id="$1" repo="$2"
+  local repo_node_id
+  repo_node_id=$(gh api "repos/$repo" -q '.node_id' 2>/dev/null || true)
+  if [ -n "$repo_node_id" ] && [ "$repo_node_id" != "null" ]; then
+    gh api graphql \
+      -f query='mutation($projectId:ID!,$repoId:ID!){ linkProjectV2ToRepository(input:{projectId:$projectId, repositoryId:$repoId}){ repository{ id } } }' \
+      -f projectId="$project_id" \
+      -f repoId="$repo_node_id" >/dev/null 2>&1 || true
+    echo "Linked project to $repo"
+  fi
+}
+
 require_yq() {
   if ! command -v yq >/dev/null 2>&1; then
     echo "yq is required but not found in PATH." >&2
