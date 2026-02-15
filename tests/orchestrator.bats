@@ -827,17 +827,19 @@ YAML
 }
 
 @test "concurrent task additions don't corrupt tasks.yml" {
-  # Run 10 parallel add_task.sh calls
+  # Run 10 parallel add_task.sh calls with generous lock timeout for slow CI
   pids=()
+  failures=0
   for i in $(seq 1 10); do
-    env TASKS_PATH="$TASKS_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/add_task.sh" "Concurrent $i" "body $i" "" >/dev/null 2>&1 &
+    env TASKS_PATH="$TASKS_PATH" PROJECT_DIR="$PROJECT_DIR" LOCK_WAIT_SECONDS=60 "${REPO_DIR}/scripts/add_task.sh" "Concurrent $i" "body $i" "" >/dev/null 2>&1 &
     pids+=($!)
   done
 
-  # Wait for all to complete
+  # Wait for all to complete and track failures
   for pid in "${pids[@]}"; do
-    wait "$pid" || true
+    wait "$pid" || failures=$((failures + 1))
   done
+  [ "$failures" -eq 0 ]
 
   # All 10 tasks should exist (plus the Init task = 11)
   run yq -r '.tasks | length' "$TASKS_PATH"
