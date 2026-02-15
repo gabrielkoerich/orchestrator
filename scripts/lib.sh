@@ -507,15 +507,36 @@ build_project_instructions() {
 build_skills_docs() {
   local skills_csv="$1"
   if [ -z "$skills_csv" ]; then return; fi
-  local out=""
+
+  local required_csv
+  required_csv=$(config_get '.workflow.required_skills // [] | join(",")')
+  local required_map=","
+  if [ -n "$required_csv" ]; then
+    required_map=",${required_csv},"
+  fi
+
+  local required_out=""
+  local reference_out=""
   IFS=',' read -ra skills <<< "$skills_csv"
   for skill_id in "${skills[@]}"; do
     local skill_file
     skill_file=$(find skills/ -path "*/${skill_id}/SKILL.md" 2>/dev/null | head -1)
     if [ -n "$skill_file" ] && [ -f "$skill_file" ]; then
-      out+="### ${skill_id}\n$(cat "$skill_file")\n\n"
+      if printf '%s' "$required_map" | grep -q ",${skill_id},"; then
+        required_out+="### [REQUIRED] ${skill_id}\nYou MUST follow this skill's workflow exactly. Do not skip any steps.\n\n$(cat "$skill_file")\n\n"
+      else
+        reference_out+="### ${skill_id}\n$(cat "$skill_file")\n\n"
+      fi
     fi
   done
+
+  local out=""
+  if [ -n "$required_out" ]; then
+    out+="## Required Skills (MANDATORY — follow these workflows exactly)\n\n${required_out}"
+  fi
+  if [ -n "$reference_out" ]; then
+    out+="## Reference Skills\n\n${reference_out}"
+  fi
   printf '%b' "$out"
 }
 
@@ -566,7 +587,8 @@ load_task() {
     "\nexport AGENT_PROFILE_JSON=" + (.agent_profile // {} | tojson | @sh) +
     "\nexport ATTEMPTS=" + (.attempts // 0 | tostring | @sh) +
     "\nexport SELECTED_SKILLS=" + ((.selected_skills // []) | join(",") | @sh) +
-    "\nexport TASK_PARENT_ID=" + (.parent_id // "" | tostring | @sh)
+    "\nexport TASK_PARENT_ID=" + (.parent_id // "" | tostring | @sh) +
+    "\nexport GH_ISSUE_NUMBER=" + (.gh_issue_number // "" | tostring | @sh)
   ')"
   ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | jq -r '.role // "general"')
   export ROLE

@@ -2,6 +2,7 @@ Task:
 ID: {{TASK_ID}}
 Title: {{TASK_TITLE}}
 Labels: {{TASK_LABELS}}
+GitHub Issue: {{GH_ISSUE_REF}}
 Body:
 {{TASK_BODY}}
 
@@ -17,7 +18,6 @@ Parent context:
 Project instructions:
 {{PROJECT_INSTRUCTIONS}}
 
-Skills documentation:
 {{SKILLS_DOCS}}
 
 Repository structure:

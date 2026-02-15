@@ -101,6 +101,27 @@ if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
   exit 0
 fi
 
+# Build GitHub issue reference for agent prompt
+export GH_ISSUE_REF=""
+if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
+  GH_REPO=$(config_get '.gh.repo // ""')
+  if [ -n "$GH_REPO" ] && [ "$GH_REPO" != "null" ]; then
+    GH_ISSUE_REF="#${GH_ISSUE_NUMBER} (${GH_REPO})"
+  else
+    GH_ISSUE_REF="#${GH_ISSUE_NUMBER}"
+  fi
+fi
+
+# Merge required skills into selected skills
+REQUIRED_SKILLS_CSV=$(config_get '.workflow.required_skills // [] | join(",")')
+if [ -n "$REQUIRED_SKILLS_CSV" ]; then
+  if [ -n "${SELECTED_SKILLS:-}" ]; then
+    SELECTED_SKILLS="${SELECTED_SKILLS},${REQUIRED_SKILLS_CSV}"
+  else
+    SELECTED_SKILLS="$REQUIRED_SKILLS_CSV"
+  fi
+fi
+
 # Build context enrichment
 export TASK_CONTEXT
 TASK_CONTEXT=$(load_task_context "$TASK_ID" "$ROLE")
@@ -169,6 +190,9 @@ AGENT_MESSAGE=$(render_template "$SCRIPT_DIR/../prompts/agent.md")
 
 require_agent "$TASK_AGENT"
 
+# Build disallowed tools list
+DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash(rm -*)"] | join(",")')
+
 start_spinner "Running task $TASK_ID ($TASK_AGENT)"
 
 RESPONSE=""
@@ -176,8 +200,16 @@ CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
     echo "[run] using claude (agentic) model=${AGENT_MODEL:-default}" >&2
+    DISALLOW_ARGS=()
+    if [ -n "$DISALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
+      for _t in "${_tools[@]}"; do
+        DISALLOW_ARGS+=(--disallowedTools "$_t")
+      done
+    fi
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+      "${DISALLOW_ARGS[@]}" \
       --append-system-prompt "$SYSTEM_PROMPT" \
       "$AGENT_MESSAGE") || CMD_STATUS=$?
     ;;
