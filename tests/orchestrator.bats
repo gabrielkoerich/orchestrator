@@ -653,7 +653,9 @@ SH
 }
 
 @test "init.sh prints project info" {
-  run env PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/init.sh" </dev/null
+  # Stub gh so init.sh doesn't make real API calls during auto-sync
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP_DIR/gh" && chmod +x "$TMP_DIR/gh"
+  run env PATH="$TMP_DIR:$PATH" PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/init.sh" </dev/null
   [ "$status" -eq 0 ]
   [[ "$output" == *"Initialized orchestrator"* ]]
   [[ "$output" == *"$TMP_DIR"* ]]
