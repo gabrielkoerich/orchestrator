@@ -39,6 +39,7 @@ if ! mkdir "$TASK_LOCK" 2>/dev/null; then
     exit 0
   fi
   if lock_is_stale "$TASK_LOCK"; then
+    rm -f "$TASK_LOCK/pid"
     rmdir "$TASK_LOCK" 2>/dev/null || true
   fi
   if ! mkdir "$TASK_LOCK" 2>/dev/null; then

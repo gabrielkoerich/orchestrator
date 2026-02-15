@@ -1450,6 +1450,44 @@ GHSTUB
   [ -z "$output" ]
 }
 
+@test "run_task.sh recovers stale lock with pid file from dead process" {
+  # Stale lock with a pid file inside should be cleaned up so the task can run.
+  run "${REPO_DIR}/scripts/add_task.sh" "Stuck Task" "Should recover from stale lock" ""
+  [ "$status" -eq 0 ]
+
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex" | (.tasks[] | select(.id == 2) | .status) = "routed"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  # Create stale lock dir with pid file (dead PID)
+  TASK_LOCK="${TASKS_PATH}.lock.task.2"
+  mkdir -p "$TASK_LOCK"
+  echo "99999" > "$TASK_LOCK/pid"
+  touch -t 202501010000 "$TASK_LOCK"
+
+  # Stub codex to succeed
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<SH
+#!/usr/bin/env bash
+cat > "${STATE_DIR}/output-2.json" <<'JSON'
+{"status":"done","summary":"recovered","files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" LOCK_STALE_SECONDS=1 \
+    "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Task should have run and completed
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+
+  # Lock should be cleaned up
+  [ ! -d "$TASK_LOCK" ]
+}
+
 @test "run_task.sh passes --output-format json to agents" {
   # Regression: agents must return structured JSON, not raw text
   run grep -n 'output-format json\|--json\|--format json' "${REPO_DIR}/scripts/run_task.sh"
