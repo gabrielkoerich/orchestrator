@@ -1318,6 +1318,106 @@ SH
   [ "$(echo "$output" | tr -d ' ')" = "0" ]
 }
 
+@test "auto_detect_status finds options with yq inline flag syntax" {
+  # Regression: test("^Name$"; "i") is jq syntax, yq needs test("(?i)^Name$")
+  json='{"data":{"node":{"fields":{"nodes":[{},{"id":"PVTSSF_f1","name":"Status","options":[{"id":"O1","name":"Backlog"},{"id":"O2","name":"In Progress"},{"id":"O3","name":"Review"},{"id":"O4","name":"Done"}]},{}]}}}}'
+
+  # Each option name should be found with case-insensitive regex
+  for pair in "Backlog:O1" "In Progress:O2" "Review:O3" "Done:O4"; do
+    name="${pair%%:*}"
+    expected="${pair##*:}"
+    run bash -c "printf '%s' '$json' | yq -r '.data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"(?i)^${name}\$\")) | .id'"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$expected" ]
+  done
+
+  # Case-insensitive: "todo" should match "Todo"
+  json2='{"data":{"node":{"fields":{"nodes":[{"id":"F1","name":"Status","options":[{"id":"X1","name":"Todo"}]}]}}}}'
+  run bash -c "printf '%s' '$json2' | yq -r '.data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"(?i)^Todo\$\")) | .id'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "X1" ]
+}
+
+@test "init.sh auto_detect_status populates status map in config" {
+  INIT_DIR=$(mktemp -d)
+
+  # Stub gh: returns project field options for the GraphQL query
+  GH_STUB="$INIT_DIR/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+args="$*"
+if printf '%s' "$args" | grep -q "graphql" && printf '%s' "$args" | grep -q "fields(first"; then
+  cat <<'JSON'
+{"data":{"node":{"fields":{"nodes":[{},{"id":"PVTSSF_status1","name":"Status","options":[{"id":"opt_bl","name":"Backlog"},{"id":"opt_ip","name":"In Progress"},{"id":"opt_rv","name":"Review"},{"id":"opt_dn","name":"Done"}]},{}]}}}}
+JSON
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="$INIT_DIR:$PATH" PROJECT_DIR="$INIT_DIR" \
+    "${REPO_DIR}/scripts/init.sh" --repo "test/repo" --project-id "PVT_proj1" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Detected status options"* ]]
+  [[ "$output" == *"backlog -> opt_bl"* ]]
+  [[ "$output" == *"in_progress -> opt_ip"* ]]
+  [[ "$output" == *"review -> opt_rv"* ]]
+  [[ "$output" == *"done -> opt_dn"* ]]
+
+  # Config file should have all status map entries
+  run yq -r '.gh.project_status_field_id' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "PVTSSF_status1" ]
+
+  run yq -r '.gh.project_status_map.backlog' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_bl" ]
+
+  run yq -r '.gh.project_status_map.in_progress' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_ip" ]
+
+  run yq -r '.gh.project_status_map.review' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_rv" ]
+
+  run yq -r '.gh.project_status_map.done' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_dn" ]
+
+  rm -rf "$INIT_DIR"
+}
+
+@test "configure_project_status_field calls updateProjectV2Field" {
+  INIT_DIR=$(mktemp -d)
+
+  # gh stub: returns status field ID on query, records updateProjectV2Field call
+  cat > "$INIT_DIR/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+args="$*"
+if printf '%s' "$args" | grep -q "updateProjectV2Field"; then
+  touch /tmp/_orch_test_update_called
+  echo '{"data":{}}'
+  exit 0
+fi
+if printf '%s' "$args" | grep -q "fields(first"; then
+  echo '{"data":{"node":{"fields":{"nodes":[{"id":"PVTSSF_s1","name":"Status"}]}}}}'
+  exit 0
+fi
+exit 1
+GHSTUB
+  chmod +x "$INIT_DIR/gh"
+
+  # Extract and run configure_project_status_field from init.sh
+  rm -f /tmp/_orch_test_update_called
+  run env PATH="$INIT_DIR:$PATH" bash -c "
+    $(sed -n '/^configure_project_status_field()/,/^}/p' "${REPO_DIR}/scripts/init.sh")
+    configure_project_status_field PVT_test
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Configured project status columns"* ]]
+  [ -f /tmp/_orch_test_update_called ]
+
+  rm -f /tmp/_orch_test_update_called
+  rm -rf "$INIT_DIR"
+}
+
 @test "scripts use strenv() not env() for yq string values" {
   # env() parses values as YAML which breaks on markdown content (colons, anchors, etc.)
   # Only env(X) | tonumber is allowed; all other env() must be strenv()

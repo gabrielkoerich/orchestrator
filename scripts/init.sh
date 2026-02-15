@@ -119,7 +119,7 @@ auto_detect_status() {
     local json="$1"; shift
     for name in "$@"; do
       local opt_id
-      opt_id=$(printf '%s' "$json" | yq -r ".data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"^${name}$\"; \"i\")) | .id" 2>/dev/null | head -n1)
+      opt_id=$(printf '%s' "$json" | yq -r ".data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"(?i)^${name}$\")) | .id" 2>/dev/null | head -n1)
       if [ -n "$opt_id" ] && [ "$opt_id" != "null" ]; then
         echo "$opt_id"
         return
