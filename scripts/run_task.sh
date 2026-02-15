@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(dirname "$0")/lib.sh"
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+source "$SCRIPT_DIR/lib.sh"
 require_yq
 require_jq
 init_config_file
@@ -28,6 +29,28 @@ fi
 
 echo "[run] task=$TASK_ID starting" >&2
 export TASK_ID
+
+# Trap unexpected exits so tasks don't stay routed forever
+_run_task_cleanup() {
+  local exit_code=$?
+  if [ $exit_code -ne 0 ]; then
+    echo "[run] task=$TASK_ID crashed (exit=$exit_code) at line ${BASH_LINENO[0]:-?}" >&2
+    # Only update if task is still routed/in_progress (avoid clobbering)
+    local current_status
+    current_status=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .status" "$TASKS_PATH" 2>/dev/null || true)
+    if [ "$current_status" = "routed" ] || [ "$current_status" = "in_progress" ] || [ "$current_status" = "new" ]; then
+      local now
+      now=$(now_iso 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")
+      export now
+      yq -i \
+        "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
+         (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"run_task crashed (exit $exit_code)\" | \
+         (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(now)" \
+        "$TASKS_PATH" 2>/dev/null || true
+    fi
+  fi
+}
+trap '_run_task_cleanup' EXIT
 
 # Per-task lock to avoid double-run across multiple watchers
 TASK_LOCK="${LOCK_PATH}.task.${TASK_ID}"
@@ -138,11 +161,11 @@ fi
 # Build system prompt and agent message
 if [ "$DECOMPOSE" = true ] && [ "$ATTEMPTS" -le 1 ]; then
   echo "[run] task=$TASK_ID using plan/decompose mode" >&2
-  SYSTEM_PROMPT=$(render_template "prompts/plan.md")
+  SYSTEM_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/plan.md")
 else
-  SYSTEM_PROMPT=$(render_template "prompts/system.md")
+  SYSTEM_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/system.md")
 fi
-AGENT_MESSAGE=$(render_template "prompts/agent.md")
+AGENT_MESSAGE=$(render_template "$SCRIPT_DIR/../prompts/agent.md")
 
 require_agent "$TASK_AGENT"
 
@@ -267,7 +290,7 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
   export GIT_DIFF
   GIT_DIFF=$(build_git_diff "$PROJECT_DIR")
 
-  REVIEW_PROMPT=$(render_template "prompts/review.md")
+  REVIEW_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/review.md")
 
   REVIEW_RESPONSE=""
   REVIEW_STATUS=0

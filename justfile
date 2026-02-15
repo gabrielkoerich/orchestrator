@@ -77,9 +77,13 @@ restart:
 unlock:
   @scripts/unlock.sh
 
-# Tail orchestrator.log
+# Tail orchestrator.log (checks service log, then state dir)
 log tail="50":
-  @tail -n {{tail}} "${STATE_DIR:-.orchestrator}/orchestrator.log"
+  @if [ -f "${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log" ]; then \
+    tail -n {{tail}} "${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log"; \
+  else \
+    tail -n {{tail}} "${STATE_DIR:-.orchestrator}/orchestrator.log"; \
+  fi
 
 # Initialize orchestrator for current project
 init *args="":

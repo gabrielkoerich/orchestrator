@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(dirname "$0")/lib.sh"
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+source "$SCRIPT_DIR/lib.sh"
 require_yq
 require_jq
 init_config_file
@@ -49,7 +50,7 @@ if [ -z "$AVAILABLE_AGENTS" ]; then
 fi
 
 export TASK_ID TASK_TITLE TASK_LABELS TASK_BODY SKILLS_CATALOG AVAILABLE_AGENTS
-PROMPT=$(render_template "prompts/route.md")
+PROMPT=$(render_template "$SCRIPT_DIR/../prompts/route.md")
 PROMPT_FILE=".orchestrator/route-prompt-${TASK_ID}.txt"
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
 

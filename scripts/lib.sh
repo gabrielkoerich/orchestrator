@@ -477,15 +477,19 @@ retry_delay_seconds() {
 build_repo_tree() {
   local dir="${1:-$PROJECT_DIR}"
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then return; fi
-  (cd "$dir" && find . -type f \
-    -not -path './.git/*' \
-    -not -path './node_modules/*' \
-    -not -path './vendor/*' \
-    -not -path './.orchestrator/*' \
-    -not -path './target/*' \
-    -not -path './__pycache__/*' \
-    -not -path './.venv/*' \
-    | head -200 | sort)
+  if command -v git >/dev/null 2>&1 && (cd "$dir" && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
+    (cd "$dir" && git ls-files --cached --others --exclude-standard | head -200 | sort)
+  else
+    (cd "$dir" && find . -type f \
+      -not -path './.git/*' \
+      -not -path './node_modules/*' \
+      -not -path './vendor/*' \
+      -not -path './.orchestrator/*' \
+      -not -path '*/target/*' \
+      -not -path './__pycache__/*' \
+      -not -path './.venv/*' \
+      | head -200 | sort)
+  fi
 }
 
 build_project_instructions() {
