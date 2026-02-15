@@ -2,7 +2,7 @@ repositories:
   - name: gabrielkoerich
     url: https://github.com/gabrielkoerich/skills
     description: Gabriel Koerich skills
-    pin: 689c732d1cd4fb2d324a8c45b47e2c1493ce70d9
+    pin: 226f5f11346eddceebf017746aa5cd660ef3af20
   - name: anthropics
     url: https://github.com/anthropics/skills
     description: Anthropic official skills

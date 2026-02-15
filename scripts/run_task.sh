@@ -205,6 +205,7 @@ start_spinner "Running task $TASK_ID ($TASK_AGENT)"
 AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 RESPONSE=""
+STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}.txt"
 CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
@@ -221,7 +222,7 @@ case "$TASK_AGENT" in
       "${DISALLOW_ARGS[@]}" \
       --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
-      "$AGENT_MESSAGE") || CMD_STATUS=$?
+      "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   codex)
     echo "[run] cmd: codex -q ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>" >&2
@@ -231,7 +232,7 @@ ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout codex -q \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --json \
-      "$FULL_MESSAGE") || CMD_STATUS=$?
+      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   opencode)
     echo "[run] cmd: opencode run --format json <message>" >&2
@@ -240,7 +241,7 @@ ${AGENT_MESSAGE}"
 ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
       --format json \
-      "$FULL_MESSAGE") || CMD_STATUS=$?
+      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   *)
     echo "Unknown agent: $TASK_AGENT" >&2
@@ -258,7 +259,31 @@ printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
 RESPONSE_LEN=${#RESPONSE}
 echo "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)" >&2
 
+# Log stderr even on success (agents may print warnings)
+AGENT_STDERR=""
+if [ -f "$STDERR_FILE" ] && [ -s "$STDERR_FILE" ]; then
+  AGENT_STDERR=$(cat "$STDERR_FILE")
+  echo "[run] task=$TASK_ID stderr: $AGENT_STDERR" >&2
+fi
+
+# Classify error from exit code, stderr, and stdout
 if [ "$CMD_STATUS" -ne 0 ]; then
+  COMBINED_OUTPUT="${RESPONSE}${AGENT_STDERR}"
+
+  # Detect auth/token/billing errors
+  if printf '%s' "$COMBINED_OUTPUT" | grep -qiE 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
+    echo "[run] task=$TASK_ID AUTH/BILLING ERROR detected for agent=$TASK_AGENT" >&2
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — check API key or credits"
+    exit 0
+  fi
+
+  # Detect timeout
+  if [ "$CMD_STATUS" -eq 124 ]; then
+    echo "[run] task=$TASK_ID TIMEOUT" >&2
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent timed out (exit 124)"
+    exit 0
+  fi
+
   echo "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS" >&2
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent command failed (exit $CMD_STATUS)"
   exit 0
@@ -419,3 +444,5 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
   printf 'Spawned children: %s\n' "${CHILD_IDS[*]}"
   append_history "$TASK_ID" "blocked" "spawned children: ${CHILD_IDS[*]}"
 fi
+
+echo "[run] task=$TASK_ID DONE status=$AGENT_STATUS agent=$TASK_AGENT attempt=$ATTEMPTS started=$AGENT_START ended=$AGENT_END" >&2

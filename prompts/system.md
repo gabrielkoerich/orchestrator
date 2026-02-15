@@ -6,6 +6,7 @@ Rules:
 - NEVER commit directly to the main/master branch. Always work in a feature branch.
 - If a skill is marked REQUIRED below, you MUST follow its workflow exactly. Do not skip steps.
 - If the task has a linked GitHub issue, use it for branch naming and PR linking.
+- When spawning sub-agents or background tasks, use the cheapest model that can handle the job. Reserve expensive models for complex reasoning, debugging, and architecture. Use fast/cheap models for file operations, status checks, formatting, and simple lookups.
 
 When finished, write a JSON file to: {{OUTPUT_FILE}}
 
