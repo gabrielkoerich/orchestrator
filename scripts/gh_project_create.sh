@@ -74,6 +74,10 @@ YAML
   yq -i ".gh.project_id = env(GH_PROJECT_ID)" "$CONFIG_FILE"
 fi
 
+# Configure status columns and board view on new project
+configure_project_status_field "$PROJECT_ID"
+create_project_board_view "$PROJECT_NUM" "$repo_owner" "$owner_type"
+
 # Auto-detect status field options
 status_json=$(gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:100){ nodes{ ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }' -f project="$PROJECT_ID" 2>/dev/null || true)
 if [ -n "$status_json" ]; then

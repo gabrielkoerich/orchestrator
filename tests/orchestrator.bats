@@ -1165,6 +1165,131 @@ SH
   [ "$output" = "Add login endpoint" ]
 }
 
+@test "link_project_to_repo calls linkProjectV2ToRepository" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if printf '%s' "$*" | grep -q "repos/test/repo"; then
+  echo '{"node_id":"R_abc123"}'
+  exit 0
+fi
+if printf '%s' "$*" | grep -q "linkProjectV2ToRepository"; then
+  echo '{"data":{"linkProjectV2ToRepository":{"repository":{"id":"R_abc123"}}}}'
+  # Write a marker so we can verify the mutation was called
+  echo "linked" > "${STATE_DIR}/link_called"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  source "${REPO_DIR}/scripts/lib.sh"
+  run env PATH="${TMP_DIR}:${PATH}" STATE_DIR="$STATE_DIR" \
+    bash -c "source '${REPO_DIR}/scripts/lib.sh' && link_project_to_repo PVT_proj123 test/repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Linked project to test/repo"* ]]
+  [ -f "${STATE_DIR}/link_called" ]
+}
+
+@test "gh_push.sh adds issue to project when not already present" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+# Route based on arguments
+args="$*"
+
+# repos/REPO/issues (create issue)
+if printf '%s' "$args" | grep -q "repos/test/repo/issues" && ! printf '%s' "$args" | grep -q "graphql"; then
+  if printf '%s' "$args" | grep -q "PATCH"; then
+    echo '{}'
+    exit 0
+  fi
+  if printf '%s' "$args" | grep -q "comments"; then
+    echo '{}'
+    exit 0
+  fi
+  # GET issue node_id
+  if printf '%s' "$args" | grep -q -- "-q .node_id"; then
+    echo "I_issue1node"
+    exit 0
+  fi
+  echo '{"number":1,"html_url":"https://github.com/test/repo/issues/1","state":"open"}'
+  exit 0
+fi
+
+# GraphQL: project items query (return empty — issue not in project)
+if printf '%s' "$args" | grep -q "items(first"; then
+  echo '{"data":{"node":{"items":{"nodes":[]}}}}'
+  exit 0
+fi
+
+# GraphQL: addProjectV2ItemById
+if printf '%s' "$args" | grep -q "addProjectV2ItemById"; then
+  echo "add_to_project" >> "${STATE_DIR}/gh_calls"
+  echo '{"data":{"addProjectV2ItemById":{"item":{"id":"PVTI_item1"}}}}'
+  exit 0
+fi
+
+# GraphQL: updateProjectV2ItemFieldValue
+if printf '%s' "$args" | grep -q "updateProjectV2ItemFieldValue"; then
+  echo "update_status" >> "${STATE_DIR}/gh_calls"
+  echo '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_item1"}}}}'
+  exit 0
+fi
+
+# repo view
+if printf '%s' "$args" | grep -q "repo view"; then
+  echo "test/repo"
+  exit 0
+fi
+
+echo '{}'
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  # Set up config with project settings
+  cat > "$CONFIG_PATH" <<'YAML'
+workflow:
+  auto_close: true
+gh:
+  repo: "test/repo"
+  project_id: "PVT_proj123"
+  project_status_field_id: "PVTSSF_field1"
+  project_status_map:
+    backlog: "opt_backlog"
+    in_progress: "opt_inprog"
+    review: "opt_review"
+    done: "opt_done"
+YAML
+
+  # Create a task with gh_issue_number already set but not synced
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  export NOW
+  yq -i \
+    "(.tasks[0].gh_issue_number) = 1 |
+     (.tasks[0].gh_url) = \"https://github.com/test/repo/issues/1\" |
+     (.tasks[0].gh_state) = \"open\" |
+     (.tasks[0].status) = \"in_progress\" |
+     (.tasks[0].updated_at) = env(NOW) |
+     (.tasks[0].gh_synced_at) = \"\"" \
+    "$TASKS_PATH"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_push.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"added issue #1 to project"* ]]
+
+  # Verify addProjectV2ItemById was called
+  [ -f "${STATE_DIR}/gh_calls" ]
+  grep -q "add_to_project" "${STATE_DIR}/gh_calls"
+}
+
 @test "plan_chat.sh cleans up history on exit" {
   CLAUDE_STUB="${TMP_DIR}/claude"
   cat > "$CLAUDE_STUB" <<'SH'

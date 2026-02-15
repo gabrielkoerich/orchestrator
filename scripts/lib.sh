@@ -182,6 +182,39 @@ PY
   printf '%s' "$output"
 }
 
+configure_project_status_field() {
+  local project_id="$1"
+  # Find the Status field ID
+  local fields_json status_field_id
+  fields_json=$(gh api graphql \
+    -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:100){ nodes{ ... on ProjectV2SingleSelectField { id name } } } } } }' \
+    -f project="$project_id" 2>/dev/null || true)
+  [ -n "$fields_json" ] || return 0
+  status_field_id=$(printf '%s' "$fields_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .id' 2>/dev/null | head -n1)
+  if [ -z "$status_field_id" ] || [ "$status_field_id" = "null" ]; then
+    return 0
+  fi
+  # Update Status field with orchestrator columns
+  gh api graphql \
+    -f query="mutation(\$fieldId:ID!){ updateProjectV2Field(input:{fieldId:\$fieldId, singleSelectOptions:[{name:\"Backlog\",color:GRAY,description:\"\"},{name:\"In Progress\",color:YELLOW,description:\"\"},{name:\"Review\",color:ORANGE,description:\"\"},{name:\"Done\",color:GREEN,description:\"\"}]}){ projectV2Field{ ... on ProjectV2SingleSelectField { id name options { id name } } } } }" \
+    -f fieldId="$status_field_id" >/dev/null 2>&1 || true
+  echo "Configured project status columns: Backlog, In Progress, Review, Done"
+}
+
+create_project_board_view() {
+  local project_num="$1" owner="$2" owner_type="$3"
+  local endpoint
+  if [ "$owner_type" = "Organization" ]; then
+    endpoint="orgs/$owner/projectsV2/$project_num/views"
+  else
+    endpoint="users/$owner/projectsV2/$project_num/views"
+  fi
+  gh api "$endpoint" -X POST \
+    -f name="Board" -f layout="board" \
+    --header "X-GitHub-Api-Version:2022-11-28" >/dev/null 2>&1 || true
+  echo "Created Board view"
+}
+
 link_project_to_repo() {
   local project_id="$1" repo="$2"
   local repo_node_id
