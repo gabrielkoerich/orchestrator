@@ -422,10 +422,10 @@ lock_is_stale() {
 
 with_lock() {
   acquire_lock
-  local status=0
-  "$@" || status=$?
+  local _wl_rc=0
+  "$@" || _wl_rc=$?
   release_lock
-  return "$status"
+  return "$_wl_rc"
 }
 
 append_history() {

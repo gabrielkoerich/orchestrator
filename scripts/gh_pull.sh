@@ -81,12 +81,15 @@ for i in $(seq 0 $((COUNT - 1))); do
       "$TASKS_PATH"
 
     if [ "$STATE" = "closed" ]; then
-      NOW=$(now_iso)
-      export NOW
-      yq -i \
-        "(.tasks[] | select(.gh_issue_number == $NUM) | .status) = \"done\" | \
-         (.tasks[] | select(.gh_issue_number == $NUM) | .updated_at) = strenv(NOW)" \
-        "$TASKS_PATH"
+      CURRENT_STATUS=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .status" "$TASKS_PATH")
+      if [ "$CURRENT_STATUS" != "done" ]; then
+        NOW=$(now_iso)
+        export NOW
+        yq -i \
+          "(.tasks[] | select(.gh_issue_number == $NUM) | .status) = \"done\" | \
+           (.tasks[] | select(.gh_issue_number == $NUM) | .updated_at) = strenv(NOW)" \
+          "$TASKS_PATH"
+      fi
     fi
   else
     NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")

@@ -1488,6 +1488,60 @@ SH
   [ ! -d "$TASK_LOCK" ]
 }
 
+@test "append_history records actual status not zero" {
+  # with_lock() has `local status=0` which shadows the exported `status`
+  # from append_history. All history entries should show the real status,
+  # not "0".
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    TASKS_PATH='$TASKS_PATH'
+    append_history 1 'blocked' 'test note'
+  "
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 1) | .history[-1].status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "blocked" ]
+}
+
+@test "gh_pull.sh does not bump updated_at on already-done closed issues" {
+  # gh_pull sets updated_at = NOW on closed issues every pull cycle,
+  # even if the task is already done. This triggers unnecessary gh_push syncs.
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ]; then
+  if printf '%s' "$*" | grep -q "repos/"; then
+    printf '[{"number":1,"title":"Already Done","body":"closed issue","labels":[],"state":"closed","html_url":"https://github.com/test/repo/issues/1","updated_at":"2026-01-01T00:00:00Z","pull_request":null}]\n'
+    exit 0
+  fi
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  # Set task 1 to done with a known updated_at
+  FROZEN="2026-01-15T12:00:00Z"
+  export FROZEN
+  run yq -i "(.tasks[] | select(.id == 1) | .status) = \"done\" |
+    (.tasks[] | select(.id == 1) | .gh_issue_number) = 1 |
+    (.tasks[] | select(.id == 1) | .gh_state) = \"closed\" |
+    (.tasks[] | select(.id == 1) | .updated_at) = \"$FROZEN\"" "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_pull.sh"
+  [ "$status" -eq 0 ]
+
+  # updated_at should still be the original value, not bumped
+  run yq -r '.tasks[] | select(.id == 1) | .updated_at' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$FROZEN" ]
+}
+
 @test "run_task.sh passes --output-format json to agents" {
   # Regression: agents must return structured JSON, not raw text
   run grep -n 'output-format json\|--json\|--format json' "${REPO_DIR}/scripts/run_task.sh"
