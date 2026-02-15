@@ -1,0 +1,14 @@
+base_url = "https://orchestrator.gabrielkoerich.com"
+compile_sass = true
+build_search_index = false
+title = "Orchestrator"
+description = "A lightweight bash orchestrator for autonomous coding agents"
+default_language = "en"
+minify_html = true
+
+[markdown]
+highlight_code = true
+highlight_theme = "base16-ocean-dark"
+
+[extra]
+github = "https://github.com/gabrielkoerich/orchestrator"
