@@ -66,13 +66,7 @@ watch interval="10":
 
 # Start server (poll + gh sync) and auto-restart on config or code changes
 serve interval="10":
-    #!/usr/bin/env bash
-    if [ "${ORCH_BREW:-}" = "1" ]; then
-      echo "Starting via brew services..."
-      brew services start orchestrator
-    else
-      INTERVAL={{ interval }} TAIL_LOG=1 scripts/serve.sh
-    fi
+    @INTERVAL={{ interval }} TAIL_LOG=1 scripts/serve.sh
 
 # Alias for serve
 start interval="10":
@@ -80,39 +74,25 @@ start interval="10":
 
 # Stop the server if running
 stop:
-    #!/usr/bin/env bash
-    if [ "${ORCH_BREW:-}" = "1" ]; then
-      brew services stop orchestrator
-    else
-      scripts/stop.sh
-    fi
+    @scripts/stop.sh
 
 # Restart the server
 restart:
-    #!/usr/bin/env bash
-    if [ "${ORCH_BREW:-}" = "1" ]; then
-      brew services restart orchestrator
-    else
-      scripts/restart.sh
-    fi
+    @scripts/restart.sh
 
 # Show service info and status
 info:
     #!/usr/bin/env bash
-    if [ "${ORCH_BREW:-}" = "1" ]; then
-      brew services info orchestrator
-    else
-      PID_FILE="${STATE_DIR:-.orchestrator}/orchestrator.pid"
-      if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        if kill -0 "$PID" 2>/dev/null; then
-          echo "Orchestrator running (pid $PID)"
-        else
-          echo "Orchestrator not running (stale pid $PID)"
-        fi
+    PID_FILE="${STATE_DIR:-.orchestrator}/orchestrator.pid"
+    if [ -f "$PID_FILE" ]; then
+      PID=$(cat "$PID_FILE")
+      if kill -0 "$PID" 2>/dev/null; then
+        echo "Orchestrator running (pid $PID)"
       else
-        echo "Orchestrator not running (no pid file)"
+        echo "Orchestrator not running (stale pid $PID)"
       fi
+    else
+      echo "Orchestrator not running (no pid file)"
     fi
 
 # Remove stale task locks
