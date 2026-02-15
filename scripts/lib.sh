@@ -655,6 +655,7 @@ create_task_entry() {
       \"needs_help\": false,
       \"attempts\": 0,
       \"last_error\": null,
+      \"prompt_hash\": null,
       \"retry_at\": null,
       \"review_decision\": null,
       \"review_notes\": null,
@@ -735,8 +736,9 @@ label_issue() {
     --input - <<< "{\"labels\":[\"$label\"]}" >/dev/null 2>&1 || true
 }
 
-# Mark a task as blocked with error details, comment on GitHub issue, and add blocked label.
+# Mark a task as blocked with error details.
 # The task will not be retried until manually unblocked.
+# GitHub comments and labels are handled by gh_push.sh on next sync.
 # Usage: mark_needs_review TASK_ID ATTEMPTS "error message" ["history note"]
 mark_needs_review() {
   local task_id="$1" attempts="$2" error="$3" note="${4:-$3}"
@@ -749,15 +751,6 @@ mark_needs_review() {
      (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
     "$TASKS_PATH"
   append_history "$task_id" "blocked" "$note"
-  # Post error to linked GitHub issue and add blocked label
-  comment_on_issue "$task_id" "**Task #${task_id} failed** (attempt ${attempts})
-
-\`\`\`
-${error}
-\`\`\`
-
-Agent: \`${TASK_AGENT:-unknown}\`"
-  label_issue "$task_id" "blocked"
 }
 
 run_with_timeout() {

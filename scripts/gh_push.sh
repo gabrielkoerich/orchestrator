@@ -48,6 +48,27 @@ REVIEW_OWNER=${REVIEW_OWNER:-$(config_get '.workflow.review_owner // ""')}
 
 SKIP_LABELS=("no_gh" "local-only")
 
+agent_badge() {
+  local agent="${1:-orchestrator}"
+  case "$agent" in
+    claude)  echo "🟣 Claude" ;;
+    codex)   echo "🟢 Codex" ;;
+    opencode) echo "🔵 OpenCode" ;;
+    *)       echo "⚙️ $agent" ;;
+  esac
+}
+
+# Read the saved prompt file for a task, truncated to keep comments under GitHub limits.
+read_prompt_file() {
+  local task_dir="$1" task_id="$2"
+  local state_dir="${task_dir:+${task_dir}/.orchestrator}"
+  state_dir="${state_dir:-${STATE_DIR:-.orchestrator}}"
+  local prompt_file="${state_dir}/prompt-${task_id}.txt"
+  if [ -f "$prompt_file" ]; then
+    head -c 10000 "$prompt_file"
+  fi
+}
+
 map_status_to_project() {
   local status="$1"
   case "$status" in
@@ -141,6 +162,9 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   BLOCKERS=$(yq -r ".tasks[$i].blockers // [] | join(\", \" )" "$TASKS_PATH")
   FILES_CHANGED_JSON=$(yq -o=json -I=0 ".tasks[$i].files_changed // []" "$TASKS_PATH")
   LAST_ERROR=$(yq -r ".tasks[$i].last_error // \"\"" "$TASKS_PATH")
+  AGENT=$(yq -r ".tasks[$i].agent // \"\"" "$TASKS_PATH")
+  PROMPT_HASH=$(yq -r ".tasks[$i].prompt_hash // \"\"" "$TASKS_PATH")
+  TASK_DIR=$(yq -r ".tasks[$i].dir // \"\"" "$TASKS_PATH")
   ATTEMPTS=$(yq -r ".tasks[$i].attempts // 0" "$TASKS_PATH")
   UPDATED_AT=$(yq -r ".tasks[$i].updated_at // \"\"" "$TASKS_PATH")
   GH_SYNCED_AT=$(yq -r ".tasks[$i].gh_synced_at // \"\"" "$TASKS_PATH")
@@ -190,23 +214,25 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     STATE=$(printf '%s' "$RESP" | yq -r '.state')
     NOW=$(now_iso)
 
-    export NUM URL STATE NOW
+    export NUM URL STATE UPDATED_AT
     with_lock yq -i \
       "(.tasks[] | select(.id == $ID) | .gh_issue_number) = (env(NUM) | tonumber) | \
        (.tasks[] | select(.id == $ID) | .gh_url) = strenv(URL) | \
        (.tasks[] | select(.id == $ID) | .gh_state) = strenv(STATE) | \
-       (.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(NOW)" \
+       (.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(UPDATED_AT)" \
       "$TASKS_PATH"
 
+    echo "[gh_push] task=$ID created issue #$NUM"
     sync_project_status "$NUM" "$STATUS"
     continue
   fi
 
   # Ensure issue labels reflect status only when task changed
   if [ "$UPDATED_AT" = "$GH_SYNCED_AT" ]; then
-    sync_project_status "$GH_NUM" "$STATUS"
     continue
   fi
+
+  echo "[gh_push] task=$ID syncing (updated_at=$UPDATED_AT gh_synced_at=$GH_SYNCED_AT)"
 
   LABEL_ARGS=()
   LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
@@ -215,21 +241,16 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     LABEL_ARGS+=("-f" "labels[]=$LBL")
   done
   gh_api "repos/$REPO/issues/$GH_NUM" -X PATCH "${LABEL_ARGS[@]}" >/dev/null
-  NOW=$(now_iso)
-  export NOW
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(NOW)" \
-    "$TASKS_PATH"
 
-  # Post a comment if task updated
-  if [ "$UPDATED_AT" != "" ] && [ "$UPDATED_AT" != "$GH_SYNCED_AT" ]; then
+  # Post a comment for the update (we already know task changed from the gate on line 206)
+  if [ -n "$UPDATED_AT" ]; then
     FILES_CHANGED=$(printf '%s' "$FILES_CHANGED_JSON" | yq -r 'join(", ")')
     OWNER_TAG="@$(repo_owner "$REPO")"
 
     if [ "$STATUS" = "blocked" ] || [ "$STATUS" = "needs_review" ]; then
       # Detailed comment for stuck/blocked tasks, tagging the repo owner
-      COMMENT="## Agent needs help"
-      COMMENT="$COMMENT
+      BADGE=$(agent_badge "$AGENT")
+      COMMENT="# ${BADGE} needs help
 
 **Status:** \`$STATUS\`"
       if [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
@@ -261,13 +282,33 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 **Files changed:** $FILES_CHANGED"
       fi
       COMMENT="$COMMENT
-**Attempts:** $ATTEMPTS
+**Attempts:** $ATTEMPTS"
+      if [ -n "$PROMPT_HASH" ] && [ "$PROMPT_HASH" != "null" ]; then
+        COMMENT="$COMMENT
+**Prompt:** \`$PROMPT_HASH\`"
+      fi
+      COMMENT="$COMMENT
 
 ${OWNER_TAG} — this task needs your attention."
+      PROMPT_CONTENT=$(read_prompt_file "$TASK_DIR" "$ID")
+      if [ -n "$PROMPT_CONTENT" ]; then
+        COMMENT="$COMMENT
+
+<details><summary>Prompt sent to agent</summary>
+
+\`\`\`
+${PROMPT_CONTENT}
+\`\`\`
+
+</details>"
+      fi
       gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
     elif [ -n "$SUMMARY" ]; then
       # Standard progress/completion comment
-      COMMENT="**Status:** \`$STATUS\`
+      BADGE=$(agent_badge "$AGENT")
+      COMMENT="# ${BADGE}
+
+**Status:** \`$STATUS\`
 **Summary:** $SUMMARY"
       if [ -n "$ACCOMPLISHED" ]; then
         COMMENT="$COMMENT
@@ -281,15 +322,31 @@ ${OWNER_TAG} — this task needs your attention."
         COMMENT="$COMMENT
 **Files:** $FILES_CHANGED"
       fi
+      if [ -n "$PROMPT_HASH" ] && [ "$PROMPT_HASH" != "null" ]; then
+        COMMENT="$COMMENT
+**Prompt:** \`$PROMPT_HASH\`"
+      fi
+      PROMPT_CONTENT=$(read_prompt_file "$TASK_DIR" "$ID")
+      if [ -n "$PROMPT_CONTENT" ]; then
+        COMMENT="$COMMENT
+
+<details><summary>Prompt sent to agent</summary>
+
+\`\`\`
+${PROMPT_CONTENT}
+\`\`\`
+
+</details>"
+      fi
       gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
     fi
-
-    NOW=$(now_iso)
-    export NOW
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(NOW)" \
-      "$TASKS_PATH"
   fi
+
+  # Mark synced using the task's updated_at so next cycle sees them equal and skips
+  export UPDATED_AT
+  with_lock yq -i \
+    "(.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(UPDATED_AT)" \
+    "$TASKS_PATH"
 
   # Review/close behavior
   if [ "$STATUS" = "done" ] && [ "$AUTO_CLOSE" != "true" ]; then
@@ -305,11 +362,8 @@ ${OWNER_TAG} — this task needs your attention."
   # Close issue if task done and auto_close
   if [ "$STATUS" = "done" ] && [ "$GH_STATE" != "closed" ] && [ "$AUTO_CLOSE" = "true" ]; then
     gh_api "repos/$REPO/issues/$GH_NUM" -X PATCH -f state=closed >/dev/null
-    NOW=$(now_iso)
-    export NOW
     with_lock yq -i \
-      "(.tasks[] | select(.id == $ID) | .gh_state) = \"closed\" | \
-       (.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(NOW)" \
+      "(.tasks[] | select(.id == $ID) | .gh_state) = \"closed\"" \
       "$TASKS_PATH"
   fi
 

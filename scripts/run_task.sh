@@ -26,12 +26,42 @@ fi
 echo "[run] task=$TASK_ID starting" >&2
 export TASK_ID
 
-# Trap unexpected exits so tasks don't stay routed forever
+# Per-task lock to avoid double-run across multiple watchers.
+# Must be checked BEFORE the cleanup trap so failed lock attempts exit cleanly.
+TASK_LOCK="${LOCK_PATH}.task.${TASK_ID}"
+TASK_LOCK_OWNED=false
+if ! mkdir "$TASK_LOCK" 2>/dev/null; then
+  lock_pid=""
+  if [ -f "$TASK_LOCK/pid" ]; then
+    lock_pid=$(cat "$TASK_LOCK/pid" 2>/dev/null || true)
+  fi
+  if [ -n "$lock_pid" ] && kill -0 "$lock_pid" >/dev/null 2>&1; then
+    exit 0
+  fi
+  if lock_is_stale "$TASK_LOCK"; then
+    rmdir "$TASK_LOCK" 2>/dev/null || true
+  fi
+  if ! mkdir "$TASK_LOCK" 2>/dev/null; then
+    exit 0
+  fi
+fi
+TASK_LOCK_OWNED=true
+echo "$$" > "$TASK_LOCK/pid"
+
+# Combined cleanup: recover crashed tasks AND release per-task lock.
+# Must be a single trap because bash replaces previous EXIT traps.
 _run_task_cleanup() {
   local exit_code=$?
-  if [ $exit_code -ne 0 ]; then
+
+  # Only release lock if we own it
+  if [ "$TASK_LOCK_OWNED" = true ]; then
+    rm -f "$TASK_LOCK/pid"
+    rmdir "$TASK_LOCK" 2>/dev/null || true
+  fi
+
+  # Recover crashed tasks so they don't stay in_progress forever
+  if [ $exit_code -ne 0 ] && [ "$TASK_LOCK_OWNED" = true ]; then
     echo "[run] task=$TASK_ID crashed (exit=$exit_code) at line ${BASH_LINENO[0]:-?}" >&2
-    # Only update if task is still routed/in_progress (avoid clobbering)
     local current_status
     current_status=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .status" "$TASKS_PATH" 2>/dev/null || true)
     if [ "$current_status" = "routed" ] || [ "$current_status" = "in_progress" ] || [ "$current_status" = "new" ]; then
@@ -39,7 +69,7 @@ _run_task_cleanup() {
       now=$(now_iso 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")
       export now
       yq -i \
-        "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
+        "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
          (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"run_task crashed (exit $exit_code)\" | \
          (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(now)" \
         "$TASKS_PATH" 2>/dev/null || true
@@ -47,28 +77,6 @@ _run_task_cleanup() {
   fi
 }
 trap '_run_task_cleanup' EXIT
-
-# Per-task lock to avoid double-run across multiple watchers
-TASK_LOCK="${LOCK_PATH}.task.${TASK_ID}"
-if ! mkdir "$TASK_LOCK" 2>/dev/null; then
-  lock_pid=""
-  if [ -f "$TASK_LOCK/pid" ]; then
-    lock_pid=$(cat "$TASK_LOCK/pid" 2>/dev/null || true)
-  fi
-  if [ -n "$lock_pid" ] && kill -0 "$lock_pid" >/dev/null 2>&1; then
-    echo "Task $TASK_ID already running" >&2
-    exit 0
-  fi
-  if lock_is_stale "$TASK_LOCK"; then
-    rmdir "$TASK_LOCK" 2>/dev/null || true
-  fi
-  if ! mkdir "$TASK_LOCK" 2>/dev/null; then
-    echo "Task $TASK_ID already running" >&2
-    exit 0
-  fi
-fi
-echo "$$" > "$TASK_LOCK/pid"
-trap 'rm -f "$TASK_LOCK/pid"; rmdir "$TASK_LOCK" 2>/dev/null || true' EXIT
 
 # Read task's dir field and override PROJECT_DIR if set
 TASK_DIR=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .dir // \"\"" "$TASKS_PATH")
@@ -193,7 +201,12 @@ DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash
 ensure_state_dir
 PROMPT_FILE="${STATE_DIR}/prompt-${TASK_ID}.txt"
 printf '=== SYSTEM PROMPT ===\n%s\n\n=== AGENT MESSAGE ===\n%s\n' "$SYSTEM_PROMPT" "$AGENT_MESSAGE" > "$PROMPT_FILE"
-echo "[run] task=$TASK_ID prompt saved to $PROMPT_FILE" >&2
+PROMPT_HASH=$(shasum -a 256 "$PROMPT_FILE" | cut -c1-8)
+export PROMPT_HASH
+with_lock yq -i \
+  "(.tasks[] | select(.id == $TASK_ID) | .prompt_hash) = strenv(PROMPT_HASH)" \
+  "$TASKS_PATH"
+echo "[run] task=$TASK_ID prompt saved to $PROMPT_FILE (hash=$PROMPT_HASH)" >&2
 echo "[run] task=$TASK_ID agent=$TASK_AGENT model=${AGENT_MODEL:-default} attempt=$ATTEMPTS project=$PROJECT_DIR" >&2
 echo "[run] task=$TASK_ID skills=${SELECTED_SKILLS:-none} issue=${GH_ISSUE_REF:-none}" >&2
 
