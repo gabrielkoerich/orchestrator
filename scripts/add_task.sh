@@ -20,8 +20,10 @@ export NOW PROJECT_DIR
 
 # Compute ID inside lock to prevent race conditions
 acquire_lock
+trap 'release_lock' EXIT
 NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
 create_task_entry "$NEXT_ID" "$TITLE" "$BODY" "$LABELS"
 release_lock
+trap - EXIT
 
 echo "Added task $NEXT_ID: $TITLE"
