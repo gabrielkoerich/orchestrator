@@ -193,13 +193,22 @@ require_agent "$TASK_AGENT"
 # Build disallowed tools list
 DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash(rm -*)"] | join(",")')
 
+# Save prompt for debugging
+ensure_state_dir
+PROMPT_FILE="${STATE_DIR}/prompt-${TASK_ID}.txt"
+printf '=== SYSTEM PROMPT ===\n%s\n\n=== AGENT MESSAGE ===\n%s\n' "$SYSTEM_PROMPT" "$AGENT_MESSAGE" > "$PROMPT_FILE"
+echo "[run] task=$TASK_ID prompt saved to $PROMPT_FILE" >&2
+echo "[run] task=$TASK_ID agent=$TASK_AGENT model=${AGENT_MODEL:-default} attempt=$ATTEMPTS project=$PROJECT_DIR" >&2
+echo "[run] task=$TASK_ID skills=${SELECTED_SKILLS:-none} issue=${GH_ISSUE_REF:-none}" >&2
+
 start_spinner "Running task $TASK_ID ($TASK_AGENT)"
+AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 RESPONSE=""
 CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
-    echo "[run] using claude (agentic) model=${AGENT_MODEL:-default}" >&2
+    echo "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --output-format json --append-system-prompt <prompt> <message>" >&2
     DISALLOW_ARGS=()
     if [ -n "$DISALLOWED_TOOLS" ]; then
       IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
@@ -210,24 +219,27 @@ case "$TASK_AGENT" in
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       "${DISALLOW_ARGS[@]}" \
+      --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
       "$AGENT_MESSAGE") || CMD_STATUS=$?
     ;;
   codex)
-    echo "[run] using codex (agentic) model=${AGENT_MODEL:-default}" >&2
+    echo "[run] cmd: codex -q ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>" >&2
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout codex -q \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+      --json \
       "$FULL_MESSAGE") || CMD_STATUS=$?
     ;;
   opencode)
-    echo "[run] using opencode (agentic)" >&2
+    echo "[run] cmd: opencode run --format json <message>" >&2
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
+      --format json \
       "$FULL_MESSAGE") || CMD_STATUS=$?
     ;;
   *)
@@ -237,7 +249,14 @@ ${AGENT_MESSAGE}"
 esac
 
 stop_spinner
-echo "[run] agent finished (exit=$CMD_STATUS)" >&2
+AGENT_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+echo "[run] task=$TASK_ID agent finished (exit=$CMD_STATUS) started=$AGENT_START ended=$AGENT_END" >&2
+
+# Save raw response for debugging
+RESPONSE_FILE="${STATE_DIR}/response-${TASK_ID}.txt"
+printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
+RESPONSE_LEN=${#RESPONSE}
+echo "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)" >&2
 
 if [ "$CMD_STATUS" -ne 0 ]; then
   echo "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS" >&2

@@ -1449,3 +1449,15 @@ GHSTUB
   run bash -c "grep -rn 'env(' '${REPO_DIR}/scripts/'*.sh | grep -v strenv | grep -v 'env(.*) | tonumber' | grep -v '^\s*#' | grep -v 'command -v\|export \|:-\|ORCH_HOME\|PATH=' || true"
   [ -z "$output" ]
 }
+
+@test "run_task.sh passes --output-format json to agents" {
+  # Regression: agents must return structured JSON, not raw text
+  run grep -n 'output-format json\|--json\|--format json' "${REPO_DIR}/scripts/run_task.sh"
+  [ "$status" -eq 0 ]
+  # claude must have --output-format json
+  [[ "$output" == *"output-format json"* ]]
+  # codex must have --json
+  [[ "$output" == *"--json"* ]]
+  # opencode must have --format json
+  [[ "$output" == *"--format json"* ]]
+}
