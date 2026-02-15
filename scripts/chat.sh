@@ -97,6 +97,20 @@ dispatch() {
       yq -i "(.jobs[] | select(.id == \"$id\") | .enabled) = false" "$JOBS_PATH"
       echo "Disabled job '$id'"
       ;;
+    gh_sync)
+      "${SCRIPT_DIR}/gh_sync.sh"
+      ;;
+    gh_pull)
+      "${SCRIPT_DIR}/gh_pull.sh"
+      ;;
+    gh_push)
+      "${SCRIPT_DIR}/gh_push.sh"
+      ;;
+    gh_project_create)
+      local title
+      title=$(printf '%s' "$params" | jq -r '.title // ""')
+      "${SCRIPT_DIR}/gh_project_create.sh" "$title"
+      ;;
     quick_task)
       local prompt
       prompt=$(printf '%s' "$params" | jq -r '.prompt // ""')
