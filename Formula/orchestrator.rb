@@ -21,6 +21,7 @@ class Orchestrator < Formula
       set -euo pipefail
 
       export ORCH_VERSION="#{version}"
+      export ORCH_BREW=1
       export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
       export ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
 
