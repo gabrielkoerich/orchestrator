@@ -68,18 +68,18 @@ jobs:
           # Default to patch bump
           BUMP="patch"
 
-          # feat: or feat(scope): → minor
-          if echo "$COMMITS" | grep -qE '^feat(\(.*\))?!?:'; then
+          # Look for feature-related words anywhere in commit messages → minor
+          if echo "$COMMITS" | grep -qiE '\bfeat(ure)?s?\b|\badd(ed|s)?\b|\bnew\b|\bintroduc'; then
             BUMP="minor"
           fi
 
-          # BREAKING CHANGE in body or type!: → major
+          # Look for breaking change signals → major
           HAS_BREAKING=false
-          if echo "$COMMITS" | grep -qE '^[a-z]+(\(.*\))?!:'; then
+          if echo "$COMMITS" | grep -qiE '\bbreaking\b'; then
             HAS_BREAKING=true
           fi
           if [ -n "$LAST_TAG" ]; then
-            if git log "$LAST_TAG"..HEAD --pretty=format:"%b" | grep -q "BREAKING CHANGE"; then
+            if git log "$LAST_TAG"..HEAD --pretty=format:"%b" | grep -qiE '\bbreaking\b'; then
               HAS_BREAKING=true
             fi
           fi
@@ -125,11 +125,11 @@ jobs:
           while IFS='|' read -r msg hash; do
             [ -n "$msg" ] || continue
             entry="- ${msg} (${hash})"
-            if echo "$msg" | grep -qE '^[a-z]+(\(.*\))?!:'; then
+            if echo "$msg" | grep -qiE '\bbreaking\b'; then
               BREAKING+="${entry}"$'\n'
-            elif echo "$msg" | grep -qE '^feat(\(.*\))?:'; then
+            elif echo "$msg" | grep -qiE '\bfeat(ure)?s?\b|\badd(ed|s)?\b|\bnew\b|\bintroduc'; then
               FEATURES+="${entry}"$'\n'
-            elif echo "$msg" | grep -qE '^fix(\(.*\))?:'; then
+            elif echo "$msg" | grep -qiE '\bfix(ed|es)?\b|\bbug\b|\bpatch\b|\bhotfix\b'; then
               FIXES+="${entry}"$'\n'
             else
               OTHER+="${entry}"$'\n'
