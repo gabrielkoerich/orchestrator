@@ -101,6 +101,7 @@ dispatch() {
       local prompt
       prompt=$(printf '%s' "$params" | jq -r '.prompt // ""')
       echo "Running quick task..."
+      (cd "$PROJECT_DIR"
       case "$CHAT_AGENT" in
         claude)
           if [ -n "$CHAT_MODEL" ]; then
@@ -120,6 +121,7 @@ dispatch() {
           opencode run "$prompt"
           ;;
       esac
+      )
       ;;
     answer)
       # No dispatch needed — just show the response

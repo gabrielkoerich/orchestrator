@@ -1,48 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_DIR=${PROJECT_DIR:-$(pwd)}
 
 # Non-interactive mode via flags or env vars
 GH_REPO="${ORCH_GH_REPO:-}"
 GH_PROJECT_ID="${ORCH_GH_PROJECT_ID:-}"
+FLAG_MODE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo)       GH_REPO="$2"; shift 2 ;;
-    --project-id) GH_PROJECT_ID="$2"; shift 2 ;;
+    --repo)       GH_REPO="$2"; FLAG_MODE=true; shift 2 ;;
+    --project-id) GH_PROJECT_ID="$2"; FLAG_MODE=true; shift 2 ;;
     *)            echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
+CONFIG_FILE="$PROJECT_DIR/.orchestrator.yml"
+
+# Load existing config if present (idempotent re-init)
+EXISTING_REPO=""
+EXISTING_PROJECT=""
+if [ -f "$CONFIG_FILE" ]; then
+  command -v yq >/dev/null 2>&1 && {
+    EXISTING_REPO=$(yq -r '.gh.repo // ""' "$CONFIG_FILE" 2>/dev/null || true)
+    EXISTING_PROJECT=$(yq -r '.gh.project_id // ""' "$CONFIG_FILE" 2>/dev/null || true)
+    [ -n "$EXISTING_REPO" ] && [ "$EXISTING_REPO" != "null" ] && GH_REPO="${GH_REPO:-$EXISTING_REPO}"
+    [ -n "$EXISTING_PROJECT" ] && [ "$EXISTING_PROJECT" != "null" ] && GH_PROJECT_ID="${GH_PROJECT_ID:-$EXISTING_PROJECT}"
+  }
+fi
+
 echo "Initialized orchestrator for $(basename "$PROJECT_DIR")"
 echo "  Project: $PROJECT_DIR"
+[ -f "$CONFIG_FILE" ] && echo "  Config: .orchestrator.yml (existing)"
 
 write_config() {
-  local config_file="$PROJECT_DIR/.orchestrator.yml"
   if [ -z "$GH_REPO" ]; then return; fi
   export GH_REPO
-  if [ -f "$config_file" ]; then
-    yq -i ".gh.repo = env(GH_REPO)" "$config_file"
+  if [ -f "$CONFIG_FILE" ]; then
+    yq -i ".gh.repo = env(GH_REPO)" "$CONFIG_FILE"
   else
-    cat > "$config_file" <<YAML
+    cat > "$CONFIG_FILE" <<YAML
 gh:
   repo: "$GH_REPO"
 YAML
   fi
-  echo "Created .orchestrator.yml"
+  echo "Saved .orchestrator.yml"
 
   if [ -n "$GH_PROJECT_ID" ]; then
     export GH_PROJECT_ID
-    yq -i ".gh.project_id = env(GH_PROJECT_ID)" "$config_file"
+    yq -i ".gh.project_id = env(GH_PROJECT_ID)" "$CONFIG_FILE"
   fi
 
   # Auto-detect status field if gh is available and project_id is set
   local project_id="${GH_PROJECT_ID:-}"
   if [ -z "$project_id" ]; then
-    project_id=$(yq -r '.gh.project_id // ""' "$config_file" 2>/dev/null || true)
+    project_id=$(yq -r '.gh.project_id // ""' "$CONFIG_FILE" 2>/dev/null || true)
   fi
   if [ -n "$project_id" ] && [ "$project_id" != "null" ] && command -v gh >/dev/null 2>&1; then
-    auto_detect_status "$config_file" "$project_id"
+    auto_detect_status "$CONFIG_FILE" "$project_id"
   fi
 }
 
@@ -89,16 +105,26 @@ auto_detect_status() {
   [ -n "$done_id" ] && echo "  done -> $done_id" || echo "  done -> (not found)"
 }
 
-# Non-interactive: flags/env provided
-if [ -n "$GH_REPO" ]; then
+# Non-interactive: explicit flags provided
+if [ "$FLAG_MODE" = true ]; then
   write_config
 # Interactive: terminal attached
 elif [ -t 0 ]; then
-  read -r -p "Configure GitHub integration? (y/N): " SETUP_GH
+  # If repo already configured, skip the "Configure?" prompt
+  if [ -n "${EXISTING_REPO:-}" ] && [ "$EXISTING_REPO" != "null" ]; then
+    SETUP_GH="y"
+  else
+    read -r -p "Configure GitHub integration? (y/N): " SETUP_GH
+  fi
   if [ "$SETUP_GH" = "y" ] || [ "$SETUP_GH" = "Y" ]; then
-    read -r -p "GitHub repo (owner/repo): " GH_REPO
+    DETECTED_REPO=${GH_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#(https://github.com/|git@github.com:)##; s#\.git$##' || true)}
+    if [ -n "$DETECTED_REPO" ]; then
+      read -r -p "GitHub repo (owner/repo) [$DETECTED_REPO]: " GH_REPO_INPUT
+      GH_REPO="${GH_REPO_INPUT:-$DETECTED_REPO}"
+    else
+      read -r -p "GitHub repo (owner/repo): " GH_REPO
+    fi
     if [ -n "$GH_REPO" ]; then
-      CONFIG_FILE="$PROJECT_DIR/.orchestrator.yml"
       write_config
 
       # Interactive project selection if gh available and no project yet
@@ -144,11 +170,49 @@ elif [ -t 0 ]; then
               echo "  [$i] $p"
               i=$((i + 1))
             done
+            echo "  [n] Create new project"
             read -r -p "Select project number to use [skip]: " selection
-            if [ -n "$selection" ] && [[ "$selection" =~ ^[0-9]+$ ]]; then
+            if [ "$selection" = "n" ] || [ "$selection" = "N" ]; then
+              :  # fall through to create below
+            elif [ -n "$selection" ] && [[ "$selection" =~ ^[0-9]+$ ]]; then
               idx=$((selection - 1))
               if [ $idx -ge 0 ] && [ $idx -lt ${#ids[@]} ]; then
                 GH_PROJECT_ID_INPUT="${ids[$idx]}"
+              fi
+            fi
+          fi
+
+          # Create a new project if none selected
+          if [ -z "${GH_PROJECT_ID_INPUT:-}" ]; then
+            project_name=$(basename "$PROJECT_DIR")
+            read -r -p "Create a new GitHub Project? (y/N): " CREATE_PROJECT
+            if [ "$CREATE_PROJECT" = "y" ] || [ "$CREATE_PROJECT" = "Y" ]; then
+              read -r -p "Project title [$project_name]: " PROJECT_TITLE
+              [ -z "$PROJECT_TITLE" ] && PROJECT_TITLE="$project_name"
+
+              repo_owner=$(printf '%s' "$GH_REPO" | cut -d'/' -f1)
+              # Determine if owner is an org or user
+              owner_type=$(gh api "users/$repo_owner" -q .type 2>/dev/null || echo "User")
+              if [ "$owner_type" = "Organization" ]; then
+                create_json=$(gh api graphql -f query='mutation($org:ID!,$title:String!){ createProjectV2(input:{ownerId:$org, title:$title}){ projectV2{ id number } } }' \
+                  -f org="$(gh api "orgs/$repo_owner" -q .node_id 2>/dev/null)" \
+                  -f title="$PROJECT_TITLE" 2>/dev/null || true)
+              else
+                create_json=$(gh api graphql -f query='mutation($owner:ID!,$title:String!){ createProjectV2(input:{ownerId:$owner, title:$title}){ projectV2{ id number } } }' \
+                  -f owner="$(gh api user -q .node_id 2>/dev/null)" \
+                  -f title="$PROJECT_TITLE" 2>/dev/null || true)
+              fi
+              if [ -n "$create_json" ]; then
+                new_id=$(printf '%s' "$create_json" | yq -r '.data.createProjectV2.projectV2.id // ""' 2>/dev/null)
+                new_num=$(printf '%s' "$create_json" | yq -r '.data.createProjectV2.projectV2.number // ""' 2>/dev/null)
+                if [ -n "$new_id" ] && [ "$new_id" != "null" ]; then
+                  echo "Created project #$new_num: $PROJECT_TITLE"
+                  GH_PROJECT_ID_INPUT="$new_id"
+                else
+                  echo "Failed to create project." >&2
+                fi
+              else
+                echo "Failed to create project." >&2
               fi
             fi
           fi
@@ -168,3 +232,10 @@ fi
 echo ""
 echo "Add tasks with: orchestrator add \"title\" \"body\" \"labels\""
 echo "Start the server: orchestrator serve"
+
+# Auto-sync existing GitHub issues after init
+if [ -n "${GH_REPO:-}" ] && command -v gh >/dev/null 2>&1; then
+  echo ""
+  echo "Syncing GitHub issues..."
+  PROJECT_DIR="$PROJECT_DIR" "$SCRIPT_DIR/gh_sync.sh" || echo "gh-sync failed (non-fatal)." >&2
+fi
