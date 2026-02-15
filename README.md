@@ -1,6 +1,6 @@
 # Agent Orchestrator (bash, YAML + yq)
 
-[![tests](https://github.com/gabrielkoerich/orchestrator/actions/workflows/tests.yml/badge.svg)](https://github.com/gabrielkoerich/orchestrator/actions/workflows/tests.yml)
+[![CI](https://github.com/gabrielkoerich/orchestrator/actions/workflows/release.yml/badge.svg)](https://github.com/gabrielkoerich/orchestrator/actions/workflows/release.yml)
 
 A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex`, `claude`, and `opencode`) in full agentic mode with tool access, and can delegate subtasks dynamically.
 
@@ -67,7 +67,7 @@ orchestrator serve         # start background server
 ## Task Model
 Each task includes:
 - `id`, `title`, `body`, `labels`
-- `status`: `new`, `routed`, `in_progress`, `done`, `blocked`, `needs_review`
+- `status`: `new`, `routed`, `in_progress`, `done`, `blocked`
 - `agent`: executor (`codex`, `claude`, or `opencode`)
 - `agent_model`: model chosen by the router
 - `agent_profile`: dynamically generated role/skills/tools/constraints
@@ -76,7 +76,7 @@ Each task includes:
 - `summary`, `reason` (why blocked/stuck)
 - `accomplished`, `remaining`, `blockers`
 - `files_changed`, `needs_help`
-- `attempts`, `last_error`, `retry_at`
+- `attempts`, `last_error`
 - `review_decision`, `review_notes`
 - `history`: status changes with timestamps
 
@@ -90,7 +90,7 @@ GitHub metadata fields (optional):
 4. **Output**: the agent writes its results to `.orchestrator/output-{task_id}.json` (with stdout fallback for backward compatibility).
 5. **Delegation**: if the agent returns `delegations`, child tasks are created and the parent is blocked until children finish.
 6. **Rejoin**: parent resumes when children are done.
-7. **Stuck detection**: if the agent returns `blocked` or `needs_review` with a `reason`, it's logged to history and posted as a GitHub comment tagging `@owner`.
+7. **Error handling**: if the agent fails or returns `blocked` with a `reason`, the task is blocked, the error is commented on the GitHub issue, and a `blocked` label is added.
 
 ## Routing: How the Orchestrator Picks an Agent
 
@@ -128,11 +128,20 @@ The routing prompt is in `prompts/route.md`. The router only classifies — it n
 ## Agentic Mode
 
 Once routed, agents run in full agentic mode with tool access:
-- **Claude**: `-p` flag (non-interactive agentic mode), system prompt via `--append-system-prompt`
-- **Codex**: `-q` flag (quiet non-interactive mode), system+agent prompt combined
-- **OpenCode**: `opencode run` with combined prompt
+- **Claude**: `-p` flag (non-interactive agentic mode), `--output-format json`, system prompt via `--append-system-prompt`
+- **Codex**: `-q` flag (quiet non-interactive mode), `--json`, system+agent prompt combined
+- **OpenCode**: `opencode run --format json` with combined prompt
 
 Agents execute inside `$PROJECT_DIR` (the directory you ran `orchestrator` from), so they can read project files, edit code, and run commands. The context below is injected into the prompt as starting knowledge so agents don't waste time exploring — but since they have full tool access, they can also read any file themselves.
+
+### Agent Safety Rules
+
+Agents are constrained by rules in the system prompt:
+- **No `rm`**: `--disallowedTools` blocks `rm` — agents must use `trash` (macOS) or `trash-put` (Linux)
+- **No commits to main**: Agents must always work in feature branches
+- **Required skills**: Skills listed in `workflow.required_skills` are marked `[REQUIRED]` in the agent prompt and must be followed exactly (e.g. `gh-issue-worktree` for branch/PR workflow)
+- **GitHub issue linking**: If a task has a linked issue, the agent receives the issue reference for branch naming and PR linking
+- **Cost-conscious sub-agents**: Agents are instructed to use cheap models for routine sub-agent work
 
 ### Context Enrichment
 
@@ -166,9 +175,9 @@ run_task.sh
 ├── render_template("prompts/agent.md")   → AGENT_MESSAGE  (all context above)
 │
 └── agent invocation (cd $PROJECT_DIR)
-    ├── claude -p --append-system-prompt "$SYSTEM_PROMPT" "$AGENT_MESSAGE"
-    ├── codex -q "$SYSTEM_PROMPT\n\n$AGENT_MESSAGE"
-    └── opencode run "$SYSTEM_PROMPT\n\n$AGENT_MESSAGE"
+    ├── claude -p --output-format json --append-system-prompt "$SYSTEM_PROMPT" "$AGENT_MESSAGE"
+    ├── codex -q --json "$SYSTEM_PROMPT\n\n$AGENT_MESSAGE"
+    └── opencode run --format json "$SYSTEM_PROMPT\n\n$AGENT_MESSAGE"
 ```
 
 ### Output
@@ -207,6 +216,7 @@ The agent writes results to `.orchestrator/output-{task_id}.json`. If the file i
 | `orchestrator set-agent 1 claude` | Force a task to use a specific agent. |
 | `orchestrator skills-sync` | Sync skills from registry to `skills/`. |
 | `orchestrator test` | Run tests. |
+| `orchestrator --version` | Show version. |
 
 ### Scheduled Jobs
 
@@ -336,8 +346,8 @@ Supports: wildcards (`*`), ranges (`1-5`), steps (`*/15`, `1-5/2`), lists (`1,3,
 
 ### Dedup & Safety
 - Each job has `active_task_id` tracking its current in-flight task.
-- If the task is `new`, `routed`, `in_progress`, `blocked`, or `needs_review` — the job waits.
-- Tasks can delegate children, get reviewed, retry — the job won't interfere.
+- If the task is `new`, `routed`, `in_progress`, or `blocked` — the job waits.
+- Tasks can delegate children, get reviewed, or get blocked — the job won't interfere.
 - Only when the task reaches `done` does the job create a new one.
 - Tasks from jobs get `scheduled` and `job:{id}` labels for easy filtering.
 - All job-created tasks sync to GitHub issues like any other task.
@@ -356,24 +366,65 @@ agent_profile:
 
 ## Skills Catalog
 `skills.yml` defines approved skill repositories and a catalog of skills. The router selects skill ids and stores them in `selected_skills`.
+
+### Required Skills
+Skills listed in `workflow.required_skills` are always injected into agent prompts, marked `[REQUIRED]`, and enforced regardless of what the router selects. Configure in `config.yml`:
+```yaml
+workflow:
+  required_skills:
+    - gh-issue-worktree   # branch/PR workflow
+    - github              # GitHub CLI operations
+    - gh-pr-polish        # PR titles and bodies
+```
+
+### Commit Pinning
+Skill repositories are pinned to audited commit SHAs in `skills.yml` to prevent supply chain attacks:
+```yaml
+repositories:
+  - name: gabrielkoerich
+    url: https://github.com/gabrielkoerich/skills
+    pin: 226f5f11346eddceebf017746aa5cd660ef3af20
+```
+When pinned, `skills-sync` checks out the exact commit instead of pulling latest.
+
+### Syncing
 Clone or update skills with:
 ```bash
 orchestrator skills-sync
 ```
 
-## Stuck Agent Detection & Owner Notification
+## Error Handling & GitHub Issue Feedback
 
-When an agent can't complete a task, it reports why:
+When an agent fails, the orchestrator classifies the error and blocks the task:
+
+### Error Classification
+| Error Type | Detection | Action |
+|---|---|---|
+| **Auth/billing** | Pattern match on stderr/stdout (401, 403, expired key, quota, etc.) | Block + comment on issue |
+| **Timeout** | Exit code 124 | Block + comment on issue |
+| **Generic failure** | Any non-zero exit | Block + comment on issue |
+| **Invalid response** | No JSON in output file or stdout | Block + comment on issue |
+
+### What Happens on Failure
+1. Task status set to `blocked` (no auto-retry)
+2. Error details saved to `last_error` field in `tasks.yml`
+3. Error logged to task history with timestamp
+4. **GitHub issue comment** posted with error details, agent name, and attempt count
+5. **`blocked` label** added to the GitHub issue
+
+### Unblocking
+Tasks stay blocked until you manually investigate and unblock them:
+1. Check the error on the GitHub issue (or in `tasks.yml`)
+2. Fix the underlying problem (e.g. add API key, fix code)
+3. Remove the `blocked` label from the issue
+4. Set the task status back to `new` — the orchestrator picks it up again
+
+### Agent-Reported Blocks
+Agents can also report blocks in their JSON response:
 - `status: blocked` — waiting for a dependency or missing information
-- `status: needs_review` — encountered an error or can't proceed
+- The agent must provide a `reason` field explaining what happened, what it tried, and what it needs
 
-The agent must provide a `reason` field explaining what happened, what it tried, and what it needs. This reason is:
-1. **Persisted** in `tasks.yml` (the `reason` field)
-2. **Logged** in task history with timestamps
-3. **Appended** to the task context file (`contexts/task-{id}.md`)
-4. **Posted** as a GitHub issue comment (if GitHub sync is enabled) tagging `@owner` (extracted from `gh.repo`, e.g. `gabrielkoerich/app` → `@gabrielkoerich`)
-
-The GitHub comment includes: status, summary, reason, error, blockers, accomplished items, remaining items, files changed, and attempt count.
+The reason is persisted in `tasks.yml`, logged to history, appended to `contexts/task-{id}.md`, and posted as a GitHub issue comment.
 
 ## Logging & Observability
 
@@ -405,6 +456,9 @@ TAIL_LOG=1 orchestrator serve
 | **Task context** | `contexts/task-{id}.md` | Appended after each run: timestamp, status, summary, reason, files changed |
 | **Task history** | `tasks.yml` `.history[]` | Status transitions with timestamps and notes |
 | **Agent output** | `.orchestrator/output-{id}.json` | Structured JSON from the last agent run |
+| **Agent prompt** | `.orchestrator/prompt-{id}.txt` | Full system prompt + agent message sent to the agent |
+| **Agent response** | `.orchestrator/response-{id}.txt` | Raw stdout from the agent |
+| **Agent stderr** | `.orchestrator/stderr-{id}.txt` | Stderr captured from the agent (auth errors, warnings) |
 | **Route prompt** | `.orchestrator/route-prompt-{id}.txt` | The prompt sent to the router (for debugging routing decisions) |
 | **Failed response** | `contexts/response-{id}.md` | Raw agent output when JSON parsing fails |
 
@@ -414,17 +468,19 @@ When GitHub sync is enabled, status updates are also posted as issue comments �
 
 ### What Gets Logged Where
 
-| Event | Server log | Task context | Task history | GitHub |
-|---|---|---|---|---|
-| Tick/poll cycle | x | | | |
-| Task started | x | | x | |
-| Agent completed | x | x | x | x |
-| Agent blocked/stuck | x | x | x | x (tags owner) |
-| Invalid response | x | x (raw saved) | x | |
-| Review result | x | | x | x |
-| Delegation | x | | x | x |
-| Job triggered | x | | | |
-| Config/code restart | x | | | |
+| Event | Server log | Task context | Task history | GitHub | Per-task files |
+|---|---|---|---|---|---|
+| Tick/poll cycle | x | | | | |
+| Task started | x | | x | | prompt saved |
+| Agent completed | x | x | x | x | response + stderr |
+| Agent blocked/stuck | x | x | x | x (comment + label) | response + stderr |
+| Auth/billing error | x | | x | x (comment + label) | stderr |
+| Timeout | x | | x | x (comment + label) | |
+| Invalid response | x | x (raw saved) | x | x (comment + label) | response |
+| Review result | x | | x | x | |
+| Delegation | x | | x | x | |
+| Job triggered | x | | | | |
+| Config/code restart | x | | | | |
 
 ## Per-Project Config
 
@@ -461,7 +517,9 @@ All runtime configuration lives in `config.yml`.
 | `workflow` | `review_owner` | GitHub handle to tag when review is needed. | `@owner` |
 | `workflow` | `enable_review_agent` | Run a review agent after completion. | `false` |
 | `workflow` | `review_agent` | Executor for the review agent. | `claude` |
-| `workflow` | `max_attempts` | Max retry attempts before marking task as blocked. | `10` |
+| `workflow` | `max_attempts` | Max attempts before marking task as blocked. | `10` |
+| `workflow` | `required_skills` | Skills always injected into agent prompts (marked `[REQUIRED]`). | `[]` |
+| `workflow` | `disallowed_tools` | Tool patterns blocked via `--disallowedTools`. | `["Bash(rm *)","Bash(rm -*)"]` |
 | `router` | `agent` | Default router executor. | `claude` |
 | `router` | `model` | Router model name. | `haiku` |
 | `router` | `timeout_seconds` | Router timeout (0 disables timeout). | `120` |
@@ -616,10 +674,13 @@ orchestrator gh-push
 orchestrator gh-sync
 ```
 
-### Owner Tagging
-When a task is `blocked` or `needs_review`, the GitHub comment automatically tags `@owner` (extracted from `gh.repo`). For example, if `gh.repo` is `gabrielkoerich/bean`, the comment tags `@gabrielkoerich`.
+### Error Comments & Blocking
+When a task fails (any error), the orchestrator:
+1. Posts a comment on the linked GitHub issue with the error details
+2. Adds a `blocked` label to the issue
+3. Sets the task status to `blocked`
 
-The comment includes the full context: what the agent tried, why it's stuck, what it accomplished so far, and what remains.
+The comment includes: error message, agent name, and attempt count. To unblock, fix the issue, remove the `blocked` label, and set the task back to `new`.
 
 ### Notes
 - The repo is resolved from `config.yml` or `gh repo view`.
