@@ -20,8 +20,15 @@ class Orchestrator < Formula
       #!/usr/bin/env bash
       set -euo pipefail
 
+      export ORCH_VERSION="#{version}"
       export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
       export ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
+
+      # Handle --version before anything else
+      if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
+        echo "orchestrator $ORCH_VERSION"
+        exit 0
+      fi
 
       mkdir -p "$ORCH_HOME"
 

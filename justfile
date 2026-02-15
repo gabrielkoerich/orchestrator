@@ -3,6 +3,10 @@ set shell := ["bash", "-c"]
 default:
   @just --list
 
+# Show orchestrator version
+version:
+  @echo "${ORCH_VERSION:-$(git describe --tags --always 2>/dev/null || echo unknown)}"
+
 # List all tasks (id, status, agent, parent, title)
 list:
   @scripts/list_tasks.sh
