@@ -285,6 +285,11 @@ elif [ -t 0 ]; then
   fi
 fi
 
+# Sync skills on first init
+echo ""
+echo "Syncing skills..."
+"$SCRIPT_DIR/skills_sync.sh" 2>&1 || echo "skills sync failed (non-fatal)." >&2
+
 echo ""
 echo "Add tasks with: orchestrator add \"title\" \"body\" \"labels\""
 echo "Start the server: orchestrator serve"

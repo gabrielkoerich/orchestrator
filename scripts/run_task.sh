@@ -117,6 +117,22 @@ if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_I
   fi
 fi
 
+# Fetch GitHub issue comments for agent context
+export ISSUE_COMMENTS=""
+if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
+  GH_REPO=$(config_get '.gh.repo // ""')
+  if [ -n "$GH_REPO" ] && [ "$GH_REPO" != "null" ]; then
+    ISSUE_COMMENTS=$(fetch_issue_comments "$GH_REPO" "$GH_ISSUE_NUMBER" 10)
+  fi
+fi
+
+# Extract error history and last_error for agent context
+export TASK_HISTORY=""
+TASK_HISTORY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |
+  .[-5:] | .[] | \"[\(.ts)] \(.status): \(.note)\"" "$TASKS_PATH" 2>/dev/null || true)
+export TASK_LAST_ERROR=""
+TASK_LAST_ERROR=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .last_error // \"\"" "$TASKS_PATH")
+
 # Merge required skills into selected skills
 REQUIRED_SKILLS_CSV=$(config_get '.workflow.required_skills // [] | join(",")')
 if [ -n "$REQUIRED_SKILLS_CSV" ]; then
@@ -157,6 +173,20 @@ export NOW ATTEMPTS
 
 # Check max attempts before starting
 MAX=$(max_attempts)
+
+# Detect retry loops: if 4+ attempts and last 3 blocked entries have identical notes, stop
+if [ "$ATTEMPTS" -ge 4 ]; then
+  BLOCKED_NOTES=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |
+    map(select(.status == \"blocked\")) | .[-3:] | map(.note) | unique | length" "$TASKS_PATH" 2>/dev/null || echo "0")
+  BLOCKED_COUNT=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |
+    map(select(.status == \"blocked\")) | .[-3:] | length" "$TASKS_PATH" 2>/dev/null || echo "0")
+  if [ "$BLOCKED_COUNT" -ge 3 ] && [ "$BLOCKED_NOTES" -eq 1 ]; then
+    log_err "[run] task=$TASK_ID retry loop detected (same error 3x)"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
+    exit 0
+  fi
+fi
+
 if [ "$ATTEMPTS" -gt "$MAX" ]; then
   log_err "[run] task=$TASK_ID exceeded max attempts ($MAX)"
   with_lock yq -i \
@@ -229,6 +259,7 @@ case "$TASK_AGENT" in
     fi
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+      --permission-mode acceptEdits \
       "${DISALLOW_ARGS[@]}" \
       --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
@@ -268,6 +299,14 @@ RESPONSE_FILE="${STATE_DIR}/response-${TASK_ID}.txt"
 printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
 RESPONSE_LEN=${#RESPONSE}
 log_err "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)"
+
+# Extract tool history from agent response (for debugging and retry context)
+TOOL_SUMMARY=$(RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-summary 2>/dev/null || true)
+if [ -n "$TOOL_SUMMARY" ]; then
+  RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-history > "${STATE_DIR}/tools-${TASK_ID}.json" 2>/dev/null || true
+  append_task_context "$TASK_ID" "Commands run by agent (attempt $ATTEMPTS):\n$TOOL_SUMMARY"
+  log_err "[run] task=$TASK_ID tool history saved (${STATE_DIR}/tools-${TASK_ID}.json)"
+fi
 
 # Log stderr even on success (agents may print warnings)
 AGENT_STDERR=""
@@ -317,6 +356,12 @@ if [ -z "$RESPONSE_JSON" ]; then
   exit 0
 fi
 
+# Inject agent/model metadata if not already present
+RESPONSE_JSON=$(printf '%s' "$RESPONSE_JSON" | jq \
+  --arg agent "$TASK_AGENT" \
+  --arg model "${AGENT_MODEL:-default}" \
+  '. + {agent: (.agent // $agent), model: (.model // $model)}')
+
 AGENT_STATUS=$(printf '%s' "$RESPONSE_JSON" | jq -r '.status // ""')
 SUMMARY=$(printf '%s' "$RESPONSE_JSON" | jq -r '.summary // ""')
 ACCOMPLISHED_STR=$(printf '%s' "$RESPONSE_JSON" | jq -r '.accomplished[]?' | tr '\n' '\n')
@@ -352,6 +397,21 @@ with_lock yq -i \
    (.tasks[] | select(.id == $TASK_ID) | .retry_at) = null | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
+
+# Push agent's branch if there are local commits not on remote
+if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
+  if [ -d "$PROJECT_DIR" ] && (cd "$PROJECT_DIR" && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
+    CURRENT_BRANCH=$(cd "$PROJECT_DIR" && git branch --show-current 2>/dev/null || true)
+    if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
+      if (cd "$PROJECT_DIR" && git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null | grep -q .); then
+        log_err "[run] task=$TASK_ID pushing branch $CURRENT_BRANCH"
+        if ! (cd "$PROJECT_DIR" && git push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
+          log_err "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
+        fi
+      fi
+    fi
+  fi
+fi
 
 # Build history note with reason if present
 HISTORY_NOTE="agent completed"

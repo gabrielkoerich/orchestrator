@@ -133,6 +133,41 @@ sync_project_status() {
     -f project="$PROJECT_ID" -f item="$item_id" -f field="$PROJECT_STATUS_FIELD_ID" -f option="$option_id" >/dev/null
 }
 
+# Content-hash dedup: hash comment body, compare with stored last_comment_hash.
+# Returns 0 (skip) if hash matches, 1 (post) if new. Stores hash after caller posts.
+should_skip_comment() {
+  local task_id="$1" body="$2"
+  local new_hash
+  new_hash=$(printf '%s' "$body" | shasum -a 256 | cut -c1-16)
+  local old_hash
+  old_hash=$(yq -r ".tasks[] | select(.id == $task_id) | .last_comment_hash // \"\"" "$TASKS_PATH")
+  if [ "$new_hash" = "$old_hash" ]; then
+    return 0  # skip
+  fi
+  return 1  # post
+}
+
+store_comment_hash() {
+  local task_id="$1" body="$2"
+  local hash
+  hash=$(printf '%s' "$body" | shasum -a 256 | cut -c1-16)
+  export hash
+  with_lock yq -i \
+    "(.tasks[] | select(.id == $task_id) | .last_comment_hash) = strenv(hash)" \
+    "$TASKS_PATH"
+}
+
+# Ensure a label exists on the repo (create with color if missing).
+# Usage: ensure_label "blocked" "d73a4a" "Task is blocked and needs attention"
+ensure_label() {
+  local name="$1" color="${2:-ededed}" description="${3:-}"
+  # Try to get the label; create it if 404
+  if ! gh_api "repos/$REPO/labels/$(printf '%s' "$name" | jq -sRr @uri)" >/dev/null 2>&1; then
+    gh_api "repos/$REPO/labels" \
+      -f name="$name" -f color="$color" -f description="$description" >/dev/null 2>&1 || true
+  fi
+}
+
 TASK_COUNT=$(yq -r '.tasks | length' "$TASKS_PATH")
 if [ "$TASK_COUNT" -le 0 ]; then
   exit 0
@@ -158,11 +193,16 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   SUMMARY=$(yq -r ".tasks[$i].summary // \"\"" "$TASKS_PATH")
   REASON=$(yq -r ".tasks[$i].reason // \"\"" "$TASKS_PATH")
   ACCOMPLISHED=$(yq -r ".tasks[$i].accomplished // [] | join(\", \" )" "$TASKS_PATH")
+  ACCOMPLISHED_LIST=$(yq -r ".tasks[$i].accomplished // [] | .[] | \"- \" + ." "$TASKS_PATH")
   REMAINING=$(yq -r ".tasks[$i].remaining // [] | join(\", \" )" "$TASKS_PATH")
+  REMAINING_LIST=$(yq -r ".tasks[$i].remaining // [] | .[] | \"- \" + ." "$TASKS_PATH")
   BLOCKERS=$(yq -r ".tasks[$i].blockers // [] | join(\", \" )" "$TASKS_PATH")
+  BLOCKERS_LIST=$(yq -r ".tasks[$i].blockers // [] | .[] | \"- \" + ." "$TASKS_PATH")
   FILES_CHANGED_JSON=$(yq -o=json -I=0 ".tasks[$i].files_changed // []" "$TASKS_PATH")
+  FILES_CHANGED_LIST=$(yq -r ".tasks[$i].files_changed // [] | .[] | \"- \\\`\" + . + \"\\\`\"" "$TASKS_PATH")
   LAST_ERROR=$(yq -r ".tasks[$i].last_error // \"\"" "$TASKS_PATH")
   AGENT=$(yq -r ".tasks[$i].agent // \"\"" "$TASKS_PATH")
+  AGENT_MODEL=$(yq -r ".tasks[$i].agent_model // \"\"" "$TASKS_PATH")
   PROMPT_HASH=$(yq -r ".tasks[$i].prompt_hash // \"\"" "$TASKS_PATH")
   TASK_DIR=$(yq -r ".tasks[$i].dir // \"\"" "$TASKS_PATH")
   ATTEMPTS=$(yq -r ".tasks[$i].attempts // 0" "$TASKS_PATH")
@@ -214,12 +254,12 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     STATE=$(printf '%s' "$RESP" | yq -r '.state')
     NOW=$(now_iso)
 
-    export NUM URL STATE UPDATED_AT
+    export NUM URL STATE
     with_lock yq -i \
       "(.tasks[] | select(.id == $ID) | .gh_issue_number) = (env(NUM) | tonumber) | \
        (.tasks[] | select(.id == $ID) | .gh_url) = strenv(URL) | \
        (.tasks[] | select(.id == $ID) | .gh_state) = strenv(STATE) | \
-       (.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(UPDATED_AT)" \
+       (.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at" \
       "$TASKS_PATH"
 
     log "[gh_push] task=$ID created issue #$NUM"
@@ -242,57 +282,126 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   done
   gh_api "repos/$REPO/issues/$GH_NUM" -X PATCH "${LABEL_ARGS[@]}" >/dev/null
 
-  # Post a comment for the update (we already know task changed from the gate on line 206)
+  # Add/remove red "blocked" label based on status
+  if [ "$STATUS" = "blocked" ] || [ "$STATUS" = "needs_review" ]; then
+    ensure_label "blocked" "d73a4a" "Task is blocked and needs attention"
+    gh_api "repos/$REPO/issues/$GH_NUM/labels" \
+      --input - <<< '{"labels":["blocked"]}' >/dev/null 2>&1 || true
+  else
+    # Remove blocked label if present (ignore 404)
+    gh_api "repos/$REPO/issues/$GH_NUM/labels/blocked" -X DELETE >/dev/null 2>&1 || true
+  fi
+
+  # Post a comment for the update (we already know task changed from the gate above)
   if [ -n "$UPDATED_AT" ]; then
-    FILES_CHANGED=$(printf '%s' "$FILES_CHANGED_JSON" | yq -r 'join(", ")')
     OWNER_TAG="@$(repo_owner "$REPO")"
-
+    BADGE=$(agent_badge "$AGENT")
+    IS_BLOCKED=false
     if [ "$STATUS" = "blocked" ] || [ "$STATUS" = "needs_review" ]; then
-      # Detailed comment for stuck/blocked tasks, tagging the repo owner
-      BADGE=$(agent_badge "$AGENT")
-      COMMENT="# ${BADGE} needs help
+      IS_BLOCKED=true
+    fi
 
-**Status:** \`$STATUS\`"
-      if [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
-        COMMENT="$COMMENT
-**Summary:** $SUMMARY"
+    # Only post if there's something meaningful to say
+    if [ "$IS_BLOCKED" = true ] || { [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; }; then
+
+      # --- Build comment ---
+      COMMENT=""
+
+      # Header: summary as title (or "Needs help" for blocked)
+      if [ "$IS_BLOCKED" = true ]; then
+        COMMENT="## ${BADGE} Needs Help"
+      elif [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
+        COMMENT="## ${BADGE} ${SUMMARY}"
       fi
-      if [ -n "$REASON" ] && [ "$REASON" != "null" ]; then
-        COMMENT="$COMMENT
-**Reason:** $REASON"
+
+      # Status & metadata table
+      COMMENT="${COMMENT}
+
+| | |
+|---|---|
+| **Status** | \`${STATUS}\` |
+| **Agent** | ${AGENT:-unknown} |"
+      if [ -n "$AGENT_MODEL" ] && [ "$AGENT_MODEL" != "null" ]; then
+        COMMENT="${COMMENT}
+| **Model** | \`${AGENT_MODEL}\` |"
       fi
-      if [ -n "$LAST_ERROR" ] && [ "$LAST_ERROR" != "null" ]; then
-        COMMENT="$COMMENT
-**Error:** $LAST_ERROR"
-      fi
-      if [ -n "$BLOCKERS" ]; then
-        COMMENT="$COMMENT
-**Blockers:** $BLOCKERS"
-      fi
-      if [ -n "$ACCOMPLISHED" ]; then
-        COMMENT="$COMMENT
-**Accomplished so far:** $ACCOMPLISHED"
-      fi
-      if [ -n "$REMAINING" ]; then
-        COMMENT="$COMMENT
-**Remaining:** $REMAINING"
-      fi
-      if [ -n "$FILES_CHANGED" ]; then
-        COMMENT="$COMMENT
-**Files changed:** $FILES_CHANGED"
-      fi
-      COMMENT="$COMMENT
-**Attempts:** $ATTEMPTS"
+      COMMENT="${COMMENT}
+| **Attempt** | ${ATTEMPTS} |"
       if [ -n "$PROMPT_HASH" ] && [ "$PROMPT_HASH" != "null" ]; then
-        COMMENT="$COMMENT
-**Prompt:** \`$PROMPT_HASH\`"
+        COMMENT="${COMMENT}
+| **Prompt** | \`${PROMPT_HASH}\` |"
       fi
-      COMMENT="$COMMENT
 
-${OWNER_TAG} — this task needs your attention."
+      # Summary paragraph (only when blocked, since progress uses it as the title)
+      if [ "$IS_BLOCKED" = true ] && [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
+        COMMENT="${COMMENT}
+
+${SUMMARY}"
+      fi
+
+      # Reason / error section
+      if [ -n "$REASON" ] && [ "$REASON" != "null" ] || \
+         [ -n "$LAST_ERROR" ] && [ "$LAST_ERROR" != "null" ] || \
+         [ -n "$BLOCKERS_LIST" ]; then
+        COMMENT="${COMMENT}
+
+### Errors & Blockers"
+        if [ -n "$REASON" ] && [ "$REASON" != "null" ]; then
+          COMMENT="${COMMENT}
+
+**Reason:** ${REASON}"
+        fi
+        if [ -n "$LAST_ERROR" ] && [ "$LAST_ERROR" != "null" ]; then
+          COMMENT="${COMMENT}
+
+> \`${LAST_ERROR}\`"
+        fi
+        if [ -n "$BLOCKERS_LIST" ]; then
+          COMMENT="${COMMENT}
+
+${BLOCKERS_LIST}"
+        fi
+      fi
+
+      # Accomplished
+      if [ -n "$ACCOMPLISHED_LIST" ]; then
+        COMMENT="${COMMENT}
+
+### Accomplished
+
+${ACCOMPLISHED_LIST}"
+      fi
+
+      # Remaining
+      if [ -n "$REMAINING_LIST" ]; then
+        COMMENT="${COMMENT}
+
+### Remaining
+
+${REMAINING_LIST}"
+      fi
+
+      # Files changed
+      if [ -n "$FILES_CHANGED_LIST" ]; then
+        COMMENT="${COMMENT}
+
+### Files Changed
+
+${FILES_CHANGED_LIST}"
+      fi
+
+      # Owner ping for blocked tasks
+      if [ "$IS_BLOCKED" = true ]; then
+        COMMENT="${COMMENT}
+
+---
+${OWNER_TAG} this task needs your attention."
+      fi
+
+      # Collapsed prompt
       PROMPT_CONTENT=$(read_prompt_file "$TASK_DIR" "$ID")
       if [ -n "$PROMPT_CONTENT" ]; then
-        COMMENT="$COMMENT
+        COMMENT="${COMMENT}
 
 <details><summary>Prompt sent to agent</summary>
 
@@ -302,54 +411,23 @@ ${PROMPT_CONTENT}
 
 </details>"
       fi
-      gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
-      log "[gh_push] task=$ID posted blocked comment on #$GH_NUM (prompt=$PROMPT_HASH)"
-    elif [ -n "$SUMMARY" ]; then
-      # Standard progress/completion comment
-      BADGE=$(agent_badge "$AGENT")
-      COMMENT="# ${BADGE}
 
-**Status:** \`$STATUS\`
-**Summary:** $SUMMARY"
-      if [ -n "$ACCOMPLISHED" ]; then
-        COMMENT="$COMMENT
-**Accomplished:** $ACCOMPLISHED"
+      # --- Post with dedup ---
+      if ! should_skip_comment "$ID" "$COMMENT"; then
+        gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
+        store_comment_hash "$ID" "$COMMENT"
+        log "[gh_push] task=$ID posted comment on #$GH_NUM (status=$STATUS prompt=$PROMPT_HASH)"
+      else
+        log "[gh_push] task=$ID skipped duplicate comment on #$GH_NUM"
       fi
-      if [ -n "$REMAINING" ]; then
-        COMMENT="$COMMENT
-**Remaining:** $REMAINING"
-      fi
-      if [ -n "$FILES_CHANGED" ]; then
-        COMMENT="$COMMENT
-**Files:** $FILES_CHANGED"
-      fi
-      if [ -n "$PROMPT_HASH" ] && [ "$PROMPT_HASH" != "null" ]; then
-        COMMENT="$COMMENT
-**Prompt:** \`$PROMPT_HASH\`"
-      fi
-      PROMPT_CONTENT=$(read_prompt_file "$TASK_DIR" "$ID")
-      if [ -n "$PROMPT_CONTENT" ]; then
-        COMMENT="$COMMENT
-
-<details><summary>Prompt sent to agent</summary>
-
-\`\`\`
-${PROMPT_CONTENT}
-\`\`\`
-
-</details>"
-      fi
-      gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
-      log "[gh_push] task=$ID posted progress comment on #$GH_NUM (prompt=$PROMPT_HASH)"
     fi
   fi
 
-  # Mark synced using the task's updated_at so next cycle sees them equal and skips
-  export UPDATED_AT
+  # Mark synced atomically — copy the task's own updated_at so we never use a stale shell var
   with_lock yq -i \
-    "(.tasks[] | select(.id == $ID) | .gh_synced_at) = strenv(UPDATED_AT)" \
+    "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at" \
     "$TASKS_PATH"
-  log "[gh_push] task=$ID synced (gh_synced_at=$UPDATED_AT)"
+  log "[gh_push] task=$ID synced"
 
   # Review/close behavior
   if [ "$STATUS" = "done" ] && [ "$AUTO_CLOSE" != "true" ]; then

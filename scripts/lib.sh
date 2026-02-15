@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TASKS_PATH=${TASKS_PATH:-tasks.yml}
+ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
+mkdir -p "$ORCH_HOME"
+
+TASKS_PATH=${TASKS_PATH:-"${ORCH_HOME}/tasks.yml"}
 LOCK_PATH=${LOCK_PATH:-"${TASKS_PATH}.lock"}
-CONTEXTS_DIR=${CONTEXTS_DIR:-"contexts"}
-CONFIG_PATH=${CONFIG_PATH:-"config.yml"}
-JOBS_PATH=${JOBS_PATH:-"jobs.yml"}
-STATE_DIR=${STATE_DIR:-".orchestrator"}
+CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
+CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
+JOBS_PATH=${JOBS_PATH:-"${ORCH_HOME}/jobs.yml"}
+STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
 
 now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -513,6 +516,40 @@ build_project_instructions() {
   printf '%b' "$out"
 }
 
+# Build skills catalog JSON from SKILL.md frontmatter on disk.
+# Returns a JSON array: [{id, name, description}, ...]
+build_skills_catalog() {
+  local skills_dir="${1:-skills}"
+  if [ ! -d "$skills_dir" ]; then echo "[]"; return; fi
+  python3 - "$skills_dir" <<'PY'
+import json, os, sys, re
+skills_dir = sys.argv[1]
+catalog = []
+for root, dirs, files in sorted(os.walk(skills_dir)):
+    if "SKILL.md" not in files:
+        continue
+    skill_id = os.path.basename(root)
+    path = os.path.join(root, "SKILL.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        sys.stderr.write(f"Warning: {path}: {e}\n")
+        continue
+    # Parse YAML frontmatter between --- markers
+    name, desc = skill_id, ""
+    m = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+    if m:
+        for line in m.group(1).splitlines():
+            if line.startswith("name:"):
+                name = line.split(":", 1)[1].strip().strip("'\"")
+            elif line.startswith("description:"):
+                desc = line.split(":", 1)[1].strip().strip("'\"")
+    catalog.append({"id": skill_id, "name": name, "description": desc})
+print(json.dumps(catalog))
+PY
+}
+
 build_skills_docs() {
   local skills_csv="$1"
   if [ -z "$skills_csv" ]; then return; fi
@@ -529,7 +566,8 @@ build_skills_docs() {
   IFS=',' read -ra skills <<< "$skills_csv"
   for skill_id in "${skills[@]}"; do
     local skill_file
-    skill_file=$(find skills/ -path "*/${skill_id}/SKILL.md" 2>/dev/null | head -1)
+    local orch_skills="${ORCH_HOME:-$HOME/.orchestrator}/skills"
+    skill_file=$(find skills/ "$orch_skills" -path "*/${skill_id}/SKILL.md" 2>/dev/null | head -1)
     if [ -n "$skill_file" ] && [ -f "$skill_file" ]; then
       if printf '%s' "$required_map" | grep -q ",${skill_id},"; then
         required_out+="### [REQUIRED] ${skill_id}\nYou MUST follow this skill's workflow exactly. Do not skip any steps.\n\n$(cat "$skill_file")\n\n"
@@ -665,6 +703,7 @@ create_task_entry() {
       \"attempts\": 0,
       \"last_error\": null,
       \"prompt_hash\": null,
+      \"last_comment_hash\": null,
       \"retry_at\": null,
       \"review_decision\": null,
       \"review_notes\": null,
@@ -760,6 +799,14 @@ mark_needs_review() {
      (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
     "$TASKS_PATH"
   append_history "$task_id" "blocked" "$note"
+}
+
+fetch_issue_comments() {
+  local repo="$1" issue_num="$2" max="${3:-10}"
+  if [ -z "$issue_num" ] || [ "$issue_num" = "null" ] || [ "$issue_num" = "0" ]; then return 0; fi
+  if [ -z "$repo" ] || [ "$repo" = "null" ]; then return 0; fi
+  gh_api "repos/${repo}/issues/${issue_num}/comments" \
+    -q ".[-${max}:] | .[] | \"### \" + .user.login + \" (\" + .created_at + \")\\n\" + .body + \"\\n---\"" 2>/dev/null || true
 }
 
 run_with_timeout() {

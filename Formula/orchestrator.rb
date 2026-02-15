@@ -14,6 +14,7 @@ class Orchestrator < Formula
   def install
     libexec.install "scripts", "prompts", "justfile"
     libexec.install Dir["*.example.yml"]
+    libexec.install "skills.yml" if (buildpath/"skills.yml").exist?
     libexec.install "tests" if (buildpath/"tests").exist?
 
     (bin/"orchestrator").write <<~EOS
@@ -34,6 +35,11 @@ class Orchestrator < Formula
       esac
 
       mkdir -p "$ORCH_HOME"
+
+      # Copy default skills.yml to ORCH_HOME if not present
+      if [ ! -f "$ORCH_HOME/skills.yml" ] && [ -f "#{libexec}/skills.yml" ]; then
+        cp "#{libexec}/skills.yml" "$ORCH_HOME/skills.yml"
+      fi
 
       # State paths (persistent in user home)
       export TASKS_PATH="${TASKS_PATH:-$ORCH_HOME/tasks.yml}"

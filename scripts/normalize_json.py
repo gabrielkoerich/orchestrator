@@ -72,6 +72,46 @@ def normalize(raw: str):
     return None
 
 
+def extract_tool_history(raw: str) -> list:
+    """Extract tool calls from claude JSON events stream."""
+    history = []
+    for line in raw.splitlines():
+        try:
+            ev = json.loads(line.strip())
+        except Exception:
+            continue
+        if ev.get("type") == "tool_use":
+            tool = ev.get("tool", ev.get("name", ""))
+            inp = ev.get("input", {})
+            history.append({"tool": tool, "input": inp})
+        elif ev.get("type") == "tool_result":
+            if history:
+                history[-1]["error"] = ev.get("is_error", False)
+    return history
+
+
+def summarize_tool_history(history: list) -> str:
+    """Format tool history as human-readable summary."""
+    lines = []
+    for h in history[-20:]:
+        tool = h.get("tool", "?")
+        inp = h.get("input", {})
+        err = " [ERROR]" if h.get("error") else ""
+        if tool == "Bash":
+            lines.append(f"  $ {inp.get('command', '?')}{err}")
+        elif tool in ("Edit", "Write"):
+            lines.append(f"  {tool}: {inp.get('file_path', '?')}{err}")
+        elif tool == "Read":
+            lines.append(f"  Read: {inp.get('file_path', '?')}{err}")
+        elif tool == "Glob":
+            lines.append(f"  Glob: {inp.get('pattern', '?')}{err}")
+        elif tool == "Grep":
+            lines.append(f"  Grep: {inp.get('pattern', '?')}{err}")
+        else:
+            lines.append(f"  {tool}{err}")
+    return "\n".join(lines)
+
+
 def main():
     raw = os.environ.get("RAW_RESPONSE")
     if raw is None:
@@ -79,6 +119,18 @@ def main():
 
     if not raw:
         sys.exit(1)
+
+    if "--tool-history" in sys.argv:
+        history = extract_tool_history(raw)
+        if history:
+            print(json.dumps(history))
+        sys.exit(0)
+
+    if "--tool-summary" in sys.argv:
+        history = extract_tool_history(raw)
+        if history:
+            print(summarize_tool_history(history))
+        sys.exit(0)
 
     out = normalize(raw)
     if out is None:

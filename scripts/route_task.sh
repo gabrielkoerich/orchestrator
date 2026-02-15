@@ -42,6 +42,15 @@ SKILLS_CATALOG=""
 if [ -f "skills.yml" ]; then
   SKILLS_CATALOG=$(yq -o=json -I=0 '.skills // []' "skills.yml")
 fi
+# If catalog is empty, auto-build from SKILL.md files on disk
+if [ -z "$SKILLS_CATALOG" ] || [ "$SKILLS_CATALOG" = "[]" ] || [ "$SKILLS_CATALOG" = "null" ]; then
+  ORCH_SKILLS="${ORCH_HOME:-$HOME/.orchestrator}/skills"
+  if [ -d "$ORCH_SKILLS" ]; then
+    SKILLS_CATALOG=$(build_skills_catalog "$ORCH_SKILLS")
+  elif [ -d "skills" ]; then
+    SKILLS_CATALOG=$(build_skills_catalog "skills")
+  fi
+fi
 
 AVAILABLE_AGENTS=$(available_agents)
 if [ -z "$AVAILABLE_AGENTS" ]; then
