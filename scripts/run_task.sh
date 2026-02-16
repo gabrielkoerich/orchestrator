@@ -375,7 +375,7 @@ case "$TASK_AGENT" in
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --permission-mode acceptEdits \
-      --allowedTools "Write" \
+      --allowedTools "Write" "Edit" "Bash(git:*)" "Bash(gh:*)" "Bash(rg:*)" \
       "${DISALLOW_ARGS[@]}" \
       --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
@@ -567,12 +567,44 @@ with_lock yq -i \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
 
-# Push agent's branch if there are local commits not on remote
+# Fallback: auto-commit any uncommitted changes the agent left behind
+if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
+  if [ -d "$PROJECT_DIR" ] && (cd "$PROJECT_DIR" && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
+    if (cd "$PROJECT_DIR" && ! git diff --quiet 2>/dev/null) || \
+       (cd "$PROJECT_DIR" && ! git diff --cached --quiet 2>/dev/null) || \
+       (cd "$PROJECT_DIR" && [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]); then
+      COMMIT_MSG="feat: ${TASK_TITLE}
+
+Task #${TASK_ID}${GH_ISSUE_NUMBER:+ (Closes #${GH_ISSUE_NUMBER})}
+Agent: ${TASK_AGENT}
+Attempt: ${ATTEMPTS}"
+      log_err "[run] task=$TASK_ID auto-committing uncommitted changes"
+      (cd "$PROJECT_DIR" && git add -A && git commit -m "$COMMIT_MSG" 2>>"$STDERR_FILE") || \
+        log_err "[run] task=$TASK_ID auto-commit failed"
+    fi
+  fi
+fi
+
+# Fallback: push agent's branch if there are local commits not on remote
 if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
   if [ -d "$PROJECT_DIR" ] && (cd "$PROJECT_DIR" && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
     CURRENT_BRANCH=$(cd "$PROJECT_DIR" && git branch --show-current 2>/dev/null || true)
     if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
-      if (cd "$PROJECT_DIR" && git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null | grep -q .); then
+      # Check for unpushed commits: remote branch may not exist yet
+      HAS_UNPUSHED=false
+      if (cd "$PROJECT_DIR" && git rev-parse "origin/${CURRENT_BRANCH}" >/dev/null 2>&1); then
+        # Remote branch exists — check for new commits beyond it
+        if (cd "$PROJECT_DIR" && git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null | grep -q .); then
+          HAS_UNPUSHED=true
+        fi
+      else
+        # Remote branch doesn't exist — check for any commits beyond main
+        if (cd "$PROJECT_DIR" && git log "main..HEAD" --oneline 2>/dev/null | grep -q .); then
+          HAS_UNPUSHED=true
+        fi
+      fi
+
+      if [ "$HAS_UNPUSHED" = true ]; then
         log_err "[run] task=$TASK_ID pushing branch $CURRENT_BRANCH"
         # Use HTTPS rewrite to avoid SSH/1Password interactive prompts
         if ! (cd "$PROJECT_DIR" && git \

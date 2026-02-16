@@ -2589,3 +2589,170 @@ YAML
   [ "$status" -eq 0 ]
   [[ "$output" == *"Removed"* ]]
 }
+
+# --- Integration: full worktree workflow ---
+
+@test "e2e: worktree created, agent runs, commits, push attempted, PR attempted" {
+  # Create a "remote" bare repo to push to
+  REMOTE_DIR="${TMP_DIR}/remote.git"
+  git init --bare "$REMOTE_DIR" --quiet
+  git -C "$PROJECT_DIR" remote add origin "$REMOTE_DIR"
+  git -C "$PROJECT_DIR" push -u origin main --quiet 2>/dev/null
+
+  # Add a task with issue number
+  run "${REPO_DIR}/scripts/add_task.sh" "Add README" "Create a README.md file" ""
+  [ "$status" -eq 0 ]
+
+  # Set agent and issue number
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex" |
+    (.tasks[] | select(.id == 2) | .gh_issue_number) = 42 |
+    (.tasks[] | select(.id == 2) | .gh_url) = "https://github.com/test/repo/issues/42"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  # Stub codex: writes output JSON to .orchestrator/ and creates a file + commit
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'STUB'
+#!/usr/bin/env bash
+# Simulate agent work: create file and commit
+echo "# Test Repo" > README.md
+git add README.md
+git commit -m "docs: add README" --quiet 2>/dev/null
+
+# Write output JSON to .orchestrator/ inside the worktree
+mkdir -p .orchestrator
+cat > .orchestrator/output-2.json <<'JSON'
+{"status":"done","summary":"Added README","files_changed":["README.md"],"needs_help":false,"accomplished":["Created README.md"],"remaining":[],"blockers":[],"delegations":[]}
+JSON
+STUB
+  chmod +x "$CODEX_STUB"
+
+  # Stub gh (PR creation will be attempted)
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *"pr list"* ]]; then
+  echo ""
+  exit 0
+elif [[ "$*" == *"pr create"* ]]; then
+  echo "https://github.com/test/repo/pull/1"
+  exit 0
+elif [[ "$*" == *"issue develop"* ]]; then
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" \
+    "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Verify worktree was created
+  WORKTREE_DIR="$HOME/.worktrees/$(basename "$PROJECT_DIR")/gh-task-42-add-readme"
+  [ -d "$WORKTREE_DIR" ]
+
+  # Verify worktree info saved to task
+  run yq -r '.tasks[] | select(.id == 2) | .worktree' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh-task-42-add-readme"* ]]
+
+  run yq -r '.tasks[] | select(.id == 2) | .branch' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "gh-task-42-add-readme" ]
+
+  # Verify task completed
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+
+  # Verify commit exists in worktree
+  run git -C "$WORKTREE_DIR" log --oneline main..HEAD
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"add README"* ]]
+
+  # Verify branch was pushed to remote
+  run git -C "$REMOTE_DIR" branch --list "gh-task-42-add-readme"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh-task-42-add-readme"* ]]
+
+  # Clean up worktree
+  git -C "$PROJECT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
+  git -C "$PROJECT_DIR" branch -D "gh-task-42-add-readme" 2>/dev/null || true
+}
+
+@test "e2e: auto-commit when agent writes files but does not commit" {
+  # Create a "remote" bare repo to push to
+  REMOTE_DIR="${TMP_DIR}/remote.git"
+  git init --bare "$REMOTE_DIR" --quiet
+  git -C "$PROJECT_DIR" remote add origin "$REMOTE_DIR"
+  git -C "$PROJECT_DIR" push -u origin main --quiet 2>/dev/null
+
+  # Add a task with issue number
+  run "${REPO_DIR}/scripts/add_task.sh" "Add LICENSE" "Create a LICENSE file" ""
+  [ "$status" -eq 0 ]
+
+  # Set agent and issue number
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "claude" |
+    (.tasks[] | select(.id == 2) | .gh_issue_number) = 55 |
+    (.tasks[] | select(.id == 2) | .gh_url) = "https://github.com/test/repo/issues/55"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  # Stub claude: writes files and output JSON but does NOT git commit
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'STUB'
+#!/usr/bin/env bash
+# Simulate agent that edits files but cannot run git commit (acceptEdits mode)
+echo "MIT License" > LICENSE
+mkdir -p .orchestrator
+cat > .orchestrator/output-2.json <<'JSON'
+{"status":"done","summary":"Added LICENSE","files_changed":["LICENSE"],"needs_help":false,"accomplished":["Created LICENSE"],"remaining":[],"blockers":[],"delegations":[]}
+JSON
+STUB
+  chmod +x "$CLAUDE_STUB"
+
+  # Stub gh
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *"pr list"* ]]; then
+  echo ""
+  exit 0
+elif [[ "$*" == *"pr create"* ]]; then
+  echo "https://github.com/test/repo/pull/2"
+  exit 0
+elif [[ "$*" == *"issue develop"* ]]; then
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" \
+    "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Verify worktree was created
+  WORKTREE_DIR="$HOME/.worktrees/$(basename "$PROJECT_DIR")/gh-task-55-add-license"
+  [ -d "$WORKTREE_DIR" ]
+
+  # Verify orchestrator auto-committed the changes
+  run git -C "$WORKTREE_DIR" log --oneline main..HEAD
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Add LICENSE"* ]]
+
+  # Verify LICENSE file is tracked
+  run git -C "$WORKTREE_DIR" show HEAD:LICENSE
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"MIT License"* ]]
+
+  # Verify branch was pushed to remote
+  run git -C "$REMOTE_DIR" branch --list "gh-task-55-add-license"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh-task-55-add-license"* ]]
+
+  # Clean up worktree
+  git -C "$PROJECT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
+  git -C "$PROJECT_DIR" branch -D "gh-task-55-add-license" 2>/dev/null || true
+}

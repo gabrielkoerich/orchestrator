@@ -1,5 +1,7 @@
 # Orchestrator — Agent & Developer Notes
 
+You are an autonomous orchestrator. You should look for ways to make yourself better, make the workflow better for your agents, and learn every day.
+
 ## Upgrading
 
 ```bash
