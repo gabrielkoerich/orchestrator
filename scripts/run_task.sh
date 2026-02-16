@@ -510,6 +510,31 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
           push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
           error_log "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
         fi
+
+        # Create PR if branch was pushed and no PR exists yet
+        if command -v gh >/dev/null 2>&1; then
+          EXISTING_PR=$(cd "$PROJECT_DIR" && gh pr list --head "$CURRENT_BRANCH" --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -z "$EXISTING_PR" ]; then
+            PR_TITLE="${SUMMARY:-$TASK_TITLE}"
+            PR_BODY="## Summary
+
+${REASON:-Agent task completed.}
+
+Closes #${GH_ISSUE_NUMBER:-}
+
+---
+*Created by ${TASK_AGENT}[bot] via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*"
+            PR_URL=$(cd "$PROJECT_DIR" && gh pr create \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY" \
+              --head "$CURRENT_BRANCH" 2>>"$STDERR_FILE" || true)
+            if [ -n "$PR_URL" ]; then
+              log_err "[run] task=$TASK_ID created PR: $PR_URL"
+            else
+              log_err "[run] task=$TASK_ID failed to create PR for $CURRENT_BRANCH"
+            fi
+          fi
+        fi
       fi
     fi
   fi

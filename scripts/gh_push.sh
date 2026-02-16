@@ -352,6 +352,10 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
       --input - <<< "{\"labels\":[\"$AGENT_LABEL\"]}" >/dev/null 2>&1 || true
   fi
 
+  # Subscribe owner to issue notifications
+  gh_api "repos/$REPO/issues/$GH_NUM/subscription" \
+    -X PUT --input - <<< '{"subscribed":true,"ignored":false}' >/dev/null 2>&1 || true
+
   # Post a comment for the update (we already know task changed from the gate above)
   if [ -n "$UPDATED_AT" ]; then
     BADGE=$(agent_badge "$AGENT")
