@@ -2092,3 +2092,64 @@ JSON
   run grep 'DONE.*duration.*tokens' "${REPO_DIR}/scripts/run_task.sh"
   [ "$status" -eq 0 ]
 }
+
+@test "dashboard.sh runs without errors" {
+  # Add tasks with gh_issue_number to exercise issue formatting
+  yq -i '(.tasks[] | select(.id == 1) | .gh_issue_number) = 10' "$TASKS_PATH"
+  run "${REPO_DIR}/scripts/dashboard.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[new]"* ]]
+  [[ "$output" == *"[done]"* ]]
+  [[ "$output" == *"total"* ]]
+}
+
+@test "status.sh --global shows PROJECT column" {
+  # Add a task with a dir to test global view
+  yq -i '(.tasks[] | select(.id == 1) | .dir) = "/Users/test/myproject"' "$TASKS_PATH"
+  run "${REPO_DIR}/scripts/status.sh" --global
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PROJECT"* ]]
+  [[ "$output" == *"myproject"* ]]
+}
+
+@test "list_tasks.sh shows table with issue numbers" {
+  yq -i '(.tasks[] | select(.id == 1) | .gh_issue_number) = 42' "$TASKS_PATH"
+  run "${REPO_DIR}/scripts/list_tasks.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#42"* ]]
+  [[ "$output" == *"ISSUE"* ]]
+}
+
+@test "task_field reads a task field" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+  run task_field 1 .title
+  [ "$status" -eq 0 ]
+  [ "$output" = "Init" ]
+}
+
+@test "task_count counts tasks by status" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+  run task_count "new"
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+
+  run task_count
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "job add --type bash creates bash job" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+  run "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo hello" "0 * * * *" "Test bash job"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"bash job"* ]]
+
+  run yq -r '.jobs[0].type' "$JOBS_PATH"
+  [ "$output" = "bash" ]
+
+  run yq -r '.jobs[0].command' "$JOBS_PATH"
+  [ "$output" = "echo hello" ]
+}

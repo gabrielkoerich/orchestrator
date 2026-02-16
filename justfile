@@ -76,57 +76,6 @@ rejoin jobs="4":
 watch interval="10":
     @scripts/watch.sh {{ interval }}
 
-# Start the orchestrator (uses brew services if installed via brew, otherwise runs directly)
-start interval="10":
-    #!/usr/bin/env bash
-    if [ "${ORCH_BREW:-}" = "1" ]; then
-      brew services start orchestrator
-    else
-      INTERVAL={{ interval }} TAIL_LOG=1 exec scripts/serve.sh
-    fi
-
-# Run server directly (used by brew services internally)
-[private]
-serve interval="10":
-    @INTERVAL={{ interval }} scripts/serve.sh
-
-# Stop the orchestrator
-stop:
-    #!/usr/bin/env bash
-    if [ "${ORCH_BREW:-}" = "1" ]; then
-      brew services stop orchestrator
-    else
-      scripts/stop.sh
-    fi
-
-# Restart the orchestrator
-restart:
-    #!/usr/bin/env bash
-    if [ "${ORCH_BREW:-}" = "1" ]; then
-      brew services restart orchestrator
-    else
-      scripts/restart.sh
-    fi
-
-# Show service info and status
-info:
-    #!/usr/bin/env bash
-    if [ "${ORCH_BREW:-}" = "1" ]; then
-      brew services info orchestrator
-    else
-      PID_FILE="${STATE_DIR:-.orchestrator}/orchestrator.pid"
-      if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        if kill -0 "$PID" 2>/dev/null; then
-          echo "Orchestrator running (pid $PID)"
-        else
-          echo "Orchestrator not running (stale pid $PID)"
-        fi
-      else
-        echo "Orchestrator not running (no pid file)"
-      fi
-    fi
-
 # Stream live agent output for a task
 stream id:
     @scripts/stream_task.sh {{ id }}
@@ -159,82 +108,168 @@ agents:
 projects:
     @yq -r '[.tasks[].dir // ""] | unique | map(select(length > 0)) | .[]' "${TASKS_PATH:-tasks.yml}"
 
-# Install to ~/.orchestrator and add wrapper to ~/.bin
-[private]
-install:
-    @scripts/setup.sh
-
 # Sync skills registry repositories into ./skills
 skills-sync:
     @scripts/skills_sync.sh
 
-# Pull tasks from GitHub issues into tasks.yml
-gh-pull:
-    @scripts/gh_pull.sh
+# --- Namespace: service (start, stop, restart, info, install, uninstall) ---
 
-# Push task updates to GitHub issues
-gh-push:
-    @scripts/gh_push.sh
+# Manage the orchestrator service (start, stop, restart, info, install, uninstall)
+service target *args:
+    @just _service_{{ target }} {{ args }}
 
-# Pull then push GitHub sync in one step
-gh-sync:
-    @scripts/gh_sync.sh
+[private]
+_service_start interval="10":
+    #!/usr/bin/env bash
+    if [ "${ORCH_BREW:-}" = "1" ]; then
+      brew services start orchestrator
+    else
+      INTERVAL={{ interval }} TAIL_LOG=1 exec scripts/serve.sh
+    fi
 
-# Show GitHub Project field and option ids
-gh-project-info:
-    @scripts/gh_project_info.sh
+# Run server directly (used by brew services internally)
+[private]
+_service_serve interval="10":
+    @INTERVAL={{ interval }} scripts/serve.sh
 
-# Auto-apply Status field/option IDs to config.yml
-gh-project-info-fix:
-    @scripts/gh_project_info.sh --fix
+[private]
+_service_stop:
+    #!/usr/bin/env bash
+    if [ "${ORCH_BREW:-}" = "1" ]; then
+      brew services stop orchestrator
+    else
+      scripts/stop.sh
+    fi
 
-# Create a new GitHub Project for the current repo
-gh-project-create title="":
-    @scripts/gh_project_create.sh "{{ title }}"
+[private]
+_service_restart:
+    #!/usr/bin/env bash
+    if [ "${ORCH_BREW:-}" = "1" ]; then
+      brew services restart orchestrator
+    else
+      scripts/restart.sh
+    fi
 
-# List GitHub Projects for an org or user
-gh-project-list org="" user="":
-    @scripts/gh_project_list.sh "{{ org }}" "{{ user }}"
+[private]
+_service_info:
+    #!/usr/bin/env bash
+    if [ "${ORCH_BREW:-}" = "1" ]; then
+      brew services info orchestrator
+    else
+      PID_FILE="${STATE_DIR:-.orchestrator}/orchestrator.pid"
+      if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+          echo "Orchestrator running (pid $PID)"
+        else
+          echo "Orchestrator not running (stale pid $PID)"
+        fi
+      else
+        echo "Orchestrator not running (no pid file)"
+      fi
+    fi
 
-# Add a scheduled job (cron expression + task template)
-jobs-add *args:
-    @scripts/jobs_add.sh {{ args }}
-
-# List all scheduled jobs
-jobs-list:
-    @scripts/jobs_list.sh
-
-# Remove a scheduled job
-jobs-remove id:
-    @scripts/jobs_remove.sh "{{ id }}"
-
-# Enable a scheduled job
-jobs-enable id:
-    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = true' "${JOBS_PATH:-jobs.yml}" && echo "Enabled job '{{ id }}'"
-
-# Disable a scheduled job
-jobs-disable id:
-    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = false' "${JOBS_PATH:-jobs.yml}" && echo "Disabled job '{{ id }}'"
-
-# Check and run due scheduled jobs
-jobs-tick:
-    @scripts/jobs_tick.sh
-
-# Install crontab entry to tick every minute
-jobs-install:
-    @scripts/jobs_install.sh
-
-# Remove crontab entry
-jobs-uninstall:
-    @scripts/jobs_uninstall.sh
-
-# Install macOS launchd service (auto-start + restart on crash)
-service-install:
+[private]
+_service_install:
     @scripts/service_install.sh
 
-# Uninstall macOS launchd service
-service-uninstall:
+[private]
+_service_uninstall:
     @scripts/service_uninstall.sh
+
+# --- Namespace: gh (pull, push, sync, project) ---
+
+# GitHub integration (pull, push, sync, project-info, project-create, project-list)
+gh target *args:
+    @just _gh_{{ target }} {{ args }}
+
+[private]
+_gh_pull:
+    @scripts/gh_pull.sh
+
+[private]
+_gh_push:
+    @scripts/gh_push.sh
+
+[private]
+_gh_sync:
+    @scripts/gh_sync.sh
+
+[private]
+_gh_project-info *args:
+    @scripts/gh_project_info.sh {{ args }}
+
+[private]
+_gh_project-create title="":
+    @scripts/gh_project_create.sh "{{ title }}"
+
+[private]
+_gh_project-list org="" user="":
+    @scripts/gh_project_list.sh "{{ org }}" "{{ user }}"
+
+# --- Namespace: job (add, list, remove, enable, disable, tick, install, uninstall) ---
+
+# Manage scheduled jobs (add, list, remove, enable, disable, tick)
+job target *args:
+    @just _job_{{ target }} {{ args }}
+
+[private]
+_job_add *args:
+    @scripts/jobs_add.sh {{ args }}
+
+[private]
+_job_list:
+    @scripts/jobs_list.sh
+
+[private]
+_job_remove id:
+    @scripts/jobs_remove.sh "{{ id }}"
+
+[private]
+_job_enable id:
+    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = true' "${JOBS_PATH:-jobs.yml}" && echo "Enabled job '{{ id }}'"
+
+[private]
+_job_disable id:
+    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = false' "${JOBS_PATH:-jobs.yml}" && echo "Disabled job '{{ id }}'"
+
+[private]
+_job_tick:
+    @scripts/jobs_tick.sh
+
+[private]
+_job_install:
+    @scripts/jobs_install.sh
+
+[private]
+_job_uninstall:
+    @scripts/jobs_uninstall.sh
+
+# --- Backward-compatible aliases (hidden) ---
+
+[private]
+start interval="10":
+    @just service start {{ interval }}
+
+[private]
+stop:
+    @just service stop
+
+[private]
+restart:
+    @just service restart
+
+[private]
+info:
+    @just service info
+
+[private]
+serve interval="10":
+    @just _service_serve {{ interval }}
+
+[private]
+install:
+    @scripts/setup.sh
 
 # Run tests (bats test suite)
 [private]
