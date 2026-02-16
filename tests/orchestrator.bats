@@ -2098,9 +2098,9 @@ JSON
   yq -i '(.tasks[] | select(.id == 1) | .gh_issue_number) = 10' "$TASKS_PATH"
   run "${REPO_DIR}/scripts/dashboard.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[new]"* ]]
-  [[ "$output" == *"[done]"* ]]
-  [[ "$output" == *"total"* ]]
+  [[ "$output" == *"Tasks:"* ]]
+  [[ "$output" == *"Projects:"* ]]
+  [[ "$output" == *"Worktrees:"* ]]
 }
 
 @test "status.sh --global shows PROJECT column" {
