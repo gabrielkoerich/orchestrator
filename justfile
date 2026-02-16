@@ -44,6 +44,18 @@ route id="":
 run id="":
     @scripts/run_task.sh {{ id }}
 
+# Retry a blocked/done/failed task (reset to new)
+retry id:
+    @scripts/retry_task.sh {{ id }}
+
+# Unblock a blocked task (reset to new)
+unblock id:
+    @scripts/retry_task.sh {{ id }}
+
+# Unblock all blocked tasks (reset to new)
+unblock-all:
+    @yq -r '.tasks[] | select(.status == "blocked") | .id' "${TASKS_PATH:-tasks.yml}" | xargs -n1 scripts/retry_task.sh
+
 # Force a task to use a specific agent
 set-agent id agent:
     @scripts/set_agent.sh {{ id }} {{ agent }}
