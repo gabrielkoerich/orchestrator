@@ -149,12 +149,7 @@ dispatch() {
 # Persistent readline history
 READLINE_HIST="${STATE_DIR}/chat_readline_history"
 touch "$READLINE_HIST"
-if [ -f "$READLINE_HIST" ]; then
-  history -r "$READLINE_HIST"
-fi
-
-# Completions for common commands
-CHAT_COMPLETIONS="status list dashboard tree add run retry unblock jobs help exit quit"
+history -r "$READLINE_HIST"
 
 # Main REPL loop
 echo "orchestrator chat (type 'exit' to quit)"

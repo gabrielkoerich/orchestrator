@@ -90,7 +90,6 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
     if [ -n "$BASH_OUTPUT" ]; then
       log_err "[jobs] job=$JOB_ID output: $(printf '%s' "$BASH_OUTPUT" | head -5)"
     fi
-    CREATED=$((CREATED + 1))
     continue
   fi
 

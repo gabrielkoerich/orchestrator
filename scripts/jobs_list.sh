@@ -7,7 +7,7 @@ init_jobs_file
 
 JOB_COUNT=$(yq -r '.jobs | length' "$JOBS_PATH")
 if [ "$JOB_COUNT" -eq 0 ]; then
-  echo "No jobs configured. Add one with: just jobs-add \"0 9 * * *\" \"Title\" \"Body\""
+  echo "No jobs configured. Add one with: orchestrator job add \"0 9 * * *\" \"Title\""
   exit 0
 fi
 

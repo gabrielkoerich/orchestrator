@@ -271,6 +271,74 @@ serve interval="10":
 install:
     @scripts/setup.sh
 
+[private]
+gh-pull:
+    @just gh pull
+
+[private]
+gh-push:
+    @just gh push
+
+[private]
+gh-sync:
+    @just gh sync
+
+[private]
+gh-project-info *args:
+    @just gh project-info {{ args }}
+
+[private]
+gh-project-create title="":
+    @just gh project-create "{{ title }}"
+
+[private]
+gh-project-list *args:
+    @just gh project-list {{ args }}
+
+[private]
+gh-project-info-fix:
+    @just gh project-info --fix
+
+[private]
+jobs-add *args:
+    @just job add {{ args }}
+
+[private]
+jobs-list:
+    @just job list
+
+[private]
+jobs-remove id:
+    @just job remove {{ id }}
+
+[private]
+jobs-enable id:
+    @just job enable {{ id }}
+
+[private]
+jobs-disable id:
+    @just job disable {{ id }}
+
+[private]
+jobs-tick:
+    @just job tick
+
+[private]
+jobs-install:
+    @just job install
+
+[private]
+jobs-uninstall:
+    @just job uninstall
+
+[private]
+service-install:
+    @just service install
+
+[private]
+service-uninstall:
+    @just service uninstall
+
 # Run tests (bats test suite)
 [private]
 test:
