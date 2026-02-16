@@ -296,6 +296,16 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   STATUS_LABEL="${STATUS_LABEL_PREFIX}${STATUS}"
   export STATUS_LABEL STATUS_LABEL_PREFIX
+  # Ensure status label exists with a color
+  case "$STATUS" in
+    new)           ensure_label "$STATUS_LABEL" "0e8a16" "Task is new" ;;
+    routed)        ensure_label "$STATUS_LABEL" "1d76db" "Task has been routed to an agent" ;;
+    in_progress)   ensure_label "$STATUS_LABEL" "fbca04" "Agent is working on this task" ;;
+    done)          ensure_label "$STATUS_LABEL" "0e8a16" "Task is completed" ;;
+    blocked)       ensure_label "$STATUS_LABEL" "d73a4a" "Task is blocked" ;;
+    needs_review)  ensure_label "$STATUS_LABEL" "e4e669" "Task needs human review" ;;
+    *)             ensure_label "$STATUS_LABEL" "c5def5" "" ;;
+  esac
   LABELS_FOR_GH=$(printf '%s' "$LABELS_JSON" | jq -c --arg prefix "$STATUS_LABEL_PREFIX" --arg status "$STATUS_LABEL" \
     'map(select(startswith($prefix) | not)) + [$status]')
 
