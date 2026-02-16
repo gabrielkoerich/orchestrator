@@ -4,22 +4,27 @@ _default:
     @just --list
 
 # Show orchestrator version
+[group('config')]
 version:
     @echo "${ORCH_VERSION:-$(git describe --tags --always 2>/dev/null || echo unknown)}"
 
 # Initialize orchestrator for current project
+[group('config')]
 init *args="":
     @scripts/init.sh {{ args }}
 
 # Interactive chat with the orchestrator
+[group('agents')]
 chat:
     @scripts/chat.sh
 
 # Overview: tasks, projects, worktrees
+[group('agents')]
 dashboard:
     @scripts/dashboard.sh
 
 # Tail orchestrator logs (server + errors)
+[group('config')]
 log tail="50":
     #!/usr/bin/env bash
     STATE="${STATE_DIR:-.orchestrator}"
@@ -39,14 +44,34 @@ log tail="50":
       echo "(no log file found)"
     fi
 
+#################################
+# Namespace: skills (list, sync)
+#################################
+
+# Manage skills registry (list, sync)
+[group('agents')]
+skills target *args:
+    @just _skills_{{ target }} {{ args }}
+
+[private]
+_skills_list:
+    @scripts/skills_list.sh
+
+[private]
+_skills_sync:
+    @scripts/skills_sync.sh
+
 # List installed agent CLIs
+[group('agents')]
 agents:
     @scripts/agents.sh
 
-
-# --- Namespace: task (list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, rejoin, watch, unlock) ---
+########################################################################################################
+# Namespace: task (list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, rejoin, watch, unlock)
+########################################################################################################
 
 # Manage tasks (status, list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, watch, unlock)
+[group('tasks/jobs')]
 task target *args:
     @just _task_{{ target }} {{ args }}
 
@@ -115,9 +140,12 @@ _task_watch *args:
 _task_unlock:
     @scripts/unlock.sh
 
-# --- Namespace: service (start, stop, restart, info, install, uninstall) ---
+#####################################################################
+# Namespace: service (start, stop, restart, info, install, uninstall)
+#####################################################################
 
 # Manage the orchestrator service (start, stop, restart, info, install, uninstall)
+[group('service')]
 service target *args:
     @just _service_{{ target }} {{ args }}
 
@@ -180,9 +208,12 @@ _service_install:
 _service_uninstall:
     @scripts/service_uninstall.sh
 
-# --- Namespace: gh (pull, push, sync) ---
+##################################
+# Namespace: gh (pull, push, sync)
+##################################
 
 # GitHub sync (pull, push, sync)
+[group('github')]
 gh target *args:
     @just _gh_{{ target }} {{ args }}
 
@@ -198,9 +229,12 @@ _gh_push:
 _gh_sync:
     @scripts/gh_sync.sh
 
-# --- Namespace: project (info, create, list) ---
+#########################################
+# Namespace: project (info, create, list)
+#########################################
 
 # GitHub Projects V2 (info, create, list)
+[group('github')]
 project target *args:
     @just _project_{{ target }} {{ args }}
 
@@ -216,9 +250,12 @@ _project_create title="":
 _project_list org="" user="":
     @scripts/gh_project_list.sh "{{ org }}" "{{ user }}"
 
-# --- Namespace: job (add, list, remove, enable, disable, tick) ---
+###########################################################
+# Namespace: job (add, list, remove, enable, disable, tick)
+###########################################################
 
 # Manage scheduled jobs (add, list, remove, enable, disable, tick)
+[group('tasks/jobs')]
 job target *args:
     @just _job_{{ target }} {{ args }}
 
@@ -246,99 +283,22 @@ _job_disable id:
 _job_tick:
     @scripts/jobs_tick.sh
 
-# --- Namespace: skills (list, sync) ---
+############################
+#  Brew services commands
+#############################
 
-# Manage skills registry (list, sync)
-skills target *args:
-    @just _skills_{{ target }} {{ args }}
-
-[private]
-_skills_list:
-    @scripts/skills_list.sh
-
-[private]
-_skills_sync:
-    @scripts/skills_sync.sh
-
-# --- Backward-compatible aliases (hidden) ---
-
-[private]
-status *args:
-    @just task status {{ args }}
-
-[private]
-list:
-    @just task list
-
-[private]
-tree:
-    @just task tree
-
-[private]
-add title body="" labels="":
-    @just task add "{{ title }}" "{{ body }}" "{{ labels }}"
-
-[private]
-plan title body="" labels="":
-    @just task plan "{{ title }}" "{{ body }}" "{{ labels }}"
-
-[private]
-route id="":
-    @just task route {{ id }}
-
-[private]
-run id="":
-    @just task run {{ id }}
-
-[private]
-next:
-    @just task next
-
-[private]
-poll jobs="4":
-    @just task poll {{ jobs }}
-
-[private]
-retry id:
-    @just task retry {{ id }}
-
-[private]
-unblock id:
-    @just task unblock {{ id }}
-
-[private]
-unblock-all:
-    @just task unblock all
-
-[private]
-set-agent id agent:
-    @just task agent {{ id }} {{ agent }}
-
-[private]
-rejoin jobs="4":
-    @just task rejoin {{ jobs }}
-
-[private]
-watch interval="10":
-    @just task watch {{ interval }}
-
-[private]
-stream id:
-    @just task stream {{ id }}
-
-[private]
-unlock:
-    @just task unlock
-
-[private]
-start interval="10":
-    @just service start {{ interval }}
-
-[private]
+# Stop orchestrator service (via brew)
+[group('service')]
 stop:
     @just service stop
 
-[private]
+# Restar orchestrator service (via brew)
+[group('service')]
+start:
+    @just service restart
+
+# Restar orchestrator service (via brew)
+[group('service')]
 restart:
     @just service restart
 
@@ -350,65 +310,18 @@ info:
 serve interval="10":
     @just _service_serve {{ interval }}
 
+# Run tests (bats test suite)
+[private]
+test:
+    @bats tests
+
+############################
+#  Legacy manual & Services
+############################
+
 [private]
 install:
     @scripts/setup.sh
-
-[private]
-gh-pull:
-    @just gh pull
-
-[private]
-gh-push:
-    @just gh push
-
-[private]
-gh-sync:
-    @just gh sync
-
-[private]
-gh-project-info *args:
-    @just project info {{ args }}
-
-[private]
-gh-project-create title="":
-    @just project create "{{ title }}"
-
-[private]
-gh-project-list *args:
-    @just project list {{ args }}
-
-[private]
-gh-project-info-fix:
-    @just project info --fix
-
-[private]
-jobs-add *args:
-    @just job add {{ args }}
-
-[private]
-jobs-list:
-    @just job list
-
-[private]
-jobs-remove id:
-    @just job remove {{ id }}
-
-[private]
-jobs-enable id:
-    @just job enable {{ id }}
-
-[private]
-jobs-disable id:
-    @just job disable {{ id }}
-
-[private]
-jobs-tick:
-    @just job tick
-
-[private]
-skills-sync:
-    @just skills sync
 
 [private]
 service-install:
@@ -417,8 +330,3 @@ service-install:
 [private]
 service-uninstall:
     @just service uninstall
-
-# Run tests (bats test suite)
-[private]
-test:
-    @bats tests

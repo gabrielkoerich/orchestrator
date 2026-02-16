@@ -51,8 +51,20 @@ jobs:
             echo "No new commits since $LAST_TAG — skipping release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "$COMMIT_COUNT new commits since ${LAST_TAG:-beginning}"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            # Skip release if ALL commits are chore-only
+            if [ -n "$LAST_TAG" ]; then
+              SUBJECTS=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s")
+            else
+              SUBJECTS=$(git log --pretty=format:"%s")
+            fi
+            NON_CHORE=$(echo "$SUBJECTS" | grep -cvE '^chore(\(.*\))?:' || true)
+            if [ "$NON_CHORE" -eq 0 ]; then
+              echo "All $COMMIT_COUNT commits are chore — skipping release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$COMMIT_COUNT new commits since ${LAST_TAG:-beginning} ($NON_CHORE non-chore)"
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Determine version bump from conventional commits
