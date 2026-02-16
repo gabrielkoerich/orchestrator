@@ -162,7 +162,23 @@ elif [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH
     export PROJECT_DIR
     log_err "[run] task=$TASK_ID agent will run in worktree $WORKTREE_DIR"
   else
-    log_err "[run] task=$TASK_ID worktree creation failed, running in $PROJECT_DIR"
+    # Retry: clean up and try again
+    log_err "[run] task=$TASK_ID worktree creation failed, retrying"
+    cd "$PROJECT_DIR" && git worktree prune 2>/dev/null || true
+    cd "$PROJECT_DIR" && git branch -D "$BRANCH_NAME" 2>/dev/null || true
+    cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
+    cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
+    if [ -d "$WORKTREE_DIR" ]; then
+      PROJECT_DIR="$WORKTREE_DIR"
+      export PROJECT_DIR
+      log_err "[run] task=$TASK_ID worktree created on retry: $WORKTREE_DIR"
+    else
+      log_err "[run] task=$TASK_ID worktree creation failed, blocking task"
+      append_history "$TASK_ID" "blocked" "worktree creation failed for $WORKTREE_DIR"
+      set_task_field "$TASK_ID" "status" "blocked"
+      set_task_field "$TASK_ID" "last_error" "worktree creation failed: $WORKTREE_DIR"
+      exit 0
+    fi
   fi
 fi
 
