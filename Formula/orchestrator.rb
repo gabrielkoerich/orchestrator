@@ -24,14 +24,11 @@ class Orchestrator < Formula
       export ORCH_VERSION="#{version}"
       export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
       export ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
+      export ORCH_BREW=1
 
-      # Handle flags and service commands before anything else
+      # Handle --version before anything else
       case "${1:-}" in
         --version|-V) echo "orchestrator $ORCH_VERSION"; exit 0 ;;
-        start)        brew services start orchestrator; exit 0 ;;
-        stop)         brew services stop orchestrator; exit 0 ;;
-        restart)      brew services restart orchestrator; exit 0 ;;
-        info)         brew services info orchestrator; exit 0 ;;
       esac
 
       mkdir -p "$ORCH_HOME"

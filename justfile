@@ -64,35 +64,55 @@ rejoin jobs="4":
 watch interval="10":
     @scripts/watch.sh {{ interval }}
 
-# Start server (poll + gh sync) and auto-restart on config or code changes
-serve interval="10":
-    @INTERVAL={{ interval }} TAIL_LOG=1 scripts/serve.sh
-
-# Alias for serve
+# Start the orchestrator (uses brew services if installed via brew, otherwise runs directly)
 start interval="10":
-    @just serve {{ interval }}
+    #!/usr/bin/env bash
+    if [ "${ORCH_BREW:-}" = "1" ]; then
+      brew services start orchestrator
+    else
+      INTERVAL={{ interval }} TAIL_LOG=1 exec scripts/serve.sh
+    fi
 
-# Stop the server if running
+# Run server directly (used by brew services internally)
+[private]
+serve interval="10":
+    @INTERVAL={{ interval }} scripts/serve.sh
+
+# Stop the orchestrator
 stop:
-    @scripts/stop.sh
+    #!/usr/bin/env bash
+    if [ "${ORCH_BREW:-}" = "1" ]; then
+      brew services stop orchestrator
+    else
+      scripts/stop.sh
+    fi
 
-# Restart the server
+# Restart the orchestrator
 restart:
-    @scripts/restart.sh
+    #!/usr/bin/env bash
+    if [ "${ORCH_BREW:-}" = "1" ]; then
+      brew services restart orchestrator
+    else
+      scripts/restart.sh
+    fi
 
 # Show service info and status
 info:
     #!/usr/bin/env bash
-    PID_FILE="${STATE_DIR:-.orchestrator}/orchestrator.pid"
-    if [ -f "$PID_FILE" ]; then
-      PID=$(cat "$PID_FILE")
-      if kill -0 "$PID" 2>/dev/null; then
-        echo "Orchestrator running (pid $PID)"
-      else
-        echo "Orchestrator not running (stale pid $PID)"
-      fi
+    if [ "${ORCH_BREW:-}" = "1" ]; then
+      brew services info orchestrator
     else
-      echo "Orchestrator not running (no pid file)"
+      PID_FILE="${STATE_DIR:-.orchestrator}/orchestrator.pid"
+      if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+          echo "Orchestrator running (pid $PID)"
+        else
+          echo "Orchestrator not running (stale pid $PID)"
+        fi
+      else
+        echo "Orchestrator not running (no pid file)"
+      fi
     fi
 
 # Remove stale task locks

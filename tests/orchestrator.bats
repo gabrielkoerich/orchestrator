@@ -1904,6 +1904,95 @@ SH
   [ "$output" -ge 2 ]
 }
 
+# --- start/stop/restart routing tests ---
+
+@test "start delegates to brew services when ORCH_BREW=1" {
+  # Create a mock brew that records the command
+  BREW_STUB="${TMP_DIR}/brew"
+  cat > "$BREW_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "brew $*"
+SH
+  chmod +x "$BREW_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" ORCH_BREW=1 \
+    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" start
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"brew services start orchestrator"* ]]
+}
+
+@test "stop delegates to brew services when ORCH_BREW=1" {
+  BREW_STUB="${TMP_DIR}/brew"
+  cat > "$BREW_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "brew $*"
+SH
+  chmod +x "$BREW_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" ORCH_BREW=1 \
+    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" stop
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"brew services stop orchestrator"* ]]
+}
+
+@test "restart delegates to brew services when ORCH_BREW=1" {
+  BREW_STUB="${TMP_DIR}/brew"
+  cat > "$BREW_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "brew $*"
+SH
+  chmod +x "$BREW_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" ORCH_BREW=1 \
+    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" restart
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"brew services restart orchestrator"* ]]
+}
+
+@test "info delegates to brew services when ORCH_BREW=1" {
+  BREW_STUB="${TMP_DIR}/brew"
+  cat > "$BREW_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "brew $*"
+SH
+  chmod +x "$BREW_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" ORCH_BREW=1 \
+    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" info
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"brew services info orchestrator"* ]]
+}
+
+@test "info shows pid status when ORCH_BREW is not set" {
+  run env STATE_DIR="$STATE_DIR" \
+    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" info
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not running"* ]]
+}
+
+@test "serve recipe is private (hidden from just --list)" {
+  run just --justfile "${REPO_DIR}/justfile" --list
+  [ "$status" -eq 0 ]
+  # start should be visible
+  [[ "$output" == *"start"* ]]
+  # serve should NOT be listed (it's private)
+  [[ "$output" != *"serve"* ]]
+}
+
+@test "Formula wrapper sets ORCH_BREW=1" {
+  run grep 'ORCH_BREW=1' "${REPO_DIR}/Formula/orchestrator.rb"
+  [ "$status" -eq 0 ]
+}
+
+@test "brew service runs orchestrator serve not start" {
+  # Verify service definition uses 'serve' to avoid recursion
+  run grep 'serve' "${REPO_DIR}/Formula/orchestrator.rb"
+  [ "$status" -eq 0 ]
+  # Must NOT have service calling 'start'
+  run bash -c "grep 'run.*\"start\"' '${REPO_DIR}/Formula/orchestrator.rb' || true"
+  [ -z "$output" ]
+}
+
 # --- Visibility / reporting tests ---
 
 @test "duration_fmt formats seconds correctly" {
