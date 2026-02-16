@@ -326,12 +326,12 @@ case "$TASK_AGENT" in
       "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   codex)
-    log_err "[run] cmd: codex -q ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>"
+    log_err "[run] cmd: codex exec ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
-    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout codex -q \
-      ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout codex exec \
+      ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
       --json \
       "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
