@@ -3,6 +3,8 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_yq
 require_jq
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+export PROJECT_DIR
 init_config_file
 load_project_config
 
@@ -15,9 +17,6 @@ require_gh() {
 
 require_gh
 init_tasks_file
-
-PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
-export PROJECT_DIR
 
 REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
