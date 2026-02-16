@@ -10,6 +10,7 @@ setup() {
   export TASKS_PATH="${TMP_DIR}/tasks.yml"
   export CONFIG_PATH="${TMP_DIR}/config.yml"
   export PROJECT_DIR="${TMP_DIR}"
+  export MONITOR_INTERVAL=0.1
   cat > "$CONFIG_PATH" <<'YAML'
 router:
   agent: "codex"

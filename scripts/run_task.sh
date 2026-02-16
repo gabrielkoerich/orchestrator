@@ -282,14 +282,13 @@ STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}.txt"
 
 # Monitor stderr in background for stuck agent indicators (1Password, passphrase, etc.)
 MONITOR_PID=""
+MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 (
-  # Wait for stderr file to have content
   while true; do
-    sleep 10
+    sleep "$MONITOR_INTERVAL"
     [ -f "$STDERR_FILE" ] || continue
     STDERR_SIZE=$(wc -c < "$STDERR_FILE" 2>/dev/null || echo 0)
     if [ "$STDERR_SIZE" -gt 0 ]; then
-      # Check for interactive approval patterns
       if grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
         error_log "[run] task=$TASK_ID WARNING: agent may be stuck waiting for interactive approval"
         error_log "[run] task=$TASK_ID stderr: $(tail -c 300 "$STDERR_FILE")"
@@ -298,7 +297,6 @@ MONITOR_PID=""
   done
 ) &
 MONITOR_PID=$!
-# Clean up monitor when agent finishes
 cleanup_monitor() { kill "$MONITOR_PID" 2>/dev/null || true; wait "$MONITOR_PID" 2>/dev/null || true; }
 
 CMD_STATUS=0
