@@ -7,9 +7,10 @@ setup() {
   TMP_DIR=$(mktemp -d)
   export STATE_DIR="${TMP_DIR}/.orchestrator"
   mkdir -p "$STATE_DIR"
-  export ORCH_HOME="${TMP_DIR}"
-  export TASKS_PATH="${TMP_DIR}/tasks.yml"
-  export CONFIG_PATH="${TMP_DIR}/config.yml"
+  export ORCH_HOME="${TMP_DIR}/orch_home"
+  mkdir -p "$ORCH_HOME"
+  export TASKS_PATH="${ORCH_HOME}/tasks.yml"
+  export CONFIG_PATH="${ORCH_HOME}/config.yml"
   export PROJECT_DIR="${TMP_DIR}"
   export MONITOR_INTERVAL=0.1
   cat > "$CONFIG_PATH" <<'YAML'
