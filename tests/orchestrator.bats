@@ -1976,12 +1976,12 @@ SH
   [[ "$output" == *"not running"* ]]
 }
 
-@test "serve recipe is private (hidden from just --list)" {
+@test "service namespace is visible, serve is private" {
   command -v just >/dev/null 2>&1 || skip "just not installed"
   run just --justfile "${REPO_DIR}/justfile" --list
   [ "$status" -eq 0 ]
-  # start should be visible
-  [[ "$output" == *"start"* ]]
+  # service should be visible
+  [[ "$output" == *"service"* ]]
   # serve should NOT be listed (it's private)
   [[ "$output" != *"serve"* ]]
 }
@@ -2141,6 +2141,7 @@ JSON
 }
 
 @test "job add --type bash creates bash job" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
   source "${REPO_DIR}/scripts/lib.sh"
   init_jobs_file
   run "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo hello" "0 * * * *" "Test bash job"
