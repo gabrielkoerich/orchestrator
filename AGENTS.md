@@ -1,0 +1,48 @@
+# Orchestrator — Agent & Developer Notes
+
+## Upgrading
+
+```bash
+brew update && brew upgrade orchestrator
+```
+
+## Restarting the service
+
+```bash
+orchestrator stop && orchestrator start
+```
+
+Or equivalently:
+```bash
+brew services restart orchestrator
+```
+
+## Unblocking tasks
+
+```bash
+orchestrator tasks unblock all
+```
+
+## Logs
+
+- Service log: `~/.orchestrator/.orchestrator/orchestrator.log`
+- Brew stdout: `/opt/homebrew/var/log/orchestrator.log` (startup messages only)
+- Brew stderr: `/opt/homebrew/var/log/orchestrator.error.log`
+
+## Model mapping (codex agent)
+
+Codex uses OpenAI models, not Anthropic ones. The router assigns Anthropic model names (haiku, sonnet, opus) which get mapped automatically in `run_task.sh`:
+
+| Router model | Codex model |
+|---|---|
+| haiku | gpt-5.1-codex-mini |
+| sonnet | gpt-5.2 |
+| opus | gpt-5.3-codex |
+
+## Release pipeline
+
+1. Push to `main`
+2. CI runs tests, auto-tags (semver from conventional commits)
+3. GitHub release created, Homebrew tap formula updated
+4. `brew upgrade orchestrator` picks up the new version
+5. `orchestrator stop && orchestrator start` to load new code

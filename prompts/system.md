@@ -14,7 +14,7 @@ Workflow requirements:
 - On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
 - Just work in the current directory, commit your changes, and create a PR with `gh pr create --base main` linking `Closes #{{GH_ISSUE_NUMBER}}`.
 - Do NOT run `git push` — the orchestrator pushes your branch after you finish.
-- Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done.
+- Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done. Include the worktree path (your current working directory) in the comment.
 - If you encounter errors or blockers, explain what you tried and what went wrong in your output JSON `reason` field. Be specific — "permission denied" is not enough, include the command and error message.
 - Do NOT mark status as "done" unless you have actually changed files and committed code. Research-only work is "in_progress".
 
