@@ -1907,6 +1907,7 @@ SH
 # --- start/stop/restart routing tests ---
 
 @test "start delegates to brew services when ORCH_BREW=1" {
+  command -v just >/dev/null 2>&1 || skip "just not installed"
   # Create a mock brew that records the command
   BREW_STUB="${TMP_DIR}/brew"
   cat > "$BREW_STUB" <<'SH'
@@ -1922,6 +1923,7 @@ SH
 }
 
 @test "stop delegates to brew services when ORCH_BREW=1" {
+  command -v just >/dev/null 2>&1 || skip "just not installed"
   BREW_STUB="${TMP_DIR}/brew"
   cat > "$BREW_STUB" <<'SH'
 #!/usr/bin/env bash
@@ -1936,6 +1938,7 @@ SH
 }
 
 @test "restart delegates to brew services when ORCH_BREW=1" {
+  command -v just >/dev/null 2>&1 || skip "just not installed"
   BREW_STUB="${TMP_DIR}/brew"
   cat > "$BREW_STUB" <<'SH'
 #!/usr/bin/env bash
@@ -1950,6 +1953,7 @@ SH
 }
 
 @test "info delegates to brew services when ORCH_BREW=1" {
+  command -v just >/dev/null 2>&1 || skip "just not installed"
   BREW_STUB="${TMP_DIR}/brew"
   cat > "$BREW_STUB" <<'SH'
 #!/usr/bin/env bash
@@ -1964,6 +1968,7 @@ SH
 }
 
 @test "info shows pid status when ORCH_BREW is not set" {
+  command -v just >/dev/null 2>&1 || skip "just not installed"
   run env STATE_DIR="$STATE_DIR" \
     just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" info
   [ "$status" -eq 0 ]
@@ -1971,6 +1976,7 @@ SH
 }
 
 @test "serve recipe is private (hidden from just --list)" {
+  command -v just >/dev/null 2>&1 || skip "just not installed"
   run just --justfile "${REPO_DIR}/justfile" --list
   [ "$status" -eq 0 ]
   # start should be visible
