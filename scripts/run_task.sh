@@ -278,6 +278,29 @@ AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 RESPONSE=""
 STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}.txt"
+: > "$STDERR_FILE"
+
+# Monitor stderr in background for stuck agent indicators (1Password, passphrase, etc.)
+MONITOR_PID=""
+(
+  # Wait for stderr file to have content
+  while true; do
+    sleep 10
+    [ -f "$STDERR_FILE" ] || continue
+    STDERR_SIZE=$(wc -c < "$STDERR_FILE" 2>/dev/null || echo 0)
+    if [ "$STDERR_SIZE" -gt 0 ]; then
+      # Check for interactive approval patterns
+      if grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
+        log_err "[run] task=$TASK_ID WARNING: agent may be stuck waiting for interactive approval"
+        log_err "[run] task=$TASK_ID stderr: $(tail -c 300 "$STDERR_FILE")"
+      fi
+    fi
+  done
+) &
+MONITOR_PID=$!
+# Clean up monitor when agent finishes
+cleanup_monitor() { kill "$MONITOR_PID" 2>/dev/null || true; wait "$MONITOR_PID" 2>/dev/null || true; }
+
 CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
@@ -324,6 +347,7 @@ ${AGENT_MESSAGE}"
 esac
 
 stop_spinner
+cleanup_monitor
 AGENT_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Calculate duration in seconds (macOS and Linux compatible)
 AGENT_START_EPOCH=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$AGENT_START" +%s 2>/dev/null || date -d "$AGENT_START" +%s 2>/dev/null || echo 0)
@@ -377,8 +401,15 @@ if [ "$CMD_STATUS" -ne 0 ]; then
 
   # Detect timeout
   if [ "$CMD_STATUS" -eq 124 ]; then
-    log_err "[run] task=$TASK_ID TIMEOUT"
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent timed out (exit 124)"
+    # Check if timeout was caused by interactive approval prompt
+    TIMEOUT_REASON="agent timed out (exit 124)"
+    if [ -f "$STDERR_FILE" ] && grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
+      TIMEOUT_REASON="agent stuck waiting for interactive approval (1Password/SSH/passphrase) — configure headless auth"
+      log_err "[run] task=$TASK_ID TIMEOUT: stuck on interactive approval"
+    else
+      log_err "[run] task=$TASK_ID TIMEOUT"
+    fi
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "$TIMEOUT_REASON"
     exit 0
   fi
 
