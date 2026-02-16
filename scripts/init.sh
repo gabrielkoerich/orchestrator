@@ -171,6 +171,11 @@ elif [ -t 0 ]; then
     if [ -n "$GH_REPO" ]; then
       write_config
 
+      # Configure git credential helper to use gh OAuth token (enables HTTPS push)
+      if command -v gh >/dev/null 2>&1; then
+        gh auth setup-git 2>/dev/null || true
+      fi
+
       # Interactive project selection if gh available and no project yet
       if command -v gh >/dev/null 2>&1 && [ -z "$GH_PROJECT_ID" ]; then
         read -r -p "GitHub Project ID [auto-detect if blank]: " GH_PROJECT_ID_INPUT

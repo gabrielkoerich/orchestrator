@@ -344,6 +344,14 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     gh_api "repos/$REPO/issues/$GH_NUM/labels/blocked" -X DELETE >/dev/null 2>&1 || true
   fi
 
+  # Add agent label (agent:claude, agent:codex, agent:opencode)
+  if [ -n "$AGENT" ] && [ "$AGENT" != "null" ]; then
+    AGENT_LABEL="agent:${AGENT}"
+    ensure_label "$AGENT_LABEL" "c5def5" "Assigned to $AGENT agent"
+    gh_api "repos/$REPO/issues/$GH_NUM/labels" \
+      --input - <<< "{\"labels\":[\"$AGENT_LABEL\"]}" >/dev/null 2>&1 || true
+  fi
+
   # Post a comment for the update (we already know task changed from the gate above)
   if [ -n "$UPDATED_AT" ]; then
     OWNER_TAG="@$(repo_owner "$REPO")"

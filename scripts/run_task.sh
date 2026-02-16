@@ -500,8 +500,11 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
     if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
       if (cd "$PROJECT_DIR" && git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null | grep -q .); then
         log_err "[run] task=$TASK_ID pushing branch $CURRENT_BRANCH"
-        if ! (cd "$PROJECT_DIR" && git push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
-          log_err "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
+        # Use HTTPS rewrite to avoid SSH/1Password interactive prompts
+        if ! (cd "$PROJECT_DIR" && git \
+          -c "url.https://github.com/.insteadOf=git@github.com:" \
+          push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
+          error_log "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
         fi
       fi
     fi
