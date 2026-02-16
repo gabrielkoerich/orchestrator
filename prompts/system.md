@@ -11,6 +11,7 @@ Rules:
 Workflow requirements:
 - NEVER commit directly to main/master.
 - You are already running inside a git worktree on a feature branch. Do NOT create worktrees or branches yourself.
+- On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
 - Just work in the current directory, commit your changes, and create a PR with `gh pr create --base main` linking `Closes #{{GH_ISSUE_NUMBER}}`.
 - Do NOT run `git push` — the orchestrator pushes your branch after you finish.
 - Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done.
