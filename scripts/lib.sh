@@ -376,7 +376,7 @@ load_project_config() {
   local merged="${STATE_DIR}/config-merged.yml"
   # Deep merge: global config * project config (project wins)
   yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' \
-    "$CONFIG_PATH" "$project_config" > "$merged"
+    "$GLOBAL_CONFIG_PATH" "$project_config" > "$merged"
   CONFIG_PATH="$merged"
 }
 

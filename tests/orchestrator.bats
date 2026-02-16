@@ -2510,6 +2510,35 @@ SH
   [ "$output" = "testorg/testrepo" ]
 }
 
+@test "load_project_config called twice uses global config not merged" {
+  # Regression test: when parent process calls load_project_config, CONFIG_PATH
+  # becomes config-merged.yml. If a child process inherits this and calls
+  # load_project_config again, it must still merge from the GLOBAL config,
+  # not from the already-merged file (which would produce empty output).
+  cat > "${TMP_DIR}/.orchestrator.yml" <<YAML
+gh:
+  repo: "testorg/testrepo"
+YAML
+
+  run bash -c '
+    export PROJECT_DIR="'"$TMP_DIR"'"
+    export CONFIG_PATH="'"$CONFIG_PATH"'"
+    export TASKS_PATH="'"$TASKS_PATH"'"
+    export STATE_DIR="'"$STATE_DIR"'"
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    # First call (parent process)
+    load_project_config
+    repo1=$(config_get ".gh.repo")
+    # Second call (simulates child process inheriting CONFIG_PATH=merged)
+    load_project_config
+    repo2=$(config_get ".gh.repo")
+    echo "first=$repo1 second=$repo2"
+    [ "$repo1" = "testorg/testrepo" ] && [ "$repo2" = "testorg/testrepo" ]
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"first=testorg/testrepo second=testorg/testrepo"* ]]
+}
+
 @test "all scripts set PROJECT_DIR before load_project_config" {
   # This is a lint test — ensures no script calls load_project_config
   # before setting PROJECT_DIR, which causes wrong config loading.
