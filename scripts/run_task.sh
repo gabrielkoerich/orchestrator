@@ -81,10 +81,18 @@ trap '_run_task_cleanup' EXIT
 
 # Read task's dir field and override PROJECT_DIR if set
 TASK_DIR=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .dir // \"\"" "$TASKS_PATH")
-if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ] && [ -d "$TASK_DIR" ]; then
-  PROJECT_DIR="$TASK_DIR"
-  export PROJECT_DIR
-  load_project_config
+if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ]; then
+  if [ -d "$TASK_DIR" ]; then
+    PROJECT_DIR="$TASK_DIR"
+    export PROJECT_DIR
+    load_project_config
+  else
+    log_err "[run] task=$TASK_ID dir=$TASK_DIR does not exist"
+    append_history "$TASK_ID" "blocked" "task dir does not exist: $TASK_DIR"
+    set_task_field "$TASK_ID" "status" "blocked"
+    set_task_field "$TASK_ID" "last_error" "task dir does not exist: $TASK_DIR"
+    exit 0
+  fi
 fi
 
 # Load all task fields in one pass
