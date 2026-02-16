@@ -28,6 +28,13 @@ log_err() {
   echo "$(now_iso) $*" >&2
 }
 
+# Log to the error log file (agent errors, stuck agents, auth issues)
+error_log() {
+  local error_file="${STATE_DIR}/orchestrator.error.log"
+  echo "$(now_iso) $*" >> "$error_file"
+  log_err "$@"
+}
+
 duration_fmt() {
   local secs="${1:-0}"
   if [ "$secs" -lt 60 ]; then

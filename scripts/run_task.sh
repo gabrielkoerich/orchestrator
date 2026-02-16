@@ -213,7 +213,7 @@ if [ "$ATTEMPTS" -ge 4 ]; then
   BLOCKED_COUNT=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |
     map(select(.status == \"blocked\")) | .[-3:] | length" "$TASKS_PATH" 2>/dev/null || echo "0")
   if [ "$BLOCKED_COUNT" -ge 3 ] && [ "$BLOCKED_NOTES" -eq 1 ]; then
-    log_err "[run] task=$TASK_ID retry loop detected (same error 3x)"
+    error_log "[run] task=$TASK_ID retry loop detected (same error 3x)"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
     exit 0
   fi
@@ -291,8 +291,8 @@ MONITOR_PID=""
     if [ "$STDERR_SIZE" -gt 0 ]; then
       # Check for interactive approval patterns
       if grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
-        log_err "[run] task=$TASK_ID WARNING: agent may be stuck waiting for interactive approval"
-        log_err "[run] task=$TASK_ID stderr: $(tail -c 300 "$STDERR_FILE")"
+        error_log "[run] task=$TASK_ID WARNING: agent may be stuck waiting for interactive approval"
+        error_log "[run] task=$TASK_ID stderr: $(tail -c 300 "$STDERR_FILE")"
       fi
     fi
   done
@@ -394,7 +394,7 @@ if [ "$CMD_STATUS" -ne 0 ]; then
 
   # Detect auth/token/billing errors
   if printf '%s' "$COMBINED_OUTPUT" | grep -qiE 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
-    log_err "[run] task=$TASK_ID AUTH/BILLING ERROR detected for agent=$TASK_AGENT"
+    error_log "[run] task=$TASK_ID AUTH/BILLING ERROR for agent=$TASK_AGENT"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — check API key or credits"
     exit 0
   fi
@@ -405,15 +405,15 @@ if [ "$CMD_STATUS" -ne 0 ]; then
     TIMEOUT_REASON="agent timed out (exit 124)"
     if [ -f "$STDERR_FILE" ] && grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
       TIMEOUT_REASON="agent stuck waiting for interactive approval (1Password/SSH/passphrase) — configure headless auth"
-      log_err "[run] task=$TASK_ID TIMEOUT: stuck on interactive approval"
+      error_log "[run] task=$TASK_ID TIMEOUT: stuck on interactive approval"
     else
-      log_err "[run] task=$TASK_ID TIMEOUT"
+      error_log "[run] task=$TASK_ID TIMEOUT after $(duration_fmt $AGENT_DURATION)"
     fi
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "$TIMEOUT_REASON"
     exit 0
   fi
 
-  log_err "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS"
+  error_log "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS"
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent command failed (exit $CMD_STATUS)"
   exit 0
 fi
