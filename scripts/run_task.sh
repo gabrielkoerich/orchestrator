@@ -313,6 +313,24 @@ export GIT_COMMITTER_NAME="${TASK_AGENT}[bot]"
 export GIT_AUTHOR_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
 export GIT_COMMITTER_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
 
+# Map model names to agent-specific equivalents
+map_model() {
+  local agent="$1" model="$2"
+  if [ "$agent" = "codex" ]; then
+    case "$model" in
+      opus|claude-opus*) echo "gpt-5.3-codex" ;;
+      sonnet|claude-sonnet*) echo "gpt-5.2" ;;
+      haiku|claude-haiku*) echo "gpt-5.1-codex-mini" ;;
+      *) echo "$model" ;;
+    esac
+  else
+    echo "$model"
+  fi
+}
+if [ -n "$AGENT_MODEL" ]; then
+  AGENT_MODEL=$(map_model "$TASK_AGENT" "$AGENT_MODEL")
+fi
+
 CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
