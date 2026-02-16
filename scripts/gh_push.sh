@@ -205,10 +205,21 @@ store_comment_hash() {
 # Usage: ensure_label "blocked" "d73a4a" "Task is blocked and needs attention"
 ensure_label() {
   local name="$1" color="${2:-ededed}" description="${3:-}"
-  # Try to get the label; create it if 404
-  if ! gh_api "repos/$REPO/labels/$(printf '%s' "$name" | jq -sRr @uri)" >/dev/null 2>&1; then
+  local encoded
+  encoded=$(printf '%s' "$name" | jq -sRr @uri)
+  local existing
+  existing=$(gh_api "repos/$REPO/labels/$encoded" 2>/dev/null || true)
+  if [ -z "$existing" ]; then
     gh_api "repos/$REPO/labels" \
       -f name="$name" -f color="$color" -f description="$description" >/dev/null 2>&1 || true
+  else
+    # Update color if it doesn't match
+    local current_color
+    current_color=$(printf '%s' "$existing" | jq -r '.color // ""')
+    if [ "$current_color" != "$color" ]; then
+      gh_api "repos/$REPO/labels/$encoded" -X PATCH \
+        -f color="$color" >/dev/null 2>&1 || true
+    fi
   fi
 }
 
