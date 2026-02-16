@@ -51,7 +51,7 @@ INPROG=$(count_status "in_progress")
 BLOCKED=$(count_status "blocked")
 DONE=$(count_status "done")
 NEEDS_REVIEW=$(count_status "needs_review")
-TOTAL=$((NEW + ROUTED + INPROG + BLOCKED + DONE + NEEDS_REVIEW))
+TOTAL=$(yq -r "[${FILTER}] | length" "$TASKS_PATH")
 
 {
   printf 'STATUS\tQTY\n'

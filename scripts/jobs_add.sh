@@ -13,18 +13,21 @@ BODY=""
 LABELS=""
 AGENT=""
 
+POS_INDEX=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --type)    JOB_TYPE="$2"; shift 2 ;;
     --command) COMMAND="$2"; shift 2 ;;
     *)
-      # Positional args: schedule title [body] [labels] [agent]
-      if [ -z "$SCHEDULE" ]; then SCHEDULE="$1"
-      elif [ -z "$TITLE" ]; then TITLE="$1"
-      elif [ -z "$BODY" ]; then BODY="$1"
-      elif [ -z "$LABELS" ]; then LABELS="$1"
-      elif [ -z "$AGENT" ]; then AGENT="$1"
-      fi
+      # Positional args by index: schedule title [body] [labels] [agent]
+      case $POS_INDEX in
+        0) SCHEDULE="$1" ;;
+        1) TITLE="$1" ;;
+        2) BODY="$1" ;;
+        3) LABELS="$1" ;;
+        4) AGENT="$1" ;;
+      esac
+      POS_INDEX=$((POS_INDEX + 1))
       shift
       ;;
   esac
