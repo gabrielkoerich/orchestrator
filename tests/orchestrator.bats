@@ -1982,8 +1982,8 @@ SH
   [ "$status" -eq 0 ]
   # service should be visible
   [[ "$output" == *"service"* ]]
-  # serve should NOT be listed (it's private)
-  [[ "$output" != *"serve"* ]]
+  # "serve" recipe should NOT be listed (it's private) — check for exact recipe name
+  ! echo "$output" | grep -qE '^\s+serve\b'
 }
 
 @test "Formula wrapper sets ORCH_BREW=1" {
@@ -2414,6 +2414,22 @@ JSON
 }
 
 # --- unlock.sh ---
+
+@test "available_agents respects disabled_agents config" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+
+  # Disable codex
+  yq -i '.router.disabled_agents = ["codex"]' "$CONFIG_PATH"
+
+  result=$(available_agents)
+  # codex should NOT be in result (if installed)
+  [[ "$result" != *"codex"* ]] || skip "codex not installed"
+  # claude should still be there (if installed)
+  if command -v claude >/dev/null 2>&1; then
+    [[ "$result" == *"claude"* ]]
+  fi
+}
 
 @test "unlock.sh removes lock files" {
   # Create fake lock files

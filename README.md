@@ -574,6 +574,7 @@ All runtime configuration lives in `config.yml`.
 | `router` | `agent` | Default router executor. | `claude` |
 | `router` | `model` | Router model name. | `haiku` |
 | `router` | `timeout_seconds` | Router timeout (0 disables timeout). | `120` |
+| `router` | `disabled_agents` | Agents to exclude from routing (e.g. `[opencode]`). | `[]` |
 | `router` | `fallback_executor` | Fallback executor when router fails. | `codex` |
 | `router` | `allowed_tools` | Default tool allowlist used in routing prompts. | `[yq, jq, bash, ...]` |
 | `router` | `default_skills` | Skills always included in routing. | `[gh, git-worktree]` |
