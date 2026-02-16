@@ -14,7 +14,7 @@ setup() {
   export PROJECT_DIR="${TMP_DIR}"
   # Initialize a git repo so worktree creation works
   git -C "$PROJECT_DIR" init -b main --quiet 2>/dev/null || true
-  git -C "$PROJECT_DIR" commit --allow-empty -m "init" --quiet 2>/dev/null || true
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet 2>/dev/null || true
   export MONITOR_INTERVAL=0.1
   cat > "$CONFIG_PATH" <<'YAML'
 router:
