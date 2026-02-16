@@ -7,6 +7,7 @@ setup() {
   TMP_DIR=$(mktemp -d)
   export STATE_DIR="${TMP_DIR}/.orchestrator"
   mkdir -p "$STATE_DIR"
+  export ORCH_HOME="${TMP_DIR}"
   export TASKS_PATH="${TMP_DIR}/tasks.yml"
   export CONFIG_PATH="${TMP_DIR}/config.yml"
   export PROJECT_DIR="${TMP_DIR}"
