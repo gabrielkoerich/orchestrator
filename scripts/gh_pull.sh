@@ -43,7 +43,7 @@ ISSUES_JSON=$(gh_api -X GET "repos/$REPO/issues" --paginate -f state=all -f per_
 ISSUES_JSON=$(printf '%s' "$ISSUES_JSON" | yq ea -p=json -o=json -I=0 '[.[]]')
 FILTERED=$(printf '%s' "$ISSUES_JSON" | yq -o=json -I=0 'map(select(.pull_request == null))')
 if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
-  FILTERED=$(printf '%s' "$FILTERED" | yq -o=json -I=0 "map(select(.labels | map(.name) | index(\"$SYNC_LABEL\") != null))")
+  FILTERED=$(printf '%s' "$FILTERED" | yq -o=json -I=0 "map(select(.labels | map(.name) | any_c(. == \"$SYNC_LABEL\")))")
 fi
 
 acquire_lock

@@ -279,8 +279,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   skip=false
   for lbl in "${SKIP_LABELS[@]}"; do
-    idx=$(printf '%s' "$LABELS_JSON" | yq -r "index(\"$lbl\")" 2>/dev/null || true)
-    if [ -n "$idx" ] && [ "$idx" != "null" ]; then
+    if printf '%s' "$LABELS_JSON" | yq -e "any_c(. == \"$lbl\")" >/dev/null 2>&1; then
       skip=true
       break
     fi
@@ -290,7 +289,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   fi
 
   if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
-    if [ "$(printf '%s' "$LABELS_JSON" | yq -r "index(\"$SYNC_LABEL\")")" = "null" ]; then
+    if ! printf '%s' "$LABELS_JSON" | yq -e "any_c(. == \"$SYNC_LABEL\")" >/dev/null 2>&1; then
       continue
     fi
   fi
