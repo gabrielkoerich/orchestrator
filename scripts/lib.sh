@@ -652,6 +652,53 @@ load_task() {
   export ROLE
 }
 
+# --- YQ helpers ---
+# Read a single field from a task by ID
+# Usage: task_field <id> <field>
+# Example: task_field 3 .status  →  "done"
+task_field() {
+  local id="$1" field="$2"
+  yq -r ".tasks[] | select(.id == $id) | $field" "$TASKS_PATH"
+}
+
+# Update task fields atomically (with lock)
+# Usage: task_set <id> <yq_expr>
+# Example: task_set 3 '.status = "done" | .agent = "claude"'
+task_set() {
+  local id="$1" expr="$2"
+  with_lock yq -i "(.tasks[] | select(.id == $id) | $expr)" "$TASKS_PATH"
+}
+
+# Count tasks matching a filter (uses dir_filter by default)
+# Usage: task_count [status]
+# Example: task_count "done"  →  5
+#          task_count          →  12 (all)
+task_count() {
+  local status="${1:-}"
+  local filter
+  filter=$(dir_filter)
+  if [ -n "$status" ]; then
+    yq -r "[${filter} | select(.status == \"$status\")] | length" "$TASKS_PATH"
+  else
+    yq -r "[${filter}] | length" "$TASKS_PATH"
+  fi
+}
+
+# List tasks as TSV rows for piping to table_with_header
+# Usage: task_tsv <yq_fields_expr> [filter_expr]
+# Example: task_tsv '[.id, .status, .title] | @tsv'
+#          task_tsv '[.id, .title] | @tsv' 'select(.status == "new")'
+task_tsv() {
+  local fields="$1" extra_filter="${2:-}"
+  local filter
+  filter=$(dir_filter)
+  if [ -n "$extra_filter" ]; then
+    yq -r "${filter} | ${extra_filter} | ${fields}" "$TASKS_PATH"
+  else
+    yq -r "${filter} | ${fields}" "$TASKS_PATH"
+  fi
+}
+
 dir_filter() {
   local project_dir="${PROJECT_DIR:-}"
   local orch_home="${ORCH_HOME:-$HOME/.orchestrator}"

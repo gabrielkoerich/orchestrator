@@ -4,28 +4,54 @@ source "$(dirname "$0")/lib.sh"
 require_yq
 init_jobs_file
 
-SCHEDULE=${1:-}
-TITLE=${2:-}
-BODY=${3:-}
-LABELS=${4:-}
-AGENT=${5:-}
+# Parse named args: --type bash --command "cmd" or positional for task type
+JOB_TYPE="task"
+COMMAND=""
+SCHEDULE=""
+TITLE=""
+BODY=""
+LABELS=""
+AGENT=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --type)    JOB_TYPE="$2"; shift 2 ;;
+    --command) COMMAND="$2"; shift 2 ;;
+    *)
+      # Positional args: schedule title [body] [labels] [agent]
+      if [ -z "$SCHEDULE" ]; then SCHEDULE="$1"
+      elif [ -z "$TITLE" ]; then TITLE="$1"
+      elif [ -z "$BODY" ]; then BODY="$1"
+      elif [ -z "$LABELS" ]; then LABELS="$1"
+      elif [ -z "$AGENT" ]; then AGENT="$1"
+      fi
+      shift
+      ;;
+  esac
+done
 
 if [ -z "$SCHEDULE" ] || [ -z "$TITLE" ]; then
   echo "usage: jobs_add.sh \"SCHEDULE\" \"TITLE\" [\"BODY\"] [\"LABELS\"] [\"AGENT\"]" >&2
+  echo "       jobs_add.sh --type bash --command \"CMD\" \"SCHEDULE\" \"TITLE\"" >&2
   echo "" >&2
-  echo "  SCHEDULE: cron expression or alias (@hourly, @daily, @weekly, @monthly, @yearly)" >&2
-  echo "  TITLE:    task title" >&2
-  echo "  BODY:     task body (optional)" >&2
-  echo "  LABELS:   comma-separated labels (optional)" >&2
-  echo "  AGENT:    force agent (optional, default: router decides)" >&2
+  echo "  --type bash:  run a shell command directly (no LLM)" >&2
+  echo "  --command:    the command to run (required for type=bash)" >&2
+  echo "  SCHEDULE:     cron expression or alias (@hourly, @daily, @weekly, @monthly, @yearly)" >&2
+  echo "  TITLE:        job title" >&2
+  echo "  BODY:         task body (optional, ignored for type=bash)" >&2
+  echo "  LABELS:       comma-separated labels (optional)" >&2
+  echo "  AGENT:        force agent (optional, default: router decides)" >&2
+  exit 1
+fi
+
+if [ "$JOB_TYPE" = "bash" ] && [ -z "$COMMAND" ]; then
+  echo "error: --command is required for --type bash" >&2
   exit 1
 fi
 
 # Validate cron expression
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 if ! python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE" >/dev/null 2>&1; then
-  # cron_match exits 1 for "doesn't match now" which is fine,
-  # but exits 2 for invalid syntax
   RC=0
   python3 -c "
 import sys; sys.path.insert(0, '${SCRIPT_DIR}')
@@ -41,7 +67,7 @@ if len(fields) != 5:
   fi
 fi
 
-# Generate ID from title: lowercase, replace non-alnum with hyphens, trim
+# Generate ID from title
 JOB_ID=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
 
 # Check for duplicate ID
@@ -52,11 +78,12 @@ if [ -n "$EXISTING" ]; then
 fi
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
-export JOB_ID SCHEDULE TITLE BODY LABELS AGENT PROJECT_DIR
+export JOB_ID SCHEDULE TITLE BODY LABELS AGENT PROJECT_DIR JOB_TYPE COMMAND
 
 yq -i \
   '.jobs += [{
     "id": strenv(JOB_ID),
+    "type": strenv(JOB_TYPE),
     "schedule": strenv(SCHEDULE),
     "task": {
       "title": strenv(TITLE),
@@ -64,6 +91,7 @@ yq -i \
       "labels": (strenv(LABELS) | split(",") | map(select(length > 0))),
       "agent": (strenv(AGENT) | select(length > 0) // null)
     },
+    "command": (strenv(COMMAND) | select(length > 0) // null),
     "dir": strenv(PROJECT_DIR),
     "enabled": true,
     "last_run": null,
@@ -72,4 +100,8 @@ yq -i \
   }]' \
   "$JOBS_PATH"
 
-echo "Added job '$JOB_ID' (schedule: $SCHEDULE)"
+if [ "$JOB_TYPE" = "bash" ]; then
+  echo "Added bash job '$JOB_ID' (schedule: $SCHEDULE, command: $COMMAND)"
+else
+  echo "Added job '$JOB_ID' (schedule: $SCHEDULE)"
+fi

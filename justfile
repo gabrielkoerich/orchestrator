@@ -11,9 +11,9 @@ version:
 list:
     @scripts/list_tasks.sh
 
-# Show status counts and recent tasks
-status:
-    @scripts/status.sh
+# Show status counts and recent tasks (-g for global across projects)
+status *args:
+    @scripts/status.sh {{ args }}
 
 # Show status counts and grouped tasks by status
 dashboard:
@@ -197,8 +197,8 @@ gh-project-list org="" user="":
     @scripts/gh_project_list.sh "{{ org }}" "{{ user }}"
 
 # Add a scheduled job (cron expression + task template)
-jobs-add schedule title body="" labels="" agent="":
-    @scripts/jobs_add.sh "{{ schedule }}" "{{ title }}" "{{ body }}" "{{ labels }}" "{{ agent }}"
+jobs-add *args:
+    @scripts/jobs_add.sh {{ args }}
 
 # List all scheduled jobs
 jobs-list:

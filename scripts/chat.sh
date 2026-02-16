@@ -146,16 +146,23 @@ dispatch() {
   esac
 }
 
+# Persistent readline history
+READLINE_HIST="${STATE_DIR}/chat_readline_history"
+touch "$READLINE_HIST"
+if [ -f "$READLINE_HIST" ]; then
+  history -r "$READLINE_HIST"
+fi
+
+# Completions for common commands
+CHAT_COMPLETIONS="status list dashboard tree add run retry unblock jobs help exit quit"
+
 # Main REPL loop
 echo "orchestrator chat (type 'exit' to quit)"
 echo ""
 
 while true; do
-  # Prompt
-  printf '> '
-
-  # Read input (exit on EOF / Ctrl-D)
-  if ! IFS= read -r USER_INPUT; then
+  # Read input with readline (arrow keys, history)
+  if ! IFS= read -e -p "> " USER_INPUT; then
     echo ""
     break
   fi
@@ -167,6 +174,10 @@ while true; do
   if [ -z "$USER_INPUT" ]; then
     continue
   fi
+
+  # Save to readline history
+  history -s "$USER_INPUT"
+  history -w "$READLINE_HIST"
 
   # Exit commands
   case "$USER_INPUT" in

@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/output.sh"
 require_yq
 init_tasks_file
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
-FILTER=$(dir_filter)
 
 "$(dirname "$0")/status.sh"
 
+YQ_GROUP_COLS=".id, ${YQ_AGENT}, ${YQ_ISSUE}, .title"
+GROUP_HEADER="ID\tAGENT\tISSUE\tTITLE"
+
 group() {
   local status="$1"
-  printf '\n[%s]\n' "$status"
-  yq -r "[${FILTER} | select(.status == \"$status\")] | if length == 0 then \"(none)\" else .[] | [(.id|tostring), (.agent // \"-\"), .title] | @tsv end" "$TASKS_PATH" | column -t -s $'\t'
+  section "[$status]"
+  local data
+  data=$(task_tsv "[${YQ_GROUP_COLS}] | @tsv" "select(.status == \"$status\")")
+  if [ -z "$data" ]; then
+    echo "(none)"
+  else
+    printf '%s\n' "$data" | table_with_header "$GROUP_HEADER"
+  fi
 }
 
 group "new"

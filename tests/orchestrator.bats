@@ -1007,8 +1007,8 @@ SH
         '${REPO_DIR}/scripts/chat.sh' 2>/dev/null
   "
   [ "$status" -eq 0 ]
-  # Should contain status output (Total: N)
-  [[ "$output" == *"Total:"* ]]
+  # Should contain status table (total row)
+  [[ "$output" == *"total"* ]]
 }
 
 @test "chat.sh cleans up history file on exit" {
