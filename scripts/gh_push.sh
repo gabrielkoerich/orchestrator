@@ -51,10 +51,10 @@ SKIP_LABELS=("no_gh" "local-only")
 agent_badge() {
   local agent="${1:-orchestrator}"
   case "$agent" in
-    claude)  echo "🟣 Claude" ;;
-    codex)   echo "🟢 Codex" ;;
-    opencode) echo "🔵 OpenCode" ;;
-    *)       echo "⚙️ $agent" ;;
+    claude)  echo "🤖 🟣 Claude" ;;
+    codex)   echo "🤖 🟢 Codex" ;;
+    opencode) echo "🤖 🔵 OpenCode" ;;
+    *)       echo "🤖 $agent" ;;
   esac
 }
 

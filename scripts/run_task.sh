@@ -18,7 +18,7 @@ if [ -z "$TASK_ID" ]; then
     TASK_ID=$(yq -r '.tasks[] | select(.status == "routed") | .id' "$TASKS_PATH" | head -n1)
   fi
   if [ -z "$TASK_ID" ]; then
-    echo "No runnable tasks found" >&2
+    log_err "No runnable tasks found"
     exit 1
   fi
 fi
@@ -91,7 +91,7 @@ fi
 load_task "$TASK_ID"
 
 if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
-  echo "Task $TASK_ID not found" >&2
+  log_err "Task $TASK_ID not found"
   exit 1
 fi
 
@@ -299,6 +299,12 @@ MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 MONITOR_PID=$!
 cleanup_monitor() { kill "$MONITOR_PID" 2>/dev/null || true; wait "$MONITOR_PID" 2>/dev/null || true; }
 
+# Set git identity for agent commits
+export GIT_AUTHOR_NAME="${TASK_AGENT}[bot]"
+export GIT_COMMITTER_NAME="${TASK_AGENT}[bot]"
+export GIT_AUTHOR_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
+export GIT_COMMITTER_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
+
 CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
@@ -339,7 +345,7 @@ ${AGENT_MESSAGE}"
       "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   *)
-    echo "Unknown agent: $TASK_AGENT" >&2
+    log_err "[run] task=$TASK_ID unknown agent: $TASK_AGENT"
     exit 1
     ;;
 esac
@@ -544,7 +550,7 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
       REVIEW_RESPONSE=$(run_with_timeout claude --print "$REVIEW_PROMPT") || REVIEW_STATUS=$?
       ;;
     *)
-      echo "Unknown review agent: $REVIEW_AGENT" >&2
+      log_err "[run] task=$TASK_ID unknown review agent: $REVIEW_AGENT"
       REVIEW_STATUS=1
       ;;
   esac

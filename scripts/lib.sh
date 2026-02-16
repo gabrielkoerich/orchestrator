@@ -412,8 +412,8 @@ acquire_lock() {
     local now
     now=$(date +%s)
     if [ $((now - start)) -ge "$wait_seconds" ]; then
-      echo "Failed to acquire lock: $LOCK_PATH" >&2
-      echo "Tip: if no orchestrator is running, remove stale locks with 'just unlock'." >&2
+      log_err "Failed to acquire lock: $LOCK_PATH"
+      log_err "Tip: if no orchestrator is running, remove stale locks with 'just unlock'."
       exit 1
     fi
     sleep 0.1

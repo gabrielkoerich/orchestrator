@@ -11,7 +11,7 @@ TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
   TASK_ID=$(yq -r '.tasks[] | select(.status == "new") | .id' "$TASKS_PATH" | head -n1)
   if [ -z "$TASK_ID" ]; then
-    echo "No new tasks to route" >&2
+    log_err "No new tasks to route"
     exit 1
   fi
 fi
@@ -34,7 +34,7 @@ ALLOWED_TOOLS_CSV=$(config_get '.router.allowed_tools // [] | join(",")')
 DEFAULT_SKILLS_CSV=$(config_get '.router.default_skills // [] | join(",")')
 
 if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
-  echo "Task $TASK_ID not found" >&2
+  log_err "Task $TASK_ID not found"
   exit 1
 fi
 
@@ -54,7 +54,7 @@ fi
 
 AVAILABLE_AGENTS=$(available_agents)
 if [ -z "$AVAILABLE_AGENTS" ]; then
-  echo "No agent CLIs found in PATH." >&2
+  log_err "No agent CLIs found in PATH."
   exit 1
 fi
 
@@ -103,7 +103,7 @@ case "$ROUTER_AGENT" in
     RESPONSE=$(run_router_cmd opencode run --format json "$PROMPT") || CMD_STATUS=$?
     ;;
   *)
-    echo "Unknown router agent: $ROUTER_AGENT" >&2
+    log_err "[route] unknown router agent: $ROUTER_AGENT"
     exit 1
     ;;
 esac
