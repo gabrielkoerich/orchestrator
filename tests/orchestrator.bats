@@ -12,6 +12,9 @@ setup() {
   export TASKS_PATH="${ORCH_HOME}/tasks.yml"
   export CONFIG_PATH="${ORCH_HOME}/config.yml"
   export PROJECT_DIR="${TMP_DIR}"
+  # Initialize a git repo so worktree creation works
+  git -C "$PROJECT_DIR" init -b main --quiet 2>/dev/null || true
+  git -C "$PROJECT_DIR" commit --allow-empty -m "init" --quiet 2>/dev/null || true
   export MONITOR_INTERVAL=0.1
   cat > "$CONFIG_PATH" <<'YAML'
 router:

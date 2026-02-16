@@ -53,13 +53,13 @@ YAML
   fi
   echo "Saved .orchestrator.yml"
 
-  # Add .orchestrator* to .gitignore if not already there
+  # Add orchestrator runtime files to .gitignore
   if [ -f ".gitignore" ]; then
-    if ! grep -q '\.orchestrator' .gitignore 2>/dev/null; then
-      echo '.orchestrator*' >> .gitignore
+    if ! grep -q '\.orchestrator/' .gitignore 2>/dev/null; then
+      printf '\n# orchestrator runtime\n.orchestrator/\n' >> .gitignore
     fi
   else
-    echo '.orchestrator*' > .gitignore
+    printf '# orchestrator runtime\n.orchestrator/\n' > .gitignore
   fi
 
   if [ -n "$GH_PROJECT_ID" ]; then

@@ -138,57 +138,61 @@ fi
 export WORKTREE_DIR=""
 DECOMPOSE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .decompose // false" "$TASKS_PATH")
 if [ "$DECOMPOSE" = "true" ]; then
-  log_err "[run] task=$TASK_ID decompose=true, skipping worktree (planning task)"
-elif [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-  PROJECT_NAME=$(basename "$PROJECT_DIR")
-  BRANCH_SLUG=$(printf '%s' "$TASK_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 40)
+  log_err "[run] task=$TASK_ID decompose=true (planning task)"
+fi
+
+# Always create a worktree — never work in the main project dir
+PROJECT_NAME=$(basename "$PROJECT_DIR")
+BRANCH_SLUG=$(printf '%s' "$TASK_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 40)
+if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
   BRANCH_NAME="gh-task-${GH_ISSUE_NUMBER}-${BRANCH_SLUG}"
-  WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
-  export BRANCH_NAME
+else
+  BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
+fi
+WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
+export BRANCH_NAME
 
-  if [ ! -d "$WORKTREE_DIR" ]; then
-    log_err "[run] task=$TASK_ID creating worktree at $WORKTREE_DIR"
-    # Register branch with GitHub issue
+if [ ! -d "$WORKTREE_DIR" ]; then
+  log_err "[run] task=$TASK_ID creating worktree at $WORKTREE_DIR"
+  if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
     cd "$PROJECT_DIR" && gh issue develop "$GH_ISSUE_NUMBER" --base main --name "$BRANCH_NAME" 2>/dev/null || true
-    # Create branch if it doesn't exist
-    cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
-    # Create worktree
-    mkdir -p "$(dirname "$WORKTREE_DIR")"
-    cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
   fi
+  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
+  mkdir -p "$(dirname "$WORKTREE_DIR")"
+  cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
+fi
 
-  _save_worktree_info() {
+if [ -d "$WORKTREE_DIR" ]; then
+  PROJECT_DIR="$WORKTREE_DIR"
+  export PROJECT_DIR
+  export WORKTREE_DIR BRANCH_NAME
+  with_lock yq -i \
+    "(.tasks[] | select(.id == $TASK_ID) | .worktree) = strenv(WORKTREE_DIR) |
+     (.tasks[] | select(.id == $TASK_ID) | .branch) = strenv(BRANCH_NAME)" \
+    "$TASKS_PATH"
+  log_err "[run] task=$TASK_ID agent will run in worktree $WORKTREE_DIR"
+else
+  # Retry: prune and recreate
+  log_err "[run] task=$TASK_ID worktree creation failed, retrying"
+  cd "$PROJECT_DIR" && git worktree prune 2>/dev/null || true
+  cd "$PROJECT_DIR" && git branch -D "$BRANCH_NAME" 2>/dev/null || true
+  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
+  cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
+  if [ -d "$WORKTREE_DIR" ]; then
+    PROJECT_DIR="$WORKTREE_DIR"
+    export PROJECT_DIR
     export WORKTREE_DIR BRANCH_NAME
     with_lock yq -i \
       "(.tasks[] | select(.id == $TASK_ID) | .worktree) = strenv(WORKTREE_DIR) |
        (.tasks[] | select(.id == $TASK_ID) | .branch) = strenv(BRANCH_NAME)" \
       "$TASKS_PATH"
-  }
-
-  if [ -d "$WORKTREE_DIR" ]; then
-    PROJECT_DIR="$WORKTREE_DIR"
-    export PROJECT_DIR
-    _save_worktree_info
-    log_err "[run] task=$TASK_ID agent will run in worktree $WORKTREE_DIR"
+    log_err "[run] task=$TASK_ID worktree created on retry: $WORKTREE_DIR"
   else
-    # Retry: clean up and try again
-    log_err "[run] task=$TASK_ID worktree creation failed, retrying"
-    cd "$PROJECT_DIR" && git worktree prune 2>/dev/null || true
-    cd "$PROJECT_DIR" && git branch -D "$BRANCH_NAME" 2>/dev/null || true
-    cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
-    cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
-    if [ -d "$WORKTREE_DIR" ]; then
-      PROJECT_DIR="$WORKTREE_DIR"
-      export PROJECT_DIR
-      _save_worktree_info
-      log_err "[run] task=$TASK_ID worktree created on retry: $WORKTREE_DIR"
-    else
-      log_err "[run] task=$TASK_ID worktree creation failed, blocking task"
-      append_history "$TASK_ID" "blocked" "worktree creation failed for $WORKTREE_DIR"
-      set_task_field "$TASK_ID" "status" "blocked"
-      set_task_field "$TASK_ID" "last_error" "worktree creation failed: $WORKTREE_DIR"
-      exit 0
-    fi
+    log_err "[run] task=$TASK_ID worktree creation failed, blocking task"
+    append_history "$TASK_ID" "blocked" "worktree creation failed for $WORKTREE_DIR"
+    set_task_field "$TASK_ID" "status" "blocked"
+    set_task_field "$TASK_ID" "last_error" "worktree creation failed: $WORKTREE_DIR"
+    exit 0
   fi
 fi
 
@@ -227,8 +231,9 @@ else
   GIT_DIFF=""
 fi
 
-# Output file for agentic mode — place inside project dir so codex sandbox can write to it
-OUTPUT_FILE="${PROJECT_DIR}/.orchestrator-output-${TASK_ID}.json"
+# Output file for agentic mode — inside .orchestrator/ in the project dir
+mkdir -p "${PROJECT_DIR}/.orchestrator"
+OUTPUT_FILE="${PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json"
 rm -f "$OUTPUT_FILE"
 export OUTPUT_FILE
 
@@ -480,9 +485,9 @@ if [ -f "$OUTPUT_FILE" ]; then
   rm -f "$OUTPUT_FILE"  # Clean up so it doesn't get committed
   log_err "[run] read output from $OUTPUT_FILE"
 else
-  # Check common fallback locations
-  for _alt in "${PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json" \
-              "${STATE_DIR}/output-${TASK_ID}.json" \
+  # Check common fallback locations where codex might write
+  for _alt in "${STATE_DIR}/output-${TASK_ID}.json" \
+              "${PROJECT_DIR}/.orchestrator-output-${TASK_ID}.json" \
               "/tmp/output-${TASK_ID}.json"; do
     if [ -f "$_alt" ]; then
       RESPONSE_JSON=$(cat "$_alt")
