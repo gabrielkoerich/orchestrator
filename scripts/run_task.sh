@@ -454,8 +454,15 @@ if [ -f "$OUTPUT_FILE" ]; then
   RESPONSE_JSON=$(cat "$OUTPUT_FILE")
   log_err "[run] read output from $OUTPUT_FILE"
 else
-  log_err "[run] output file not found, trying stdout fallback"
-  RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+  # Check if agent wrote output inside project dir instead
+  ALT_OUTPUT="${PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json"
+  if [ -f "$ALT_OUTPUT" ]; then
+    RESPONSE_JSON=$(cat "$ALT_OUTPUT")
+    log_err "[run] read output from $ALT_OUTPUT (project dir fallback)"
+  else
+    log_err "[run] output file not found, trying stdout fallback"
+    RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+  fi
 fi
 
 if [ -z "$RESPONSE_JSON" ]; then

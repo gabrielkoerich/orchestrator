@@ -72,7 +72,36 @@ def normalize(raw: str):
                 if isinstance(parsed, dict):
                     return json.dumps(parsed, separators=(",", ":"))
 
-    # Codex format
+    # Codex format — check agent_message texts
+    for ev in reversed(events):
+        if ev.get("type") == "item.completed":
+            item = ev.get("item", {})
+            if item.get("type") == "agent_message":
+                text = item.get("text", "")
+                if text:
+                    parsed = parse_payload(text)
+                    if isinstance(parsed, dict) and "status" in parsed:
+                        return json.dumps(parsed, separators=(",", ":"))
+
+    # Codex format — check command_execution output for JSON written via cat/echo
+    for ev in reversed(events):
+        if ev.get("type") == "item.completed":
+            item = ev.get("item", {})
+            if item.get("type") == "command_execution":
+                cmd = item.get("command", "")
+                if "output" in cmd and ".json" in cmd:
+                    # Extract JSON from the heredoc in the command
+                    import re
+                    m = re.search(r'\{[\s\S]*"status"[\s\S]*\}', cmd)
+                    if m:
+                        try:
+                            parsed = json.loads(m.group(0))
+                            if isinstance(parsed, dict) and "status" in parsed:
+                                return json.dumps(parsed, separators=(",", ":"))
+                        except Exception:
+                            pass
+
+    # Codex format — fallback: any agent_message with parseable dict
     for ev in reversed(events):
         if ev.get("type") == "item.completed":
             item = ev.get("item", {})
