@@ -262,6 +262,19 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   UPDATED_AT=$(yq -r ".tasks[$i].updated_at // \"\"" "$TASKS_PATH")
   GH_SYNCED_AT=$(yq -r ".tasks[$i].gh_synced_at // \"\"" "$TASKS_PATH")
 
+  # Reload project config if task belongs to a different project
+  if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ] && [ "$TASK_DIR" != "$PROJECT_DIR" ]; then
+    if [ -f "$TASK_DIR/.orchestrator.yml" ]; then
+      PROJECT_DIR="$TASK_DIR"
+      export PROJECT_DIR
+      load_project_config
+      REPO=$(config_get '.gh.repo // ""')
+      PROJECT_ID=$(config_get '.gh.project_id // ""')
+      PROJECT_STATUS_FIELD_ID=$(config_get '.gh.project_status_field_id // ""')
+      PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
+    fi
+  fi
+
   log "[gh_push] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
 
   skip=false
