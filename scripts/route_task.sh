@@ -4,6 +4,8 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 source "$SCRIPT_DIR/lib.sh"
 require_yq
 require_jq
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+export PROJECT_DIR
 init_config_file
 load_project_config
 

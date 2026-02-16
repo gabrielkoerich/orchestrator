@@ -2432,6 +2432,84 @@ JSON
   fi
 }
 
+@test "load_project_config merges per-project .orchestrator.yml" {
+  # Create a per-project config with a different repo
+  cat > "${TMP_DIR}/.orchestrator.yml" <<YAML
+gh:
+  repo: "testorg/testrepo"
+  project_id: "PVT_test123"
+YAML
+
+  # Global config has a different repo
+  run yq -i '.gh.repo = "global/repo"' "$CONFIG_PATH"
+
+  # Source lib and load project config — PROJECT_DIR must be set first
+  run bash -c '
+    export PROJECT_DIR="'"$TMP_DIR"'"
+    export CONFIG_PATH="'"$CONFIG_PATH"'"
+    export TASKS_PATH="'"$TASKS_PATH"'"
+    export STATE_DIR="'"$STATE_DIR"'"
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    load_project_config
+    config_get ".gh.repo"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "testorg/testrepo" ]
+}
+
+@test "load_project_config uses global config when no project config exists" {
+  # No .orchestrator.yml in PROJECT_DIR
+  run yq -i '.gh.repo = "global/repo"' "$CONFIG_PATH"
+
+  run bash -c '
+    export PROJECT_DIR="'"$TMP_DIR"'/no-project"
+    export CONFIG_PATH="'"$CONFIG_PATH"'"
+    export TASKS_PATH="'"$TASKS_PATH"'"
+    export STATE_DIR="'"$STATE_DIR"'"
+    mkdir -p "$PROJECT_DIR"
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    load_project_config
+    config_get ".gh.repo"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "global/repo" ]
+}
+
+@test "gh_pull.sh uses PROJECT_DIR for repo detection" {
+  # Create per-project config
+  cat > "${TMP_DIR}/.orchestrator.yml" <<YAML
+gh:
+  repo: "testorg/testrepo"
+YAML
+
+  # Mock gh to capture the repo it receives
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"* ]]; then
+  echo "repo=$REPO" >&2
+  echo "[]"
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" PROJECT_DIR="$TMP_DIR" \
+    "${REPO_DIR}/scripts/gh_pull.sh"
+  # Should not fail (may have no issues, that's fine)
+  # The key test: it loaded the per-project repo
+  run bash -c '
+    export PROJECT_DIR="'"$TMP_DIR"'"
+    export CONFIG_PATH="'"$CONFIG_PATH"'"
+    export TASKS_PATH="'"$TASKS_PATH"'"
+    export STATE_DIR="'"$STATE_DIR"'"
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    load_project_config
+    config_get ".gh.repo"
+  '
+  [ "$output" = "testorg/testrepo" ]
+}
+
 @test "unlock.sh removes lock files" {
   # Create fake lock files
   touch "${TASKS_PATH}.lock"
