@@ -84,11 +84,11 @@ SH
   run "${REPO_DIR}/scripts/add_task.sh" "Run Me" "Run body" ""
   [ "$status" -eq 0 ]
 
-  # Stub writes output file instead of printing to stdout
+  # Stub prints JSON to stdout (parsed by normalize_json_response)
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<SH
+  cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-cat > "${STATE_DIR}/output-2.json" <<'JSON'
+cat <<'JSON'
 {"status":"in_progress","summary":"scoped work","files_changed":[],"needs_help":true,"delegations":[{"title":"Child Task","body":"Do subtask","labels":["sub"],"suggested_agent":"codex"}]}
 JSON
 SH
@@ -127,11 +127,11 @@ SH
   run yq -i '(.tasks[] | select(.id == 3) | .status) = "done" | (.tasks[] | select(.id == 3) | .agent) = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
-  # Stub writes output file (task 2 will be re-run after rejoin)
+  # Stub prints JSON to stdout (parsed by normalize_json_response)
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<SH
+  cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-cat > "${STATE_DIR}/output-2.json" <<'JSON'
+cat <<'JSON'
 {"status":"done","summary":"ok","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
 SH
@@ -288,17 +288,17 @@ SH
   run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
-  # Execution stub writes output file; review stub prints to stdout
+  # Execution stub prints JSON to stdout; review stub also prints to stdout
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<SH
+  cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-prompt="\$*"
-if printf '%s' "\$prompt" | grep -q "reviewing agent"; then
+prompt="$*"
+if printf '%s' "$prompt" | grep -q "reviewing agent"; then
   cat <<'JSON'
 {"decision":"approve","notes":"looks good"}
 JSON
 else
-  cat > "${STATE_DIR}/output-2.json" <<'JSON'
+  cat <<'JSON'
 {"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
 fi
@@ -313,18 +313,17 @@ SH
   [ "$output" = "approve" ]
 }
 
-@test "run_task.sh reads output from file" {
-  run "${REPO_DIR}/scripts/add_task.sh" "Output File" "Test output file reading" ""
+@test "run_task.sh parses structured JSON from agent stdout" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Output Stdout" "Test stdout JSON parsing" ""
   [ "$status" -eq 0 ]
 
-  # Stub writes JSON to output file
+  # Stub prints JSON to stdout (parsed by normalize_json_response)
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<SH
+  cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-cat > "${STATE_DIR}/output-2.json" <<'JSON'
+cat <<'JSON'
 {"status":"done","summary":"wrote output file","accomplished":["task completed"],"remaining":[],"blockers":[],"files_changed":["test.txt"],"needs_help":false,"delegations":[]}
 JSON
-echo "agent stdout (should be ignored)"
 SH
   chmod +x "$CODEX_STUB"
 
@@ -599,18 +598,18 @@ YAML
   run "${REPO_DIR}/scripts/add_task.sh" "Big Feature" "Build the whole thing" "plan"
   [ "$status" -eq 0 ]
 
-  # Stub that checks which prompt it receives
+  # Stub that checks which prompt it receives (prints JSON to stdout)
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<SH
+  cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
 # Check if the plan prompt is being used (contains "planning agent")
-prompt="\$*"
-if printf '%s' "\$prompt" | grep -q "planning agent"; then
-  cat > "${STATE_DIR}/output-2.json" <<'JSON'
+prompt="$*"
+if printf '%s' "$prompt" | grep -q "planning agent"; then
+  cat <<'JSON'
 {"status":"done","summary":"planned the work","accomplished":["analyzed task"],"remaining":[],"blockers":[],"files_changed":[],"needs_help":false,"reason":"","delegations":[{"title":"Step 1","body":"Do first thing","labels":["backend"],"suggested_agent":"codex"},{"title":"Step 2","body":"Do second thing","labels":["tests"],"suggested_agent":"codex"}]}
 JSON
 else
-  cat > "${STATE_DIR}/output-2.json" <<'JSON'
+  cat <<'JSON'
 {"status":"done","summary":"executed directly","accomplished":[],"remaining":[],"blockers":[],"files_changed":[],"needs_help":false,"reason":"","delegations":[]}
 JSON
 fi
@@ -1464,11 +1463,11 @@ GHSTUB
   echo "99999" > "$TASK_LOCK/pid"
   touch -t 202501010000 "$TASK_LOCK"
 
-  # Stub codex to succeed
+  # Stub codex to succeed (prints JSON to stdout)
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<SH
+  cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-cat > "${STATE_DIR}/output-2.json" <<'JSON'
+cat <<'JSON'
 {"status":"done","summary":"recovered","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
 SH
@@ -1542,12 +1541,12 @@ SH
   [ "$output" = "$FROZEN" ]
 }
 
-@test "run_task.sh passes --output-format json to agents" {
+@test "run_task.sh passes --output-format to agents" {
   # Regression: agents must return structured JSON, not raw text
-  run grep -n 'output-format json\|--json\|--format json' "${REPO_DIR}/scripts/run_task.sh"
+  run grep -n 'output-format\|--json\|--format json' "${REPO_DIR}/scripts/run_task.sh"
   [ "$status" -eq 0 ]
-  # claude must have --output-format json
-  [[ "$output" == *"output-format json"* ]]
+  # claude must have --output-format stream-json
+  [[ "$output" == *"output-format stream-json"* ]]
   # codex must have --json
   [[ "$output" == *"--json"* ]]
   # opencode must have --format json
@@ -1565,9 +1564,9 @@ SH
   [ "$status" -eq 0 ]
 
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<SH
+  cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-cat > "${STATE_DIR}/output-2.json" <<'JSON'
+cat <<'JSON'
 {"status":"done","summary":"tested","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
 SH
@@ -1579,13 +1578,15 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  # Saved response should have agent and model fields
-  run jq -r '.agent' "${STATE_DIR}/output-2.json" 2>/dev/null
-  # The output file is written by the stub, but the response JSON is saved in response-2.txt
   # Check that the task's yq state got updated with the correct status
   run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
+
+  # Agent model should be recorded in the task
+  run yq -r '.tasks[] | select(.id == 2) | .agent_model' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "default" ]
 }
 
 @test "normalize_json.py --tool-history extracts tool calls" {
@@ -1830,11 +1831,11 @@ SH
       {\"ts\": \"2026-01-01T00:02:00Z\", \"status\": \"blocked\", \"note\": \"error C\"}
     ]" "$TASKS_PATH"
 
-  # Stub that succeeds
+  # Stub that succeeds (prints JSON to stdout)
   CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<SH
+  cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-cat > "${STATE_DIR}/output-2.json" <<'JSON'
+cat <<'JSON'
 {"status":"done","summary":"fixed it","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
 SH

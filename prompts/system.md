@@ -29,7 +29,8 @@ Logging and visibility:
 - The "reason" field on blocked/needs_review is shown prominently with the error. Include the exact command and error message.
 - The "blockers" list is shown under "Errors & Blockers". Be actionable (e.g., "Need SSH key configured for git push" not "Permission denied").
 
-When finished, write a JSON file to: {{OUTPUT_FILE}}
+When finished, output your response as a single fenced JSON block (```json ... ```) as your LAST message.
+Do NOT write the JSON to a file — just output it directly.
 
 The JSON must contain:
 - status: done|in_progress|blocked|needs_review

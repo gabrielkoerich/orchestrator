@@ -246,10 +246,12 @@ AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 RESPONSE=""
 STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}.txt"
+STREAM_FILE="${STATE_DIR}/stream-${TASK_ID}.jsonl"
 CMD_STATUS=0
+: > "$STREAM_FILE"
 case "$TASK_AGENT" in
   claude)
-    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --output-format json --append-system-prompt <prompt> <message>"
+    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --output-format stream-json --append-system-prompt <prompt> <message>"
     DISALLOW_ARGS=()
     if [ -n "$DISALLOWED_TOOLS" ]; then
       IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
@@ -261,9 +263,9 @@ case "$TASK_AGENT" in
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --permission-mode acceptEdits \
       "${DISALLOW_ARGS[@]}" \
-      --output-format json \
+      --output-format stream-json \
       --append-system-prompt "$SYSTEM_PROMPT" \
-      "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+      "$AGENT_MESSAGE" 2>"$STDERR_FILE" | tee "$STREAM_FILE") || CMD_STATUS=$?
     ;;
   codex)
     log_err "[run] cmd: codex -q ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>"
@@ -273,7 +275,7 @@ ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout codex -q \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --json \
-      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+      "$FULL_MESSAGE" 2>"$STDERR_FILE" | tee "$STREAM_FILE") || CMD_STATUS=$?
     ;;
   opencode)
     log_err "[run] cmd: opencode run --format json <message>"
@@ -282,7 +284,7 @@ ${AGENT_MESSAGE}"
 ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
       --format json \
-      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+      "$FULL_MESSAGE" 2>"$STDERR_FILE" | tee "$STREAM_FILE") || CMD_STATUS=$?
     ;;
   *)
     echo "Unknown agent: $TASK_AGENT" >&2
@@ -354,15 +356,9 @@ if [ "$CMD_STATUS" -ne 0 ]; then
   exit 0
 fi
 
-# Read structured output from file (primary), fall back to stdout parsing
+# Parse structured output from agent response
 RESPONSE_JSON=""
-if [ -f "$OUTPUT_FILE" ]; then
-  RESPONSE_JSON=$(cat "$OUTPUT_FILE")
-  log_err "[run] read output from $OUTPUT_FILE"
-else
-  log_err "[run] output file not found, trying stdout fallback"
-  RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
-fi
+RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
 
 if [ -z "$RESPONSE_JSON" ]; then
   log_err "[run] task=$TASK_ID invalid JSON response"
