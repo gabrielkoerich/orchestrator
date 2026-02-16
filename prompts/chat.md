@@ -14,6 +14,9 @@ Conversation history:
 | Action       | Description                               | Params                                                       |
 |--------------|-------------------------------------------|--------------------------------------------------------------|
 | add_task     | Create a new task                         | `{ "title": "...", "body": "...", "labels": "a,b" }`        |
+| plan_task    | Create a task and decompose into subtasks | `{ "title": "...", "body": "...", "labels": "a,b" }`        |
+| retry        | Retry a blocked/done task (reset to new)  | `{ "id": "1" }`                                             |
+| unblock      | Unblock a task or all blocked tasks       | `{ "id": "1" }` or `{ "id": "all" }`                        |
 | list         | List all tasks                            | (none)                                                       |
 | status       | Show status counts and recent tasks       | (none)                                                       |
 | dashboard    | Show tasks grouped by status              | (none)                                                       |
@@ -54,6 +57,9 @@ Each task has: id, title, status, agent, labels, parent_id, body, summary.
 
 1. Infer the best action from the user's natural language message.
 2. For **add_task**, generate a clear title and body from the description. Add relevant labels.
+2b. For **plan_task**, use when the user says "plan", "decompose", "break down" a task. It creates a task with `plan` label that will be decomposed into subtasks.
+2c. For **retry**, use when the user says "retry task X", "rerun task X", or "try again on X".
+2d. For **unblock**, use when the user says "unblock task X" or "unblock all".
 3. For **add_job**, parse schedule from natural language (e.g. "every day at 9am" → "0 9 * * *").
 4. Use **list** when the user wants to see tasks (e.g. "show tasks", "what's pending", "list").
 5. Use **status** for summary counts (e.g. "how many tasks", "what's the status").

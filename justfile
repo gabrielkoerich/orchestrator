@@ -54,16 +54,10 @@ _task_tree:
 _task_add *args:
     @scripts/add_task.sh {{ args }}
 
+# Set PLAN_INTERACTIVE=0 to skip interactive planning and just add task with plan label
 [private]
-_task_plan *args:
-    #!/usr/bin/env bash
-    # Extract title, body, labels from args
-    TITLE="${1:-}" BODY="${2:-}" LABELS="${3:-}"
-    if [ "${PLAN_INTERACTIVE:-1}" = "0" ]; then
-      scripts/add_task.sh "$TITLE" "$BODY" "plan,$LABELS"
-    else
-      scripts/plan_chat.sh "$TITLE" "$BODY" "$LABELS"
-    fi
+_task_plan title body="" labels="":
+    {{ if env("PLAN_INTERACTIVE", "1") == "0" { "scripts/add_task.sh \"" + title + "\" \"" + body + "\" \"plan," + labels + "\"" } else { "scripts/plan_chat.sh \"" + title + "\" \"" + body + "\" \"" + labels + "\"" } }}
 
 [private]
 _task_route id="":
@@ -86,13 +80,8 @@ _task_retry id:
     @scripts/retry_task.sh {{ id }}
 
 [private]
-_task_unblock *args:
-    #!/usr/bin/env bash
-    if [ "${1:-}" = "all" ]; then
-      yq -r '.tasks[] | select(.status == "blocked") | .id' "${TASKS_PATH:-tasks.yml}" | xargs -n1 scripts/retry_task.sh
-    else
-      scripts/retry_task.sh "${1:?Usage: orchestrator task unblock <id|all>}"
-    fi
+_task_unblock id:
+    {{ if id == "all" { "yq -r '.tasks[] | select(.status == \"blocked\") | .id' \"${TASKS_PATH:-tasks.yml}\" | xargs -n1 scripts/retry_task.sh" } else { "scripts/retry_task.sh " + id } }}
 
 [private]
 _task_agent id agent:
