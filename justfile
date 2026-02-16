@@ -19,12 +19,24 @@ chat:
 dashboard:
     @scripts/dashboard.sh
 
-# Tail orchestrator.log (checks service log, then state dir)
+# Tail orchestrator logs (server + errors)
 log tail="50":
-    @if [ -f "${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log" ]; then \
-      tail -n {{ tail }} "${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log"; \
-    else \
-      tail -n {{ tail }} "${STATE_DIR:-.orchestrator}/orchestrator.log"; \
+    #!/usr/bin/env bash
+    STATE="${STATE_DIR:-.orchestrator}"
+    BREW_LOG="${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log"
+    # Show error log if it exists
+    if [ -f "$STATE/orchestrator.error.log" ] && [ -s "$STATE/orchestrator.error.log" ]; then
+      echo "=== Error Log ==="
+      tail -n {{ tail }} "$STATE/orchestrator.error.log"
+      echo ""
+    fi
+    echo "=== Server Log ==="
+    if [ -f "$BREW_LOG" ]; then
+      tail -n {{ tail }} "$BREW_LOG"
+    elif [ -f "$STATE/orchestrator.log" ]; then
+      tail -n {{ tail }} "$STATE/orchestrator.log"
+    else
+      echo "(no log file found)"
     fi
 
 # List installed agent CLIs
