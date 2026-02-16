@@ -35,16 +35,19 @@ def parse_payload(payload):
 
 
 def normalize(raw: str):
+    # Try single JSON object first (claude --output-format json)
     try:
         obj = json.loads(raw)
         if isinstance(obj, dict) and "result" in obj:
             parsed = parse_payload(obj["result"])
         else:
             parsed = parse_payload(obj)
-        return json.dumps(parsed, separators=(",", ":"))
+        if isinstance(parsed, dict):
+            return json.dumps(parsed, separators=(",", ":"))
     except Exception:
         pass
 
+    # Parse NDJSON lines (claude --output-format stream-json)
     lines = [l for l in raw.splitlines() if l.strip().startswith("{")]
     events = []
     for line in lines:
@@ -53,13 +56,23 @@ def normalize(raw: str):
         except Exception:
             continue
 
+    # Look for final "result" event (claude stream-json format)
+    for ev in reversed(events):
+        if ev.get("type") == "result" and "result" in ev:
+            parsed = parse_payload(ev["result"])
+            if isinstance(parsed, dict):
+                return json.dumps(parsed, separators=(",", ":"))
+
+    # Look for text events with fenced JSON
     for ev in reversed(events):
         if ev.get("type") == "text":
             text = ev.get("part", {}).get("text", "")
             if text:
                 parsed = parse_payload(text)
-                return json.dumps(parsed, separators=(",", ":"))
+                if isinstance(parsed, dict):
+                    return json.dumps(parsed, separators=(",", ":"))
 
+    # Codex format
     for ev in reversed(events):
         if ev.get("type") == "item.completed":
             item = ev.get("item", {})
@@ -67,7 +80,8 @@ def normalize(raw: str):
                 text = item.get("text", "")
                 if text:
                     parsed = parse_payload(text)
-                    return json.dumps(parsed, separators=(",", ":"))
+                    if isinstance(parsed, dict):
+                        return json.dumps(parsed, separators=(",", ":"))
 
     return None
 
