@@ -26,7 +26,8 @@ if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
     REPO=$(cd "$PROJECT_DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
   fi
   if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
-    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+    log_err "[gh_pull] no repo configured. Run 'orchestrator init' first."
+    exit 1
   fi
 fi
 
