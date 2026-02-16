@@ -365,7 +365,7 @@ YAML
   fi
 }
 
-GLOBAL_CONFIG_PATH="$CONFIG_PATH"
+GLOBAL_CONFIG_PATH="${ORCH_HOME}/config.yml"
 
 load_project_config() {
   local project_config="${PROJECT_DIR:+${PROJECT_DIR}/.orchestrator.yml}"
