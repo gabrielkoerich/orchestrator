@@ -43,7 +43,13 @@ write_config() {
     cat > "$CONFIG_FILE" <<YAML
 gh:
   repo: "$GH_REPO"
+  sync_label: ""
 YAML
+  fi
+  # Ensure sync_label exists (prevents global config leak)
+  existing_sync_label=$(yq -r '.gh.sync_label // "MISSING"' "$CONFIG_FILE" 2>/dev/null || echo "MISSING")
+  if [ "$existing_sync_label" = "MISSING" ]; then
+    yq -i '.gh.sync_label = ""' "$CONFIG_FILE"
   fi
   echo "Saved .orchestrator.yml"
 

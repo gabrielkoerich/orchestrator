@@ -20,13 +20,8 @@ init_tasks_file
 
 REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
-  if [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR/.git" ]; then
-    REPO=$(cd "$PROJECT_DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
-  fi
-  if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
-    log_err "[gh_push] no repo configured. Run 'orchestrator init' first."
-    exit 1
-  fi
+  log_err "[gh_push] no repo configured. Run 'orchestrator init' first."
+  exit 1
 fi
 
 SYNC_LABEL=${GITHUB_SYNC_LABEL:-$(config_get '.gh.sync_label // ""')}
@@ -228,7 +223,8 @@ DIRTY_COUNT=$(yq -r '
     (.updated_at != .gh_synced_at)
   )] | length
 ' "$TASKS_PATH")
-if [ "$DIRTY_COUNT" -le 0 ]; then
+# Always run the loop if project board is configured (status may need syncing)
+if [ "$DIRTY_COUNT" -le 0 ] && [ -z "$PROJECT_ID" ]; then
   exit 0
 fi
 for i in $(seq 0 $((TASK_COUNT - 1))); do
@@ -290,6 +286,10 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
     if ! printf '%s' "$LABELS_JSON" | yq -e "any_c(. == \"$SYNC_LABEL\")" >/dev/null 2>&1; then
+      # Still sync board status even if task doesn't have sync label
+      if [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ]; then
+        sync_project_status "$GH_NUM" "$STATUS"
+      fi
       continue
     fi
   fi
@@ -333,6 +333,10 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   # Ensure issue labels reflect status only when task changed
   if [ "$UPDATED_AT" = "$GH_SYNCED_AT" ]; then
+    # Always sync project board status (may have been missed when config was broken)
+    if [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ]; then
+      sync_project_status "$GH_NUM" "$STATUS"
+    fi
     continue
   fi
 
