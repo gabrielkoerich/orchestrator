@@ -192,10 +192,11 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-          CHANGELOG: ${{ steps.changelog.outputs.body }}
-          GH_NOTES: ${{ steps.gh_notes.outputs.body }}
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CHANGELOG='${{ steps.changelog.outputs.body }}'
+          GH_NOTES='${{ steps.gh_notes.outputs.body }}'
+
           # Combine: our changelog first, then GitHub's PR-based notes
           BODY="${CHANGELOG}"
           if [ -n "$GH_NOTES" ]; then
@@ -246,3 +247,23 @@ jobs:
           fi
           git -C tap-repo commit -m "chore: update orchestrator formula for ${VERSION}"
           git -C tap-repo push origin main
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v4
