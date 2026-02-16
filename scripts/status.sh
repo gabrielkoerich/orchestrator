@@ -27,17 +27,24 @@ fi
 
 if [ "$IS_JSON" = true ]; then
   yq -o=json -I=2 "{
-    total: ([${FILTER}] | length),
-    counts: {
-      new: ([${FILTER} | select(.status == \"new\")] | length),
-      routed: ([${FILTER} | select(.status == \"routed\")] | length),
-      in_progress: ([${FILTER} | select(.status == \"in_progress\")] | length),
-      blocked: ([${FILTER} | select(.status == \"blocked\")] | length),
-      done: ([${FILTER} | select(.status == \"done\")] | length),
-      needs_review: ([${FILTER} | select(.status == \"needs_review\")] | length)
+    \"total\": ([${FILTER}] | length),
+    \"counts\": {
+      \"new\": ([${FILTER} | select(.status == \"new\")] | length),
+      \"routed\": ([${FILTER} | select(.status == \"routed\")] | length),
+      \"in_progress\": ([${FILTER} | select(.status == \"in_progress\")] | length),
+      \"blocked\": ([${FILTER} | select(.status == \"blocked\")] | length),
+      \"done\": ([${FILTER} | select(.status == \"done\")] | length),
+      \"needs_review\": ([${FILTER} | select(.status == \"needs_review\")] | length)
     },
-    recent: ([${FILTER}] | sort_by(.updated_at) | reverse | .[0:10])
+    \"recent\": ([${FILTER}] | sort_by(.updated_at) | reverse | .[0:10])
   }" "$TASKS_PATH"
+  exit 0
+fi
+
+TOTAL=$(yq -r "[${FILTER}] | length" "$TASKS_PATH")
+
+if [ "$TOTAL" -eq 0 ]; then
+  echo "No tasks. Add one with: orchestrator task add \"title\""
   exit 0
 fi
 
@@ -51,7 +58,6 @@ INPROG=$(count_status "in_progress")
 BLOCKED=$(count_status "blocked")
 DONE=$(count_status "done")
 NEEDS_REVIEW=$(count_status "needs_review")
-TOTAL=$(yq -r "[${FILTER}] | length" "$TASKS_PATH")
 
 {
   printf 'STATUS\tQTY\n'

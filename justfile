@@ -7,82 +7,17 @@ _default:
 version:
     @echo "${ORCH_VERSION:-$(git describe --tags --always 2>/dev/null || echo unknown)}"
 
-# List all tasks (id, status, agent, parent, title)
-list:
-    @scripts/list_tasks.sh
+# Initialize orchestrator for current project
+init *args="":
+    @scripts/init.sh {{ args }}
 
-# Show status counts and recent tasks (-g for global across projects)
-status *args:
-    @scripts/status.sh {{ args }}
+# Interactive chat with the orchestrator
+chat:
+    @scripts/chat.sh
 
-# Show status counts and grouped tasks by status
+# Overview: tasks, projects, worktrees
 dashboard:
     @scripts/dashboard.sh
-
-# Show task tree with parent/child hierarchy
-tree:
-    @scripts/tree.sh
-
-# Add a task (title required, body/labels optional)
-add title body="" labels="":
-    @scripts/add_task.sh "{{ title }}" "{{ body }}" "{{ labels }}"
-
-# Interactively plan and decompose a goal into subtasks
-plan title body="" labels="":
-    #!/usr/bin/env bash
-    if [ "${PLAN_INTERACTIVE:-1}" = "0" ]; then
-      scripts/add_task.sh "{{ title }}" "{{ body }}" "plan,{{ labels }}"
-    else
-      scripts/plan_chat.sh "{{ title }}" "{{ body }}" "{{ labels }}"
-    fi
-
-# Route a task (choose agent/profile/skills)
-route id="":
-    @scripts/route_task.sh {{ id }}
-
-# Run a task (routes first if needed)
-run id="":
-    @scripts/run_task.sh {{ id }}
-
-# Retry a blocked/done/failed task (reset to new)
-retry id:
-    @scripts/retry_task.sh {{ id }}
-
-# Unblock a blocked task (reset to new)
-unblock id:
-    @scripts/retry_task.sh {{ id }}
-
-# Unblock all blocked tasks (reset to new)
-unblock-all:
-    @yq -r '.tasks[] | select(.status == "blocked") | .id' "${TASKS_PATH:-tasks.yml}" | xargs -n1 scripts/retry_task.sh
-
-# Force a task to use a specific agent
-set-agent id agent:
-    @scripts/set_agent.sh {{ id }} {{ agent }}
-
-# Route+run the next task in one step
-next:
-    @scripts/next.sh
-
-# Run all runnable tasks in parallel
-poll jobs="4":
-    @POLL_JOBS={{ jobs }} scripts/poll.sh
-
-# Re-run blocked parents when children done
-rejoin jobs="4":
-    @POLL_JOBS={{ jobs }} scripts/rejoin.sh
-
-# Loop poll every interval seconds
-watch interval="10":
-    @scripts/watch.sh {{ interval }}
-
-# Stream live agent output for a task
-stream id:
-    @scripts/stream_task.sh {{ id }}
-
-# Remove stale task locks
-unlock:
-    @scripts/unlock.sh
 
 # Tail orchestrator.log (checks service log, then state dir)
 log tail="50":
@@ -92,25 +27,92 @@ log tail="50":
       tail -n {{ tail }} "${STATE_DIR:-.orchestrator}/orchestrator.log"; \
     fi
 
-# Initialize orchestrator for current project
-init *args="":
-    @scripts/init.sh {{ args }}
-
-# Interactive chat with the orchestrator
-chat:
-    @scripts/chat.sh
-
 # List installed agent CLIs
 agents:
     @scripts/agents.sh
 
-# List all projects with tasks
-projects:
-    @yq -r '[.tasks[].dir // ""] | unique | map(select(length > 0)) | .[]' "${TASKS_PATH:-tasks.yml}"
 
-# Sync skills registry repositories into ./skills
-skills-sync:
-    @scripts/skills_sync.sh
+# --- Namespace: task (list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, rejoin, watch, unlock) ---
+
+# Manage tasks (status, list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, watch, unlock)
+task target *args:
+    @just _task_{{ target }} {{ args }}
+
+[private]
+_task_status *args:
+    @scripts/status.sh {{ args }}
+
+[private]
+_task_list:
+    @scripts/list_tasks.sh
+
+[private]
+_task_tree:
+    @scripts/tree.sh
+
+[private]
+_task_add *args:
+    @scripts/add_task.sh {{ args }}
+
+[private]
+_task_plan *args:
+    #!/usr/bin/env bash
+    # Extract title, body, labels from args
+    TITLE="${1:-}" BODY="${2:-}" LABELS="${3:-}"
+    if [ "${PLAN_INTERACTIVE:-1}" = "0" ]; then
+      scripts/add_task.sh "$TITLE" "$BODY" "plan,$LABELS"
+    else
+      scripts/plan_chat.sh "$TITLE" "$BODY" "$LABELS"
+    fi
+
+[private]
+_task_route id="":
+    @scripts/route_task.sh {{ id }}
+
+[private]
+_task_run id="":
+    @scripts/run_task.sh {{ id }}
+
+[private]
+_task_next:
+    @scripts/next.sh
+
+[private]
+_task_poll *args:
+    @POLL_JOBS={{ if args == "" { "4" } else { args } }} scripts/poll.sh
+
+[private]
+_task_retry id:
+    @scripts/retry_task.sh {{ id }}
+
+[private]
+_task_unblock *args:
+    #!/usr/bin/env bash
+    if [ "${1:-}" = "all" ]; then
+      yq -r '.tasks[] | select(.status == "blocked") | .id' "${TASKS_PATH:-tasks.yml}" | xargs -n1 scripts/retry_task.sh
+    else
+      scripts/retry_task.sh "${1:?Usage: orchestrator task unblock <id|all>}"
+    fi
+
+[private]
+_task_agent id agent:
+    @scripts/set_agent.sh {{ id }} {{ agent }}
+
+[private]
+_task_stream id:
+    @scripts/stream_task.sh {{ id }}
+
+[private]
+_task_rejoin *args:
+    @POLL_JOBS={{ if args == "" { "4" } else { args } }} scripts/rejoin.sh
+
+[private]
+_task_watch *args:
+    @scripts/watch.sh {{ if args == "" { "10" } else { args } }}
+
+[private]
+_task_unlock:
+    @scripts/unlock.sh
 
 # --- Namespace: service (start, stop, restart, info, install, uninstall) ---
 
@@ -177,9 +179,9 @@ _service_install:
 _service_uninstall:
     @scripts/service_uninstall.sh
 
-# --- Namespace: gh (pull, push, sync, project) ---
+# --- Namespace: gh (pull, push, sync) ---
 
-# GitHub integration (pull, push, sync, project-info, project-create, project-list)
+# GitHub sync (pull, push, sync)
 gh target *args:
     @just _gh_{{ target }} {{ args }}
 
@@ -195,19 +197,25 @@ _gh_push:
 _gh_sync:
     @scripts/gh_sync.sh
 
+# --- Namespace: project (info, create, list) ---
+
+# GitHub Projects V2 (info, create, list)
+project target *args:
+    @just _project_{{ target }} {{ args }}
+
 [private]
-_gh_project-info *args:
+_project_info *args:
     @scripts/gh_project_info.sh {{ args }}
 
 [private]
-_gh_project-create title="":
+_project_create title="":
     @scripts/gh_project_create.sh "{{ title }}"
 
 [private]
-_gh_project-list org="" user="":
+_project_list org="" user="":
     @scripts/gh_project_list.sh "{{ org }}" "{{ user }}"
 
-# --- Namespace: job (add, list, remove, enable, disable, tick, install, uninstall) ---
+# --- Namespace: job (add, list, remove, enable, disable, tick) ---
 
 # Manage scheduled jobs (add, list, remove, enable, disable, tick)
 job target *args:
@@ -237,15 +245,89 @@ _job_disable id:
 _job_tick:
     @scripts/jobs_tick.sh
 
-[private]
-_job_install:
-    @scripts/jobs_install.sh
+# --- Namespace: skills (list, sync) ---
+
+# Manage skills registry (list, sync)
+skills target *args:
+    @just _skills_{{ target }} {{ args }}
 
 [private]
-_job_uninstall:
-    @scripts/jobs_uninstall.sh
+_skills_list:
+    @scripts/skills_list.sh
+
+[private]
+_skills_sync:
+    @scripts/skills_sync.sh
 
 # --- Backward-compatible aliases (hidden) ---
+
+[private]
+status *args:
+    @just task status {{ args }}
+
+[private]
+list:
+    @just task list
+
+[private]
+tree:
+    @just task tree
+
+[private]
+add title body="" labels="":
+    @just task add "{{ title }}" "{{ body }}" "{{ labels }}"
+
+[private]
+plan title body="" labels="":
+    @just task plan "{{ title }}" "{{ body }}" "{{ labels }}"
+
+[private]
+route id="":
+    @just task route {{ id }}
+
+[private]
+run id="":
+    @just task run {{ id }}
+
+[private]
+next:
+    @just task next
+
+[private]
+poll jobs="4":
+    @just task poll {{ jobs }}
+
+[private]
+retry id:
+    @just task retry {{ id }}
+
+[private]
+unblock id:
+    @just task unblock {{ id }}
+
+[private]
+unblock-all:
+    @just task unblock all
+
+[private]
+set-agent id agent:
+    @just task agent {{ id }} {{ agent }}
+
+[private]
+rejoin jobs="4":
+    @just task rejoin {{ jobs }}
+
+[private]
+watch interval="10":
+    @just task watch {{ interval }}
+
+[private]
+stream id:
+    @just task stream {{ id }}
+
+[private]
+unlock:
+    @just task unlock
 
 [private]
 start interval="10":
@@ -285,19 +367,19 @@ gh-sync:
 
 [private]
 gh-project-info *args:
-    @just gh project-info {{ args }}
+    @just project info {{ args }}
 
 [private]
 gh-project-create title="":
-    @just gh project-create "{{ title }}"
+    @just project create "{{ title }}"
 
 [private]
 gh-project-list *args:
-    @just gh project-list {{ args }}
+    @just project list {{ args }}
 
 [private]
 gh-project-info-fix:
-    @just gh project-info --fix
+    @just project info --fix
 
 [private]
 jobs-add *args:
@@ -324,12 +406,8 @@ jobs-tick:
     @just job tick
 
 [private]
-jobs-install:
-    @just job install
-
-[private]
-jobs-uninstall:
-    @just job uninstall
+skills-sync:
+    @just skills sync
 
 [private]
 service-install:

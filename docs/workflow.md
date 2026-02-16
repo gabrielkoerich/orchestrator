@@ -8,7 +8,7 @@ How the orchestrator runs tasks end-to-end.
 Issue → Branch + Worktree → Agent works → Push → PR → Review → Merge → Cleanup
 ```
 
-1. **Issue** — created via `orchestrator add`, `gh_pull`, or `jobs_tick`
+1. **Issue** — created via `orchestrator task add`, `gh_pull`, or `jobs_tick`
 2. **Branch + Worktree** — orchestrator creates via `gh issue develop` + `git worktree add`
 3. **Agent works** — runs inside worktree, edits files, commits changes
 4. **Push** — orchestrator pushes the branch after agent finishes
@@ -176,9 +176,9 @@ After an agent creates a PR:
 ## Retry / Unblock
 
 ```bash
-orchestrator retry <id>       # reset any task to new
-orchestrator unblock <id>     # reset a blocked task to new
-orchestrator unblock-all      # reset all blocked tasks to new
+orchestrator task retry <id>       # reset any task to new
+orchestrator task unblock <id>     # reset a blocked task to new
+orchestrator task unblock all      # reset all blocked tasks to new
 ```
 
 ## Max Attempts
@@ -220,12 +220,15 @@ Jobs are checked every tick. When a schedule matches, a task is created (or comm
 ## CLI Namespaces
 
 ```bash
+orchestrator task status|list|tree|add|plan|route|run|next|poll|retry|unblock|agent|stream|watch|unlock
 orchestrator service start|stop|restart|info|install|uninstall
-orchestrator gh pull|push|sync|project-info|project-create|project-list
-orchestrator job add|list|remove|enable|disable|tick|install|uninstall
+orchestrator gh pull|push|sync
+orchestrator project info|create|list
+orchestrator job add|list|remove|enable|disable|tick
+orchestrator skills list|sync
 ```
 
-Top-level commands: `list`, `status`, `dashboard`, `tree`, `add`, `plan`, `route`, `run`, `retry`, `unblock`, `unblock-all`, `next`, `poll`, `chat`, `log`, `stream`, `agents`, `projects`.
+Top-level commands: `init`, `chat`, `dashboard`, `log`, `start`, `stop`, `restart`, `info`, `agents`.
 
 ## Chat
 

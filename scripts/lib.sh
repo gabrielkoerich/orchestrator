@@ -662,11 +662,14 @@ task_field() {
 }
 
 # Update task fields atomically (with lock)
-# Usage: task_set <id> <yq_expr>
-# Example: task_set 3 '.status = "done" | .agent = "claude"'
+# Usage: task_set <id> <field> <value>
+# Example: task_set 3 .status "done"
+# Example: task_set 3 .agent "claude"
 task_set() {
-  local id="$1" expr="$2"
-  with_lock yq -i "(.tasks[] | select(.id == $id) | $expr)" "$TASKS_PATH"
+  local id="$1" field="$2" value="$3"
+  export _TS_VALUE="$value"
+  with_lock yq -i "(.tasks[] | select(.id == $id) | $field) = strenv(_TS_VALUE)" "$TASKS_PATH"
+  unset _TS_VALUE
 }
 
 # Count tasks matching a filter (uses dir_filter by default)
