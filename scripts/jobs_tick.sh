@@ -88,7 +88,7 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
 
     log_err "[jobs] job=$JOB_ID bash exit=$BASH_RC status=$BASH_STATUS"
     if [ -n "$BASH_OUTPUT" ]; then
-      log_err "[jobs] job=$JOB_ID output: $(printf '%s' "$BASH_OUTPUT" | head -5)"
+      log_err "[jobs] job=$JOB_ID output: $(printf '%.500s' "$BASH_OUTPUT")"
     fi
     continue
   fi
