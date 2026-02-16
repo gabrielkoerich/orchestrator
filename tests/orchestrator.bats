@@ -2510,6 +2510,41 @@ SH
   [ "$output" = "testorg/testrepo" ]
 }
 
+@test "all scripts set PROJECT_DIR before load_project_config" {
+  # This is a lint test — ensures no script calls load_project_config
+  # before setting PROJECT_DIR, which causes wrong config loading.
+  FAILURES=""
+  for f in "${REPO_DIR}"/scripts/*.sh; do
+    [ -f "$f" ] || continue
+    fname=$(basename "$f")
+    # Skip lib.sh (defines the function)
+    [ "$fname" = "lib.sh" ] && continue
+    grep -q 'load_project_config' "$f" || continue
+    pd_line=$(grep -n 'PROJECT_DIR=' "$f" | head -1 | cut -d: -f1)
+    lp_line=$(grep -n 'load_project_config' "$f" | head -1 | cut -d: -f1)
+    if [ -z "$pd_line" ] || [ "$pd_line" -gt "$lp_line" ]; then
+      FAILURES="${FAILURES}${fname}: PROJECT_DIR set at line ${pd_line:-MISSING}, load_project_config at line ${lp_line}\n"
+    fi
+  done
+  if [ -n "$FAILURES" ]; then
+    printf "Scripts with PROJECT_DIR after load_project_config:\n%b" "$FAILURES"
+    return 1
+  fi
+}
+
+@test "gh_sync.sh loads per-project config" {
+  cat > "${TMP_DIR}/.orchestrator.yml" <<YAML
+gh:
+  repo: "testorg/syncrepo"
+  enabled: false
+YAML
+
+  run env PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/gh_sync.sh" 2>&1
+  [ "$status" -eq 0 ]
+  # gh_sync exits early with "disabled" — proves it loaded the project config
+  [[ "$output" == *"disabled"* ]]
+}
+
 @test "unlock.sh removes lock files" {
   # Create fake lock files
   touch "${TASKS_PATH}.lock"

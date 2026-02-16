@@ -2,6 +2,8 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_yq
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+export PROJECT_DIR
 
 require_gh() {
   if ! command -v gh >/dev/null 2>&1; then
