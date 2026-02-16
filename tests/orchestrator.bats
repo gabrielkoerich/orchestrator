@@ -1545,8 +1545,8 @@ SH
   # Regression: agents must return structured JSON, not raw text
   run grep -n 'output-format\|--json\|--format json' "${REPO_DIR}/scripts/run_task.sh"
   [ "$status" -eq 0 ]
-  # claude must have --output-format stream-json
-  [[ "$output" == *"output-format stream-json"* ]]
+  # claude must have --output-format json
+  [[ "$output" == *"output-format json"* ]]
   # codex must have --json
   [[ "$output" == *"--json"* ]]
   # opencode must have --format json

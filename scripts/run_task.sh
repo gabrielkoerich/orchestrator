@@ -246,12 +246,10 @@ AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 RESPONSE=""
 STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}.txt"
-STREAM_FILE="${STATE_DIR}/stream-${TASK_ID}.jsonl"
 CMD_STATUS=0
-: > "$STREAM_FILE"
 case "$TASK_AGENT" in
   claude)
-    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --output-format stream-json --append-system-prompt <prompt> <message>"
+    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --output-format json --append-system-prompt <prompt> <message>"
     DISALLOW_ARGS=()
     if [ -n "$DISALLOWED_TOOLS" ]; then
       IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
@@ -262,11 +260,11 @@ case "$TASK_AGENT" in
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --permission-mode acceptEdits \
-      --allowedTools "Write(${OUTPUT_FILE})" \
+      --allowedTools "Write" \
       "${DISALLOW_ARGS[@]}" \
-      --output-format stream-json \
+      --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
-      "$AGENT_MESSAGE" 2>"$STDERR_FILE" | tee "$STREAM_FILE") || CMD_STATUS=$?
+      "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   codex)
     log_err "[run] cmd: codex -q ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>"
@@ -276,7 +274,7 @@ ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout codex -q \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --json \
-      "$FULL_MESSAGE" 2>"$STDERR_FILE" | tee "$STREAM_FILE") || CMD_STATUS=$?
+      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   opencode)
     log_err "[run] cmd: opencode run --format json <message>"
@@ -285,7 +283,7 @@ ${AGENT_MESSAGE}"
 ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
       --format json \
-      "$FULL_MESSAGE" 2>"$STDERR_FILE" | tee "$STREAM_FILE") || CMD_STATUS=$?
+      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   *)
     echo "Unknown agent: $TASK_AGENT" >&2
