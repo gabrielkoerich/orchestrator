@@ -334,14 +334,14 @@ case "$TASK_AGENT" in
       "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   codex)
-    log_err "[run] cmd: codex exec ${AGENT_MODEL:+--model $AGENT_MODEL} --json <message>"
+    log_err "[run] cmd: codex exec ${AGENT_MODEL:+-m $AGENT_MODEL} --json <stdin>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
-    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout codex exec \
+    RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
       ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
       --json \
-      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+      - 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   opencode)
     log_err "[run] cmd: opencode run --format json <message>"

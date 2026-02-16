@@ -606,7 +606,7 @@ YAML
   cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
 # Check if the plan prompt is being used (contains "planning agent")
-prompt="$*"
+prompt="$* $(cat)"
 if printf '%s' "$prompt" | grep -q "planning agent"; then
   cat <<'JSON'
 {"status":"done","summary":"planned the work","accomplished":["analyzed task"],"remaining":[],"blockers":[],"files_changed":[],"needs_help":false,"reason":"","delegations":[{"title":"Step 1","body":"Do first thing","labels":["backend"],"suggested_agent":"codex"},{"title":"Step 2","body":"Do second thing","labels":["tests"],"suggested_agent":"codex"}]}
