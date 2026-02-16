@@ -129,33 +129,7 @@ info:
 
 # Stream live agent output for a task
 stream id:
-    @tail -f "${STATE_DIR:-$HOME/.orchestrator/.orchestrator}/stream-{{ id }}.jsonl" 2>/dev/null | python3 -c "
-import sys, json
-for line in sys.stdin:
-    try:
-        ev = json.loads(line.strip())
-    except: continue
-    t = ev.get('type', '')
-    if t == 'assistant' and 'message' in ev:
-        for block in ev['message'].get('content', []):
-            if block.get('type') == 'text':
-                print(block['text'])
-    elif t == 'tool_use':
-        tool = ev.get('tool', ev.get('name', ''))
-        inp = ev.get('input', {})
-        if tool == 'Bash':
-            print(f'  \$ {inp.get(\"command\", \"?\")[:120]}')
-        elif tool in ('Edit', 'Write'):
-            print(f'  {tool}: {inp.get(\"file_path\", \"?\")}')
-        elif tool == 'Read':
-            print(f'  Read: {inp.get(\"file_path\", \"?\")}')
-        else:
-            print(f'  {tool}')
-    elif t == 'result':
-        cost = ev.get('total_cost_usd', 0)
-        dur = ev.get('duration_ms', 0) / 1000
-        print(f'--- Done ({dur:.0f}s, \${cost:.2f}) ---')
-"
+    @scripts/stream_task.sh {{ id }}
 
 # Remove stale task locks
 unlock:
