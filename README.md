@@ -40,29 +40,31 @@ cd ~/projects/my-app
 orchestrator init          # configure project (optional GitHub setup)
 orchestrator add "title"   # add a task
 orchestrator next          # route + run next task
-orchestrator serve         # start background server
+orchestrator start         # start background server
 ```
 
 ## Files
-- `tasks.yml` — task database (YAML)
-  - Not committed; generated from `tasks.example.yml`
-- `jobs.yml` — scheduled job definitions (YAML)
-  - Not committed; generated from `jobs.example.yml`
-- `config.yml` — runtime configuration (YAML)
-  - Not committed; generated from `config.example.yml`
-- `skills.yml` — approved skill repositories and skill catalog
+
+All runtime state lives in `~/.orchestrator/` (`ORCH_HOME`):
+- `tasks.yml` — task database
+- `jobs.yml` — scheduled job definitions
+- `config.yml` — runtime configuration
+- `skills.yml` — approved skill repositories and catalog
 - `skills/` — cloned skill repositories (via `skills-sync`)
-- `prompts/system.md` — system prompt (output format, constraints)
+- `contexts/` — persisted context files per task/profile
+- `.orchestrator/` — runtime state (pid, logs, locks, output, tool history, prompts)
+
+Source files:
+- `prompts/system.md` — system prompt (output format, workflow, constraints)
 - `prompts/agent.md` — execution prompt (task details + enriched context)
-- `prompts/plan.md` — planning/decomposition prompt (break task into subtasks)
+- `prompts/plan.md` — planning/decomposition prompt
 - `prompts/route.md` — routing + profile generation prompt
 - `prompts/review.md` — optional review agent prompt
 - `scripts/*.sh` — orchestration commands
-- `.orchestrator.example.yml` — template for per-project config override
+- `scripts/normalize_json.py` — JSON extraction + tool history + token usage
 - `scripts/cron_match.py` — lightweight cron expression matcher
-- `tests/orchestrator.bats` — tests
-- `contexts/` — persisted context files per task/profile
-- `.orchestrator/` — runtime state (pid/log/locks/backoff/output files)
+- `tests/orchestrator.bats` — 102 tests
+- `.orchestrator.example.yml` — template for per-project config override
 
 ## Task Model
 Each task includes:
@@ -77,6 +79,11 @@ Each task includes:
 - `accomplished`, `remaining`, `blockers`
 - `files_changed`, `needs_help`
 - `attempts`, `last_error`
+- `duration`: execution time in seconds
+- `input_tokens`, `output_tokens`: token usage from agent
+- `prompt_hash`: SHA-256 prefix of the prompt sent to the agent
+- `stderr_snippet`: last 500 chars of agent stderr
+- `last_comment_hash`: content-hash for GitHub comment dedup
 - `review_decision`, `review_notes`
 - `history`: status changes with timestamps
 
@@ -128,7 +135,7 @@ The routing prompt is in `prompts/route.md`. The router only classifies — it n
 ## Agentic Mode
 
 Once routed, agents run in full agentic mode with tool access:
-- **Claude**: `-p` flag (non-interactive agentic mode), `--output-format json`, system prompt via `--append-system-prompt`
+- **Claude**: `-p` flag (non-interactive agentic mode), `--permission-mode acceptEdits`, `--output-format json`, system prompt via `--append-system-prompt`
 - **Codex**: `-q` flag (quiet non-interactive mode), `--json`, system+agent prompt combined
 - **OpenCode**: `opencode run --format json` with combined prompt
 
@@ -149,14 +156,17 @@ Every agent receives a rich context built from multiple sources:
 
 | Context | Source | When | Description |
 |---|---|---|---|
-| **System prompt** | `prompts/system.md` | Always | Output format, JSON schema, `reason` requirement, constraints |
+| **System prompt** | `prompts/system.md` | Always | Output format, JSON schema, workflow requirements, constraints |
 | **Task details** | `tasks.yml` | Always | Title, body, labels, agent profile (role/skills/tools/constraints) |
-| **Repo tree** | `find` in `$PROJECT_DIR` | Always | Truncated file listing (up to 200 files, excludes `.git`, `node_modules`, `vendor`, `.orchestrator`, `target`, `__pycache__`, `.venv`) |
-| **Project instructions** | `$PROJECT_DIR/CLAUDE.md` + `README.md` | If files exist | Project-specific instructions and documentation |
-| **Skills docs** | `skills/{id}/SKILL.md` | If skills selected by router | Full skill documentation for each selected skill |
-| **Prior run context** | `contexts/task-{id}.md` | On retries | Logs from previous attempts (status, summary, reason, files changed) |
+| **Error history** | `tasks.yml` `.history[]` | On retries | Last 5 status transitions with timestamps (agent sees what already failed) |
+| **Last error** | `tasks.yml` `.last_error` | On retries | Most recent error message |
+| **GitHub issue comments** | GitHub API | If issue linked | Last 10 comments on the linked issue (agent sees discussion) |
+| **Prior run context** | `contexts/task-{id}.md` | On retries | Logs from previous attempts + tool call summaries |
+| **Repo tree** | `git ls-files` / `find` | Always | Truncated file listing (up to 200 files) |
+| **Project instructions** | `CLAUDE.md` + `AGENTS.md` + `README.md` | If files exist | Project-specific instructions and documentation |
+| **Skills docs** | `skills/{id}/SKILL.md` | If skills selected | Full skill documentation for each selected skill |
 | **Parent context** | `tasks.yml` | For child tasks | Parent task summary + sibling task statuses |
-| **Git diff** | `git diff --stat HEAD` in `$PROJECT_DIR` | On retries (attempts > 0) | Current uncommitted changes so the agent sees what was already modified |
+| **Git diff** | `git diff --stat HEAD` | On retries (attempts > 0) | Current uncommitted changes |
 | **Output file path** | `.orchestrator/output-{id}.json` | Always | Where the agent writes its JSON results |
 
 ### How Context Flows
@@ -164,20 +174,30 @@ Every agent receives a rich context built from multiple sources:
 ```
 run_task.sh
 ├── load_task()                    → TASK_TITLE, TASK_BODY, TASK_LABELS, AGENT_PROFILE_JSON, ...
-├── load_task_context()            → TASK_CONTEXT     (prior run logs from contexts/task-{id}.md)
+├── fetch_issue_comments()         → ISSUE_COMMENTS   (last 10 GitHub issue comments)
+├── task history + last_error      → TASK_HISTORY, TASK_LAST_ERROR
+├── load_task_context()            → TASK_CONTEXT     (prior run logs + tool summaries)
 ├── build_parent_context()         → PARENT_CONTEXT   (parent summary + sibling statuses)
-├── build_project_instructions()   → PROJECT_INSTRUCTIONS  (CLAUDE.md + README.md content)
+├── build_project_instructions()   → PROJECT_INSTRUCTIONS  (CLAUDE.md + AGENTS.md + README.md)
 ├── build_skills_docs()            → SKILLS_DOCS      (SKILL.md for each selected skill)
 ├── build_repo_tree()              → REPO_TREE        (truncated file listing)
 ├── build_git_diff()               → GIT_DIFF         (on retries only)
 │
-├── render_template("prompts/system.md")  → SYSTEM_PROMPT  (output format + constraints)
+├── render_template("prompts/system.md")  → SYSTEM_PROMPT  (workflow + output format)
 ├── render_template("prompts/agent.md")   → AGENT_MESSAGE  (all context above)
 │
-└── agent invocation (cd $PROJECT_DIR)
-    ├── claude -p --output-format json --append-system-prompt "$SYSTEM_PROMPT" "$AGENT_MESSAGE"
-    ├── codex -q --json "$SYSTEM_PROMPT\n\n$AGENT_MESSAGE"
-    └── opencode run --format json "$SYSTEM_PROMPT\n\n$AGENT_MESSAGE"
+├── agent invocation (cd $PROJECT_DIR)
+│   ├── claude -p --permission-mode acceptEdits --output-format json ...
+│   ├── codex -q --json ...
+│   └── opencode run --format json ...
+│
+└── post-agent
+    ├── extract tool history         → tools-{id}.json
+    ├── extract token usage          → input_tokens, output_tokens
+    ├── capture stderr snippet       → stderr_snippet (500 chars)
+    ├── calculate duration           → duration (seconds)
+    ├── push branch if not main      → git push -u origin <branch>
+    └── store all metadata in tasks.yml
 ```
 
 ### Output
@@ -205,17 +225,17 @@ The agent writes results to `.orchestrator/output-{task_id}.json`. If the file i
 | `orchestrator init --repo "org/repo"` | Non-interactive init with GitHub repo. |
 | `orchestrator projects` | List all projects with tasks. |
 | `orchestrator agents` | List installed agent CLIs. |
-| `orchestrator serve` | Start server (poll + jobs + GitHub sync + auto-restart). |
+| `orchestrator chat` | Interactive chat with the orchestrator. |
+| `orchestrator start` | Start server (uses `brew services` if installed via brew). |
 | `orchestrator stop` | Stop server. |
 | `orchestrator restart` | Restart server. |
-| `brew services start orchestrator` | macOS background service (Homebrew). |
-| `orchestrator service-install` | macOS background service (from-source install). |
-| `orchestrator service-uninstall` | Remove macOS background service. |
+| `orchestrator info` | Show service status. |
+| `orchestrator service-install` | macOS launchd service (from-source install). |
+| `orchestrator service-uninstall` | Remove macOS launchd service. |
 | `orchestrator log` | Tail orchestrator log. |
 | `orchestrator log 200` | Tail last 200 lines of log. |
 | `orchestrator set-agent 1 claude` | Force a task to use a specific agent. |
 | `orchestrator skills-sync` | Sync skills from registry to `skills/`. |
-| `orchestrator test` | Run tests. |
 | `orchestrator --version` | Show version. |
 
 ### Scheduled Jobs
@@ -230,32 +250,6 @@ The agent writes results to `.orchestrator/output-{task_id}.json`. If the file i
 | `orchestrator jobs-tick` | Check and run due jobs (called automatically). |
 | `orchestrator jobs-install` | Install crontab entry (ticks every minute). |
 | `orchestrator jobs-uninstall` | Remove crontab entry. |
-
-## Install As Global Tool
-
-### Via Homebrew (recommended)
-```bash
-brew tap gabrielkoerich/orchestrator
-brew install orchestrator
-```
-
-### From source
-```bash
-just install
-```
-
-This installs to `~/.orchestrator` and creates a wrapper at `~/.bin/orchestrator`.
-Make sure `~/.bin` is on your `PATH`:
-```bash
-export PATH="$HOME/.bin:$PATH"
-```
-
-Then run from any project:
-```bash
-cd ~/projects/my-app
-orchestrator init    # optional: configure GitHub integration
-orchestrator serve
-```
 
 ## Per-Project Isolation
 
@@ -278,23 +272,19 @@ orchestrator projects
 
 ## Background Service (macOS)
 
-### Via Homebrew (recommended)
 ```bash
-brew services start orchestrator    # start (auto-starts on login)
-brew services stop orchestrator     # stop
-brew services restart orchestrator  # restart
+orchestrator start     # start (uses brew services if installed via brew, otherwise runs directly)
+orchestrator stop      # stop
+orchestrator restart   # restart
+orchestrator info      # check status
 ```
+
+When installed via Homebrew, these commands delegate to `brew services` automatically (auto-starts on login, auto-restarts on crash).
 
 ### Via launchd (from-source installs)
 ```bash
-orchestrator service-install    # install and start
+orchestrator service-install    # install and start launchd service
 orchestrator service-uninstall  # stop and remove
-```
-
-The service runs `orchestrator serve` in the background. Check status:
-```bash
-brew services list | grep orchestrator   # Homebrew
-launchctl list | grep orchestrator       # launchd
 ```
 
 ## Scheduled Jobs (Cron)
@@ -405,12 +395,15 @@ When an agent fails, the orchestrator classifies the error and blocks the task:
 | **Generic failure** | Any non-zero exit | Block + comment on issue |
 | **Invalid response** | No JSON in output file or stdout | Block + comment on issue |
 
+### Retry Loop Detection
+If the same error repeats 3 times (4+ attempts), the orchestrator detects a retry loop and blocks the task permanently with a clear message.
+
 ### What Happens on Failure
 1. Task status set to `blocked` (no auto-retry)
 2. Error details saved to `last_error` field in `tasks.yml`
 3. Error logged to task history with timestamp
-4. **GitHub issue comment** posted with error details, agent name, and attempt count
-5. **`blocked` label** added to the GitHub issue
+4. **GitHub issue comment** posted with full details (see below)
+5. **Red `blocked` label** added to the GitHub issue (auto-created if missing)
 
 ### Unblocking
 Tasks stay blocked until you manually investigate and unblock them:
@@ -453,30 +446,84 @@ TAIL_LOG=1 orchestrator serve
 
 | File | Path | Description |
 |---|---|---|
-| **Task context** | `contexts/task-{id}.md` | Appended after each run: timestamp, status, summary, reason, files changed |
+| **Task context** | `contexts/task-{id}.md` | Appended after each run: timestamp, status, summary, reason, files, tool summary |
 | **Task history** | `tasks.yml` `.history[]` | Status transitions with timestamps and notes |
 | **Agent output** | `.orchestrator/output-{id}.json` | Structured JSON from the last agent run |
-| **Agent prompt** | `.orchestrator/prompt-{id}.txt` | Full system prompt + agent message sent to the agent |
+| **Agent prompt** | `.orchestrator/prompt-{id}.txt` | Full system prompt + agent message (with SHA-256 hash) |
 | **Agent response** | `.orchestrator/response-{id}.txt` | Raw stdout from the agent |
 | **Agent stderr** | `.orchestrator/stderr-{id}.txt` | Stderr captured from the agent (auth errors, warnings) |
+| **Tool history** | `.orchestrator/tools-{id}.json` | Every tool call the agent made (Bash, Edit, Read, etc.) with error flags |
 | **Route prompt** | `.orchestrator/route-prompt-{id}.txt` | The prompt sent to the router (for debugging routing decisions) |
 | **Failed response** | `contexts/response-{id}.md` | Raw agent output when JSON parsing fails |
 
-### GitHub (if synced)
+### GitHub Issue Comments
 
-When GitHub sync is enabled, status updates are also posted as issue comments — including summary, reason, blockers, files changed, and attempt count. Blocked/needs_review tasks tag `@owner` for attention.
+When GitHub sync is enabled, each status update posts a structured comment on the linked issue:
+
+```
+## 🟣 Claude Fixed the authentication bug     ← agent badge + summary as title
+
+| | |
+|---|---|
+| **Status** | `done` |                       ← metadata table
+| **Agent** | claude |
+| **Model** | `claude-sonnet-4-5-20250929` |
+| **Attempt** | 2 |
+| **Duration** | 3m 42s |
+| **Tokens** | 15k in / 3k out |
+| **Prompt** | `a1b2c3d4` |
+
+### Errors & Blockers                          ← only when blocked
+**Reason:** SSH key not configured
+> `git push: Permission denied (publickey)`
+- Need SSH key configured for git push
+
+### Accomplished                               ← bullet list
+- Fixed memcmp offset from 40 to 48
+- Added test coverage for edge case
+
+### Remaining
+- Deploy to staging
+
+### Files Changed
+- `src/auth.ts`
+- `tests/auth.test.ts`
+
+### Agent Activity                             ← tool call summary
+| Tool | Calls |
+|------|-------|
+| Bash | 12 |
+| Edit | 5 |
+| Read | 8 |
+
+<details><summary>Agent stderr</summary>       ← collapsed
+...
+</details>
+
+<details><summary>Prompt sent to agent</summary> ← collapsed
+...
+</details>
+```
+
+Features:
+- **Agent badges**: 🟣 Claude, 🟢 Codex, 🔵 OpenCode
+- **Content-hash dedup**: identical comments are not re-posted (prevents spam)
+- **Atomic sync**: `gh_synced_at` copies `updated_at` at write time (no stale variable bugs)
+- **Blocked label**: red `blocked` label auto-applied/removed based on status
+- **Owner ping**: `@owner` tagged on blocked tasks
 
 ### What Gets Logged Where
 
-| Event | Server log | Task context | Task history | GitHub | Per-task files |
+| Event | Server log | Task context | Task history | GitHub comment | Per-task files |
 |---|---|---|---|---|---|
 | Tick/poll cycle | x | | | | |
 | Task started | x | | x | | prompt saved |
-| Agent completed | x | x | x | x | response + stderr |
-| Agent blocked/stuck | x | x | x | x (comment + label) | response + stderr |
+| Agent completed | x (duration, tokens, tools) | x (tool summary) | x | x (full report) | response + stderr + tools |
+| Agent blocked/stuck | x | x | x | x (comment + label) | response + stderr + tools |
 | Auth/billing error | x | | x | x (comment + label) | stderr |
 | Timeout | x | | x | x (comment + label) | |
 | Invalid response | x | x (raw saved) | x | x (comment + label) | response |
+| Retry loop (3x same error) | x | | x | x (comment + label) | |
 | Review result | x | | x | x | |
 | Delegation | x | | x | x | |
 | Job triggered | x | | | | |
@@ -676,11 +723,12 @@ orchestrator gh-sync
 
 ### Error Comments & Blocking
 When a task fails (any error), the orchestrator:
-1. Posts a comment on the linked GitHub issue with the error details
-2. Adds a `blocked` label to the issue
+1. Posts a structured comment on the linked GitHub issue (see "GitHub Issue Comments" above)
+2. Adds a red `blocked` label to the issue (auto-created if missing)
 3. Sets the task status to `blocked`
+4. Tags `@owner` for attention
 
-The comment includes: error message, agent name, and attempt count. To unblock, fix the issue, remove the `blocked` label, and set the task back to `new`.
+Comments include: agent badge, status metadata table (agent, model, attempt, duration, tokens), error details, blockers, tool activity summary, and collapsed stderr/prompt. Content-hash dedup prevents duplicate comments on repeated syncs.
 
 ### Notes
 - The repo is resolved from `config.yml` or `gh repo view`.
@@ -728,6 +776,54 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 ---
 
 ## Changelog
+
+### v0.8.0
+
+#### Agent Visibility & Reporting
+- **Duration tracking**: agent execution time calculated and stored in task YAML, shown in GitHub comments
+- **Token usage**: extracted from claude JSON event stream via `normalize_json.py --usage`, shown as "15k in / 3k out"
+- **Tool call history**: every tool call (Bash, Edit, Read, etc.) extracted and saved to `.orchestrator/tools-{id}.json`
+- **Tool activity table**: GitHub comments show tool call counts by type with collapsed failed command details
+- **Agent stderr**: last 500 chars captured as `stderr_snippet`, shown in collapsed section on GitHub comments
+- **Structured completion log**: single line with all metrics — `DONE status=done agent=claude duration=3m42s tokens=15kin/3kout tools=12`
+
+#### GitHub Comment Redesign
+- **Agent badges**: 🟣 Claude, 🟢 Codex, 🔵 OpenCode in comment headers
+- **Metadata table**: status, agent, model, attempt, duration, tokens, prompt hash
+- **Structured sections**: Errors & Blockers, Accomplished, Remaining, Files Changed, Agent Activity
+- **Content-hash dedup**: identical comments not re-posted (prevents spam from repeated syncs)
+- **Atomic gh_synced_at**: copies `updated_at` at write time via yq self-reference (no stale variable bugs)
+- **Red `blocked` label**: auto-created and applied when tasks are blocked, removed when unblocked
+
+#### Agent Context Enrichment
+- **GitHub issue comments**: last 10 comments fetched and injected into agent prompt (agent sees discussion)
+- **Error history**: last 5 history entries shown to agent with "try a DIFFERENT approach" instruction
+- **Tool call summaries**: appended to task context so retries see what previous attempts ran
+- **`--permission-mode acceptEdits`**: ensures claude can write files reliably in headless mode
+
+#### Agent Workflow
+- **gh-issue-worktree enforcement**: system prompt requires worktree workflow when skill is available
+- **Post-agent git push**: orchestrator pushes the agent's branch if there are unpushed commits (not main/master)
+- **Retry loop detection**: if the same error repeats 3 times (4+ attempts), task is permanently blocked
+- **Agent/model in output JSON**: agents report their identity, orchestrator injects if missing
+
+#### Service Routing
+- **`orchestrator start`**: delegates to `brew services start` when installed via Homebrew, runs directly otherwise
+- **`orchestrator stop/restart/info`**: same brew-aware routing
+- **`serve` hidden**: internal recipe used by brew service definition, not shown in `--list`
+- **`ORCH_BREW=1`**: set by Formula wrapper to enable brew-aware routing
+
+#### Skills System
+- **Auto-build catalog**: if `skills.yml` catalog is empty, auto-builds from SKILL.md files on disk
+- **Skills sync on init**: `orchestrator init` syncs skills immediately
+- **ORCH_HOME paths**: skills sync uses `~/.orchestrator/` for state
+
+#### State Management
+- **ORCH_HOME default**: all state files (`tasks.yml`, `jobs.yml`, `config.yml`, etc.) default to `~/.orchestrator/`
+- **Global task database**: tasks are not per-project; each task has a `dir` field referencing its project
+
+#### Tests
+- 102 tests (up from 61), covering: duration_fmt, token extraction, tool summary, comment dedup, retry loop detection, brew routing, service commands, blocked label, skills catalog, ORCH_HOME paths
 
 ### v0.1.0
 
@@ -806,4 +902,4 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 - Auto-release workflow: tags new versions every Friday using conventional commits, updates formula automatically.
 
 #### Tests
-- 28 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay, plan/decompose mode, per-project filtering, init, dir field on jobs.
+- 28 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay, plan/decompose mode, per-project filtering, init, dir field on jobs. (Now 102 tests as of v0.8.0.)
