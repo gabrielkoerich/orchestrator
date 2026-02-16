@@ -1858,8 +1858,8 @@ SH
   [ "$output" -ge 3 ]
 }
 
-@test "system prompt enforces gh-issue-worktree workflow" {
-  run grep -c 'gh issue develop\|worktree\|Do NOT run.*git push\|worktree-janitor' "${REPO_DIR}/prompts/system.md"
+@test "system prompt enforces workflow rules" {
+  run grep -c 'worktree\|Do NOT run.*git push\|Do NOT mark.*done\|commit' "${REPO_DIR}/prompts/system.md"
   [ "$status" -eq 0 ]
   [ "$output" -ge 3 ]
 }

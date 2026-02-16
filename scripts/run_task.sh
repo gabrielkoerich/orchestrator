@@ -126,6 +126,38 @@ if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_I
   fi
 fi
 
+# Set up worktree for coding tasks — orchestrator creates it, not the agent
+export WORKTREE_DIR=""
+DECOMPOSE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .decompose // false" "$TASKS_PATH")
+if [ "$DECOMPOSE" = "true" ]; then
+  log_err "[run] task=$TASK_ID decompose=true, skipping worktree (planning task)"
+elif [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
+  PROJECT_NAME=$(basename "$PROJECT_DIR")
+  BRANCH_SLUG=$(printf '%s' "$TASK_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 40)
+  BRANCH_NAME="gh-task-${GH_ISSUE_NUMBER}-${BRANCH_SLUG}"
+  WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
+  export BRANCH_NAME
+
+  if [ ! -d "$WORKTREE_DIR" ]; then
+    log_err "[run] task=$TASK_ID creating worktree at $WORKTREE_DIR"
+    # Register branch with GitHub issue
+    cd "$PROJECT_DIR" && gh issue develop "$GH_ISSUE_NUMBER" --base main --name "$BRANCH_NAME" 2>/dev/null || true
+    # Create branch if it doesn't exist
+    cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
+    # Create worktree
+    mkdir -p "$(dirname "$WORKTREE_DIR")"
+    cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
+  fi
+
+  if [ -d "$WORKTREE_DIR" ]; then
+    PROJECT_DIR="$WORKTREE_DIR"
+    export PROJECT_DIR
+    log_err "[run] task=$TASK_ID agent will run in worktree $WORKTREE_DIR"
+  else
+    log_err "[run] task=$TASK_ID worktree creation failed, running in $PROJECT_DIR"
+  fi
+fi
+
 # Extract error history and last_error for agent context
 export TASK_HISTORY=""
 TASK_HISTORY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |

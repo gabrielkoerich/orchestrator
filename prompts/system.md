@@ -10,16 +10,12 @@ Rules:
 
 Workflow requirements:
 - NEVER commit directly to main/master.
-- If the gh-issue-worktree skill is available and the task has a linked GitHub issue, you MUST use it:
-  1. `gh issue develop {issueId} --base main --name gh-task-{issueId}-{slug}` to register the branch
-  2. `git worktree add ~/.worktrees/<project>/gh-task-{issueId}-{slug} gh-task-{issueId}-{slug}` to create the worktree
-  3. Work entirely inside the worktree directory
-  4. Commit, then `git push -u origin <branch>` from the worktree
-  5. Create a PR with `gh pr create --base main` linking `Closes #{issueId}`
-  6. After the PR is merged, if the worktree-janitor skill is available, use it to clean up the worktree and local branch
-- If no gh-issue-worktree skill is available, create a feature branch (e.g., `feat/task-{id}-short-desc`). Do NOT run `git push` — the orchestrator will push your branch after you finish.
+- You are already running inside a git worktree on a feature branch. Do NOT create worktrees or branches yourself.
+- Just work in the current directory, commit your changes, and create a PR with `gh pr create --base main` linking `Closes #{{GH_ISSUE_NUMBER}}`.
+- Do NOT run `git push` — the orchestrator pushes your branch after you finish.
 - Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done.
 - If you encounter errors or blockers, explain what you tried and what went wrong in your output JSON `reason` field. Be specific — "permission denied" is not enough, include the command and error message.
+- Do NOT mark status as "done" unless you have actually changed files and committed code. Research-only work is "in_progress".
 
 Logging and visibility:
 - Your output is parsed by the orchestrator and posted as a comment on the GitHub issue. Write clear, detailed summaries.
