@@ -12,12 +12,12 @@ if [ ! -f "$ORCH_BIN" ]; then
 fi
 
 mkdir -p "$STATE_DIR"
-CRON_CMD="* * * * * ${ORCH_BIN} jobs-tick >> ${STATE_DIR}/jobs.log 2>&1"
+CRON_CMD="* * * * * ${ORCH_BIN} job tick >> ${STATE_DIR}/jobs.log 2>&1"
 
-# Check if already installed
-if crontab -l 2>/dev/null | grep -qF "orchestrator jobs-tick"; then
+# Check if already installed (match both old and new command names)
+if crontab -l 2>/dev/null | grep -qE "orchestrator (jobs-tick|job tick)"; then
   echo "Crontab entry already exists:"
-  crontab -l 2>/dev/null | grep "orchestrator jobs-tick"
+  crontab -l 2>/dev/null | grep -E "orchestrator (jobs-tick|job tick)"
   exit 0
 fi
 

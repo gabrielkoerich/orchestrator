@@ -61,7 +61,39 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
     fi
   fi
 
-  # Create task from job template
+  JOB_TYPE=$(yq -r ".jobs[$i].type // \"task\"" "$JOBS_PATH")
+  JOB_DIR=$(yq -r ".jobs[$i].dir // \"\"" "$JOBS_PATH")
+
+  if [ "$JOB_TYPE" = "bash" ]; then
+    # Bash job: run command directly, no LLM involved
+    JOB_CMD=$(yq -r ".jobs[$i].command // \"\"" "$JOBS_PATH")
+    if [ -z "$JOB_CMD" ]; then
+      log_err "[jobs] job=$JOB_ID type=bash but no command, skipping"
+      continue
+    fi
+
+    log_err "[jobs] job=$JOB_ID running bash command"
+    BASH_RC=0
+    BASH_OUTPUT=$(cd "${JOB_DIR:-.}" && bash -c "$JOB_CMD" 2>&1) || BASH_RC=$?
+
+    NOW=$(now_iso)
+    export NOW
+    if [ "$BASH_RC" -eq 0 ]; then
+      BASH_STATUS="done"
+    else
+      BASH_STATUS="failed"
+    fi
+    export BASH_STATUS
+    yq -i ".jobs[$i].last_run = strenv(NOW) | .jobs[$i].last_task_status = strenv(BASH_STATUS)" "$JOBS_PATH"
+
+    log_err "[jobs] job=$JOB_ID bash exit=$BASH_RC status=$BASH_STATUS"
+    if [ -n "$BASH_OUTPUT" ]; then
+      log_err "[jobs] job=$JOB_ID output: $(printf '%.500s' "$BASH_OUTPUT")"
+    fi
+    continue
+  fi
+
+  # Task job: create a task for agent processing
   JOB_TITLE=$(yq -r ".jobs[$i].task.title" "$JOBS_PATH")
   JOB_BODY=$(yq -r ".jobs[$i].task.body // \"\"" "$JOBS_PATH")
   JOB_LABELS=$(yq -r ".jobs[$i].task.labels // [] | join(\",\")" "$JOBS_PATH")
@@ -73,8 +105,6 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
   else
     JOB_LABELS="scheduled,job:${JOB_ID}"
   fi
-
-  JOB_DIR=$(yq -r ".jobs[$i].dir // \"\"" "$JOBS_PATH")
 
   ADD_OUTPUT=$(PROJECT_DIR="$JOB_DIR" "${SCRIPT_DIR}/add_task.sh" "$JOB_TITLE" "$JOB_BODY" "$JOB_LABELS")
   NEW_TASK_ID=$(printf '%s' "$ADD_OUTPUT" | grep -oE 'task [0-9]+' | grep -oE '[0-9]+')

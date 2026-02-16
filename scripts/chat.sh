@@ -41,6 +41,27 @@ dispatch() {
       labels=$(printf '%s' "$params" | jq -r '.labels // ""')
       "${SCRIPT_DIR}/add_task.sh" "$title" "$body" "$labels"
       ;;
+    plan_task)
+      local title body labels
+      title=$(printf '%s' "$params" | jq -r '.title // ""')
+      body=$(printf '%s' "$params" | jq -r '.body // ""')
+      labels=$(printf '%s' "$params" | jq -r '.labels // ""')
+      "${SCRIPT_DIR}/add_task.sh" "$title" "$body" "plan,${labels}"
+      ;;
+    retry)
+      local id
+      id=$(printf '%s' "$params" | jq -r '.id // ""')
+      "${SCRIPT_DIR}/retry_task.sh" "$id"
+      ;;
+    unblock)
+      local id
+      id=$(printf '%s' "$params" | jq -r '.id // ""')
+      if [ "$id" = "all" ]; then
+        yq -r '.tasks[] | select(.status == "blocked") | .id' "$TASKS_PATH" | xargs -n1 "${SCRIPT_DIR}/retry_task.sh"
+      else
+        "${SCRIPT_DIR}/retry_task.sh" "$id"
+      fi
+      ;;
     add_job)
       local schedule title body labels agent
       schedule=$(printf '%s' "$params" | jq -r '.schedule // ""')
@@ -146,16 +167,18 @@ dispatch() {
   esac
 }
 
+# Persistent readline history
+READLINE_HIST="${STATE_DIR}/chat_readline_history"
+touch "$READLINE_HIST"
+history -r "$READLINE_HIST"
+
 # Main REPL loop
 echo "orchestrator chat (type 'exit' to quit)"
 echo ""
 
 while true; do
-  # Prompt
-  printf '> '
-
-  # Read input (exit on EOF / Ctrl-D)
-  if ! IFS= read -r USER_INPUT; then
+  # Read input with readline (arrow keys, history)
+  if ! IFS= read -e -p "> " USER_INPUT; then
     echo ""
     break
   fi
@@ -167,6 +190,10 @@ while true; do
   if [ -z "$USER_INPUT" ]; then
     continue
   fi
+
+  # Save to readline history
+  history -s "$USER_INPUT"
+  history -w "$READLINE_HIST"
 
   # Exit commands
   case "$USER_INPUT" in

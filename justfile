@@ -7,77 +7,122 @@ _default:
 version:
     @echo "${ORCH_VERSION:-$(git describe --tags --always 2>/dev/null || echo unknown)}"
 
-# List all tasks (id, status, agent, parent, title)
-list:
-    @scripts/list_tasks.sh
+# Initialize orchestrator for current project
+init *args="":
+    @scripts/init.sh {{ args }}
 
-# Show status counts and recent tasks
-status:
-    @scripts/status.sh
+# Interactive chat with the orchestrator
+chat:
+    @scripts/chat.sh
 
-# Show status counts and grouped tasks by status
+# Overview: tasks, projects, worktrees
 dashboard:
     @scripts/dashboard.sh
 
-# Show task tree with parent/child hierarchy
-tree:
-    @scripts/tree.sh
-
-# Add a task (title required, body/labels optional)
-add title body="" labels="":
-    @scripts/add_task.sh "{{ title }}" "{{ body }}" "{{ labels }}"
-
-# Interactively plan and decompose a goal into subtasks
-plan title body="" labels="":
+# Tail orchestrator logs (server + errors)
+log tail="50":
     #!/usr/bin/env bash
-    if [ "${PLAN_INTERACTIVE:-1}" = "0" ]; then
-      scripts/add_task.sh "{{ title }}" "{{ body }}" "plan,{{ labels }}"
+    STATE="${STATE_DIR:-.orchestrator}"
+    BREW_LOG="${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log"
+    # Show error log if it exists
+    if [ -f "$STATE/orchestrator.error.log" ] && [ -s "$STATE/orchestrator.error.log" ]; then
+      echo "=== Error Log ==="
+      tail -n {{ tail }} "$STATE/orchestrator.error.log"
+      echo ""
+    fi
+    echo "=== Server Log ==="
+    if [ -f "$BREW_LOG" ]; then
+      tail -n {{ tail }} "$BREW_LOG"
+    elif [ -f "$STATE/orchestrator.log" ]; then
+      tail -n {{ tail }} "$STATE/orchestrator.log"
     else
-      scripts/plan_chat.sh "{{ title }}" "{{ body }}" "{{ labels }}"
+      echo "(no log file found)"
     fi
 
-# Route a task (choose agent/profile/skills)
-route id="":
+# List installed agent CLIs
+agents:
+    @scripts/agents.sh
+
+
+# --- Namespace: task (list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, rejoin, watch, unlock) ---
+
+# Manage tasks (status, list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, watch, unlock)
+task target *args:
+    @just _task_{{ target }} {{ args }}
+
+[private]
+_task_status *args:
+    @scripts/status.sh {{ args }}
+
+[private]
+_task_list:
+    @scripts/list_tasks.sh
+
+[private]
+_task_tree:
+    @scripts/tree.sh
+
+[private]
+_task_add *args:
+    @scripts/add_task.sh {{ args }}
+
+# Set PLAN_INTERACTIVE=0 to skip interactive planning and just add task with plan label
+[private]
+_task_plan title body="" labels="":
+    {{ if env("PLAN_INTERACTIVE", "1") == "0" { "scripts/add_task.sh \"" + title + "\" \"" + body + "\" \"plan," + labels + "\"" } else { "scripts/plan_chat.sh \"" + title + "\" \"" + body + "\" \"" + labels + "\"" } }}
+
+[private]
+_task_route id="":
     @scripts/route_task.sh {{ id }}
 
-# Run a task (routes first if needed)
-run id="":
+[private]
+_task_run id="":
     @scripts/run_task.sh {{ id }}
 
-# Retry a blocked/done/failed task (reset to new)
-retry id:
-    @scripts/retry_task.sh {{ id }}
-
-# Unblock a blocked task (reset to new)
-unblock id:
-    @scripts/retry_task.sh {{ id }}
-
-# Unblock all blocked tasks (reset to new)
-unblock-all:
-    @yq -r '.tasks[] | select(.status == "blocked") | .id' "${TASKS_PATH:-tasks.yml}" | xargs -n1 scripts/retry_task.sh
-
-# Force a task to use a specific agent
-set-agent id agent:
-    @scripts/set_agent.sh {{ id }} {{ agent }}
-
-# Route+run the next task in one step
-next:
+[private]
+_task_next:
     @scripts/next.sh
 
-# Run all runnable tasks in parallel
-poll jobs="4":
-    @POLL_JOBS={{ jobs }} scripts/poll.sh
+[private]
+_task_poll *args:
+    @POLL_JOBS={{ if args == "" { "4" } else { args } }} scripts/poll.sh
 
-# Re-run blocked parents when children done
-rejoin jobs="4":
-    @POLL_JOBS={{ jobs }} scripts/rejoin.sh
+[private]
+_task_retry id:
+    @scripts/retry_task.sh {{ id }}
 
-# Loop poll every interval seconds
-watch interval="10":
-    @scripts/watch.sh {{ interval }}
+[private]
+_task_unblock id:
+    {{ if id == "all" { "yq -r '.tasks[] | select(.status == \"blocked\") | .id' \"${TASKS_PATH:-tasks.yml}\" | xargs -n1 scripts/retry_task.sh" } else { "scripts/retry_task.sh " + id } }}
 
-# Start the orchestrator (uses brew services if installed via brew, otherwise runs directly)
-start interval="10":
+[private]
+_task_agent id agent:
+    @scripts/set_agent.sh {{ id }} {{ agent }}
+
+[private]
+_task_stream id:
+    @scripts/stream_task.sh {{ id }}
+
+[private]
+_task_rejoin *args:
+    @POLL_JOBS={{ if args == "" { "4" } else { args } }} scripts/rejoin.sh
+
+[private]
+_task_watch *args:
+    @scripts/watch.sh {{ if args == "" { "10" } else { args } }}
+
+[private]
+_task_unlock:
+    @scripts/unlock.sh
+
+# --- Namespace: service (start, stop, restart, info, install, uninstall) ---
+
+# Manage the orchestrator service (start, stop, restart, info, install, uninstall)
+service target *args:
+    @just _service_{{ target }} {{ args }}
+
+[private]
+_service_start interval="10":
     #!/usr/bin/env bash
     if [ "${ORCH_BREW:-}" = "1" ]; then
       brew services start orchestrator
@@ -87,11 +132,11 @@ start interval="10":
 
 # Run server directly (used by brew services internally)
 [private]
-serve interval="10":
+_service_serve interval="10":
     @INTERVAL={{ interval }} scripts/serve.sh
 
-# Stop the orchestrator
-stop:
+[private]
+_service_stop:
     #!/usr/bin/env bash
     if [ "${ORCH_BREW:-}" = "1" ]; then
       brew services stop orchestrator
@@ -99,8 +144,8 @@ stop:
       scripts/stop.sh
     fi
 
-# Restart the orchestrator
-restart:
+[private]
+_service_restart:
     #!/usr/bin/env bash
     if [ "${ORCH_BREW:-}" = "1" ]; then
       brew services restart orchestrator
@@ -108,8 +153,8 @@ restart:
       scripts/restart.sh
     fi
 
-# Show service info and status
-info:
+[private]
+_service_info:
     #!/usr/bin/env bash
     if [ "${ORCH_BREW:-}" = "1" ]; then
       brew services info orchestrator
@@ -127,114 +172,251 @@ info:
       fi
     fi
 
-# Stream live agent output for a task
+[private]
+_service_install:
+    @scripts/service_install.sh
+
+[private]
+_service_uninstall:
+    @scripts/service_uninstall.sh
+
+# --- Namespace: gh (pull, push, sync) ---
+
+# GitHub sync (pull, push, sync)
+gh target *args:
+    @just _gh_{{ target }} {{ args }}
+
+[private]
+_gh_pull:
+    @scripts/gh_pull.sh
+
+[private]
+_gh_push:
+    @scripts/gh_push.sh
+
+[private]
+_gh_sync:
+    @scripts/gh_sync.sh
+
+# --- Namespace: project (info, create, list) ---
+
+# GitHub Projects V2 (info, create, list)
+project target *args:
+    @just _project_{{ target }} {{ args }}
+
+[private]
+_project_info *args:
+    @scripts/gh_project_info.sh {{ args }}
+
+[private]
+_project_create title="":
+    @scripts/gh_project_create.sh "{{ title }}"
+
+[private]
+_project_list org="" user="":
+    @scripts/gh_project_list.sh "{{ org }}" "{{ user }}"
+
+# --- Namespace: job (add, list, remove, enable, disable, tick) ---
+
+# Manage scheduled jobs (add, list, remove, enable, disable, tick)
+job target *args:
+    @just _job_{{ target }} {{ args }}
+
+[private]
+_job_add *args:
+    @scripts/jobs_add.sh {{ args }}
+
+[private]
+_job_list:
+    @scripts/jobs_list.sh
+
+[private]
+_job_remove id:
+    @scripts/jobs_remove.sh "{{ id }}"
+
+[private]
+_job_enable id:
+    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = true' "${JOBS_PATH:-jobs.yml}" && echo "Enabled job '{{ id }}'"
+
+[private]
+_job_disable id:
+    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = false' "${JOBS_PATH:-jobs.yml}" && echo "Disabled job '{{ id }}'"
+
+[private]
+_job_tick:
+    @scripts/jobs_tick.sh
+
+# --- Namespace: skills (list, sync) ---
+
+# Manage skills registry (list, sync)
+skills target *args:
+    @just _skills_{{ target }} {{ args }}
+
+[private]
+_skills_list:
+    @scripts/skills_list.sh
+
+[private]
+_skills_sync:
+    @scripts/skills_sync.sh
+
+# --- Backward-compatible aliases (hidden) ---
+
+[private]
+status *args:
+    @just task status {{ args }}
+
+[private]
+list:
+    @just task list
+
+[private]
+tree:
+    @just task tree
+
+[private]
+add title body="" labels="":
+    @just task add "{{ title }}" "{{ body }}" "{{ labels }}"
+
+[private]
+plan title body="" labels="":
+    @just task plan "{{ title }}" "{{ body }}" "{{ labels }}"
+
+[private]
+route id="":
+    @just task route {{ id }}
+
+[private]
+run id="":
+    @just task run {{ id }}
+
+[private]
+next:
+    @just task next
+
+[private]
+poll jobs="4":
+    @just task poll {{ jobs }}
+
+[private]
+retry id:
+    @just task retry {{ id }}
+
+[private]
+unblock id:
+    @just task unblock {{ id }}
+
+[private]
+unblock-all:
+    @just task unblock all
+
+[private]
+set-agent id agent:
+    @just task agent {{ id }} {{ agent }}
+
+[private]
+rejoin jobs="4":
+    @just task rejoin {{ jobs }}
+
+[private]
+watch interval="10":
+    @just task watch {{ interval }}
+
+[private]
 stream id:
-    @scripts/stream_task.sh {{ id }}
+    @just task stream {{ id }}
 
-# Remove stale task locks
+[private]
 unlock:
-    @scripts/unlock.sh
+    @just task unlock
 
-# Tail orchestrator.log (checks service log, then state dir)
-log tail="50":
-    @if [ -f "${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log" ]; then \
-      tail -n {{ tail }} "${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log"; \
-    else \
-      tail -n {{ tail }} "${STATE_DIR:-.orchestrator}/orchestrator.log"; \
-    fi
+[private]
+start interval="10":
+    @just service start {{ interval }}
 
-# Initialize orchestrator for current project
-init *args="":
-    @scripts/init.sh {{ args }}
+[private]
+stop:
+    @just service stop
 
-# Interactive chat with the orchestrator
-chat:
-    @scripts/chat.sh
+[private]
+restart:
+    @just service restart
 
-# List installed agent CLIs
-agents:
-    @scripts/agents.sh
+[private]
+info:
+    @just service info
 
-# List all projects with tasks
-projects:
-    @yq -r '[.tasks[].dir // ""] | unique | map(select(length > 0)) | .[]' "${TASKS_PATH:-tasks.yml}"
+[private]
+serve interval="10":
+    @just _service_serve {{ interval }}
 
-# Install to ~/.orchestrator and add wrapper to ~/.bin
 [private]
 install:
     @scripts/setup.sh
 
-# Sync skills registry repositories into ./skills
-skills-sync:
-    @scripts/skills_sync.sh
-
-# Pull tasks from GitHub issues into tasks.yml
+[private]
 gh-pull:
-    @scripts/gh_pull.sh
+    @just gh pull
 
-# Push task updates to GitHub issues
+[private]
 gh-push:
-    @scripts/gh_push.sh
+    @just gh push
 
-# Pull then push GitHub sync in one step
+[private]
 gh-sync:
-    @scripts/gh_sync.sh
+    @just gh sync
 
-# Show GitHub Project field and option ids
-gh-project-info:
-    @scripts/gh_project_info.sh
+[private]
+gh-project-info *args:
+    @just project info {{ args }}
 
-# Auto-apply Status field/option IDs to config.yml
-gh-project-info-fix:
-    @scripts/gh_project_info.sh --fix
-
-# Create a new GitHub Project for the current repo
+[private]
 gh-project-create title="":
-    @scripts/gh_project_create.sh "{{ title }}"
+    @just project create "{{ title }}"
 
-# List GitHub Projects for an org or user
-gh-project-list org="" user="":
-    @scripts/gh_project_list.sh "{{ org }}" "{{ user }}"
+[private]
+gh-project-list *args:
+    @just project list {{ args }}
 
-# Add a scheduled job (cron expression + task template)
-jobs-add schedule title body="" labels="" agent="":
-    @scripts/jobs_add.sh "{{ schedule }}" "{{ title }}" "{{ body }}" "{{ labels }}" "{{ agent }}"
+[private]
+gh-project-info-fix:
+    @just project info --fix
 
-# List all scheduled jobs
+[private]
+jobs-add *args:
+    @just job add {{ args }}
+
+[private]
 jobs-list:
-    @scripts/jobs_list.sh
+    @just job list
 
-# Remove a scheduled job
+[private]
 jobs-remove id:
-    @scripts/jobs_remove.sh "{{ id }}"
+    @just job remove {{ id }}
 
-# Enable a scheduled job
+[private]
 jobs-enable id:
-    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = true' "${JOBS_PATH:-jobs.yml}" && echo "Enabled job '{{ id }}'"
+    @just job enable {{ id }}
 
-# Disable a scheduled job
+[private]
 jobs-disable id:
-    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = false' "${JOBS_PATH:-jobs.yml}" && echo "Disabled job '{{ id }}'"
+    @just job disable {{ id }}
 
-# Check and run due scheduled jobs
+[private]
 jobs-tick:
-    @scripts/jobs_tick.sh
+    @just job tick
 
-# Install crontab entry to tick every minute
-jobs-install:
-    @scripts/jobs_install.sh
+[private]
+skills-sync:
+    @just skills sync
 
-# Remove crontab entry
-jobs-uninstall:
-    @scripts/jobs_uninstall.sh
-
-# Install macOS launchd service (auto-start + restart on crash)
+[private]
 service-install:
-    @scripts/service_install.sh
+    @just service install
 
-# Uninstall macOS launchd service
+[private]
 service-uninstall:
-    @scripts/service_uninstall.sh
+    @just service uninstall
 
 # Run tests (bats test suite)
 [private]

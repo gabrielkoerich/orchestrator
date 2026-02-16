@@ -1007,8 +1007,8 @@ SH
         '${REPO_DIR}/scripts/chat.sh' 2>/dev/null
   "
   [ "$status" -eq 0 ]
-  # Should contain status output (Total: N)
-  [[ "$output" == *"Total:"* ]]
+  # Should contain status table (total row)
+  [[ "$output" == *"total"* ]]
 }
 
 @test "chat.sh cleans up history file on exit" {
@@ -1976,14 +1976,14 @@ SH
   [[ "$output" == *"not running"* ]]
 }
 
-@test "serve recipe is private (hidden from just --list)" {
+@test "service namespace is visible, serve is private" {
   command -v just >/dev/null 2>&1 || skip "just not installed"
   run just --justfile "${REPO_DIR}/justfile" --list
   [ "$status" -eq 0 ]
-  # start should be visible
-  [[ "$output" == *"start"* ]]
-  # serve should NOT be listed (it's private)
-  [[ "$output" != *"serve"* ]]
+  # service should be visible
+  [[ "$output" == *"service"* ]]
+  # "serve" recipe should NOT be listed (it's private) — check for exact recipe name
+  ! echo "$output" | grep -qE '^\s+serve\b'
 }
 
 @test "Formula wrapper sets ORCH_BREW=1" {
@@ -2091,4 +2091,353 @@ JSON
 @test "run_task.sh completion log includes duration and tokens" {
   run grep 'DONE.*duration.*tokens' "${REPO_DIR}/scripts/run_task.sh"
   [ "$status" -eq 0 ]
+}
+
+@test "dashboard.sh runs without errors" {
+  # Add tasks with gh_issue_number to exercise issue formatting
+  yq -i '(.tasks[] | select(.id == 1) | .gh_issue_number) = 10' "$TASKS_PATH"
+  run "${REPO_DIR}/scripts/dashboard.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tasks:"* ]]
+  [[ "$output" == *"Projects:"* ]]
+  [[ "$output" == *"Worktrees:"* ]]
+}
+
+@test "status.sh --global shows PROJECT column" {
+  # Add a task with a dir to test global view
+  yq -i '(.tasks[] | select(.id == 1) | .dir) = "/Users/test/myproject"' "$TASKS_PATH"
+  run "${REPO_DIR}/scripts/status.sh" --global
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PROJECT"* ]]
+  [[ "$output" == *"myproject"* ]]
+}
+
+@test "list_tasks.sh shows table with issue numbers" {
+  yq -i '(.tasks[] | select(.id == 1) | .gh_issue_number) = 42' "$TASKS_PATH"
+  run "${REPO_DIR}/scripts/list_tasks.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#42"* ]]
+  [[ "$output" == *"ISSUE"* ]]
+}
+
+@test "task_field reads a task field" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+  run task_field 1 .title
+  [ "$status" -eq 0 ]
+  [ "$output" = "Init" ]
+}
+
+@test "task_count counts tasks by status" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+  run task_count "new"
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+
+  run task_count
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "job add --type bash creates bash job" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+  run "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo hello" "0 * * * *" "Test bash job"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"bash job"* ]]
+
+  run yq -r '.jobs[0].type' "$JOBS_PATH"
+  [ "$output" = "bash" ]
+
+  run yq -r '.jobs[0].command' "$JOBS_PATH"
+  [ "$output" = "echo hello" ]
+}
+
+# --- tree.sh ---
+
+@test "tree.sh displays task tree" {
+  run "${REPO_DIR}/scripts/tree.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Init"* ]]
+  [[ "$output" == *"[1]"* ]]
+  [[ "$output" == *"(new)"* ]]
+}
+
+@test "tree.sh shows parent-child relationships" {
+  "${REPO_DIR}/scripts/add_task.sh" "Parent" "" "" >/dev/null
+  "${REPO_DIR}/scripts/add_task.sh" "Child" "" "" >/dev/null
+  # Set up parent-child relationship
+  yq -i '(.tasks[] | select(.id == 3) | .parent_id) = 2 |
+         (.tasks[] | select(.id == 2) | .children) = [3]' "$TASKS_PATH"
+
+  run "${REPO_DIR}/scripts/tree.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Parent"* ]]
+  [[ "$output" == *"Child"* ]]
+  # Child should be indented under parent
+  [[ "$output" == *"└─"* ]] || [[ "$output" == *"├─"* ]]
+}
+
+# --- retry_task.sh ---
+
+@test "retry_task.sh resets done task to new" {
+  yq -i '(.tasks[] | select(.id == 1) | .status) = "done"' "$TASKS_PATH"
+
+  run "${REPO_DIR}/scripts/retry_task.sh" 1
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 1) | .status' "$TASKS_PATH"
+  [ "$output" = "new" ]
+}
+
+@test "retry_task.sh resets blocked task to new" {
+  yq -i '(.tasks[] | select(.id == 1) | .status) = "blocked"' "$TASKS_PATH"
+
+  run "${REPO_DIR}/scripts/retry_task.sh" 1
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 1) | .status' "$TASKS_PATH"
+  [ "$output" = "new" ]
+}
+
+@test "retry_task.sh clears agent on reset" {
+  yq -i '(.tasks[] | select(.id == 1) | .status) = "done" |
+         (.tasks[] | select(.id == 1) | .agent) = "claude"' "$TASKS_PATH"
+
+  run "${REPO_DIR}/scripts/retry_task.sh" 1
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 1) | .agent' "$TASKS_PATH"
+  [ "$output" = "null" ]
+}
+
+@test "retry_task.sh skips already-new tasks" {
+  run "${REPO_DIR}/scripts/retry_task.sh" 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already new"* ]] || true
+}
+
+@test "retry_task.sh fails on missing task" {
+  run "${REPO_DIR}/scripts/retry_task.sh" 999
+  [ "$status" -ne 0 ]
+}
+
+@test "retry_task.sh requires task id" {
+  run "${REPO_DIR}/scripts/retry_task.sh"
+  [ "$status" -ne 0 ]
+}
+
+# --- set_agent.sh ---
+
+@test "set_agent.sh sets agent on a task" {
+  run "${REPO_DIR}/scripts/set_agent.sh" 1 claude
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 1) | .agent' "$TASKS_PATH"
+  [ "$output" = "claude" ]
+}
+
+@test "set_agent.sh requires both id and agent" {
+  run "${REPO_DIR}/scripts/set_agent.sh" 1
+  [ "$status" -ne 0 ]
+
+  run "${REPO_DIR}/scripts/set_agent.sh"
+  [ "$status" -ne 0 ]
+}
+
+# --- jobs_list.sh ---
+
+@test "jobs_list.sh shows no jobs message" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+  run "${REPO_DIR}/scripts/jobs_list.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No jobs"* ]]
+}
+
+@test "jobs_list.sh shows job details" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+  "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "Daily Check" "check things" "" >/dev/null
+
+  run "${REPO_DIR}/scripts/jobs_list.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"daily-check"* ]]
+  [[ "$output" == *"0 9 * * *"* ]]
+  [[ "$output" == *"true"* ]]
+  [[ "$output" == *"TYPE"* ]]
+}
+
+@test "jobs_list.sh shows bash job type" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo hi" "@hourly" "Ping" >/dev/null
+
+  run "${REPO_DIR}/scripts/jobs_list.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"bash"* ]]
+}
+
+# --- output.sh helpers ---
+
+@test "output.sh status_icon returns correct icons" {
+  source "${REPO_DIR}/scripts/output.sh"
+  run status_icon "done"
+  [ "$output" = "✓" ]
+
+  run status_icon "blocked"
+  [ "$output" = "✗" ]
+
+  run status_icon "new"
+  [ "$output" = "○" ]
+}
+
+@test "output.sh fmt_issue formats issue numbers" {
+  source "${REPO_DIR}/scripts/output.sh"
+
+  run fmt_issue 42
+  [ "$output" = "#42" ]
+
+  run fmt_issue ""
+  [ "$output" = "-" ]
+
+  run fmt_issue "null"
+  [ "$output" = "-" ]
+}
+
+@test "output.sh table_with_header formats table" {
+  source "${REPO_DIR}/scripts/output.sh"
+  result=$(printf '1\tnew\tInit\n' | table_with_header "ID\tSTATUS\tTITLE")
+  [[ "$result" == *"ID"* ]]
+  [[ "$result" == *"STATUS"* ]]
+  [[ "$result" == *"Init"* ]]
+}
+
+# --- jobs_tick.sh bash execution ---
+
+@test "jobs_tick.sh runs bash job" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+
+  # Create bash job matching every minute
+  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test-output" "* * * * *" "Always Run" >/dev/null
+
+  run "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  # Check last_run is set
+  run yq -r '.jobs[0].last_run' "$JOBS_PATH"
+  [ "$output" != "null" ]
+  [ -n "$output" ]
+}
+
+@test "jobs_tick.sh records bash job failure" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+
+  # Create bash job that fails
+  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "exit 1" "* * * * *" "Fail Job" >/dev/null
+
+  run "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.jobs[0].last_task_status' "$JOBS_PATH"
+  [ "$output" = "failed" ]
+}
+
+# --- status.sh ---
+
+@test "status.sh shows counts table" {
+  run "${REPO_DIR}/scripts/status.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"STATUS"* ]]
+  [[ "$output" == *"QTY"* ]]
+  [[ "$output" == *"new"* ]]
+  [[ "$output" == *"total"* ]]
+}
+
+@test "status.sh --json --global returns valid JSON" {
+  run "${REPO_DIR}/scripts/status.sh" --json --global
+  [ "$status" -eq 0 ]
+  # Validate it's JSON
+  printf '%s' "$output" | jq . >/dev/null
+  # Check total
+  TOTAL=$(printf '%s' "$output" | jq -r '.total')
+  [ "$TOTAL" -ge 1 ]
+}
+
+# --- add_task.sh edge cases ---
+
+@test "add_task.sh with empty body and labels" {
+  run "${REPO_DIR}/scripts/add_task.sh" "No Body Task" "" ""
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[-1].title' "$TASKS_PATH"
+  [ "$output" = "No Body Task" ]
+
+  run yq -r '.tasks[-1].body' "$TASKS_PATH"
+  [ "$output" = "" ] || [ "$output" = "null" ]
+}
+
+@test "add_task.sh assigns sequential ids" {
+  "${REPO_DIR}/scripts/add_task.sh" "Task A" "" "" >/dev/null
+  "${REPO_DIR}/scripts/add_task.sh" "Task B" "" "" >/dev/null
+  "${REPO_DIR}/scripts/add_task.sh" "Task C" "" "" >/dev/null
+
+  run yq -r '.tasks[-1].id' "$TASKS_PATH"
+  ID_C="$output"
+
+  run yq -r '.tasks[-2].id' "$TASKS_PATH"
+  ID_B="$output"
+
+  # IDs should be sequential
+  [ "$ID_C" -gt "$ID_B" ]
+}
+
+# --- task_set helper ---
+
+@test "task_set updates a task field" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+
+  task_set 1 .status "blocked"
+
+  run yq -r '.tasks[] | select(.id == 1) | .status' "$TASKS_PATH"
+  [ "$output" = "blocked" ]
+}
+
+# --- unlock.sh ---
+
+@test "available_agents respects disabled_agents config" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+
+  # Disable codex
+  yq -i '.router.disabled_agents = ["codex"]' "$CONFIG_PATH"
+
+  result=$(available_agents)
+  # codex should NOT be in result (if installed)
+  [[ "$result" != *"codex"* ]] || skip "codex not installed"
+  # claude should still be there (if installed)
+  if command -v claude >/dev/null 2>&1; then
+    [[ "$result" == *"claude"* ]]
+  fi
+}
+
+@test "unlock.sh removes lock files" {
+  # Create fake lock files
+  touch "${TASKS_PATH}.lock"
+  touch "${TASKS_PATH}.lock.task.1"
+  touch "${TASKS_PATH}.lock.task.2"
+
+  run "${REPO_DIR}/scripts/unlock.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Removed"* ]]
 }

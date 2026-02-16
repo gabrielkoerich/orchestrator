@@ -213,7 +213,7 @@ if [ "$ATTEMPTS" -ge 4 ]; then
   BLOCKED_COUNT=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |
     map(select(.status == \"blocked\")) | .[-3:] | length" "$TASKS_PATH" 2>/dev/null || echo "0")
   if [ "$BLOCKED_COUNT" -ge 3 ] && [ "$BLOCKED_NOTES" -eq 1 ]; then
-    log_err "[run] task=$TASK_ID retry loop detected (same error 3x)"
+    error_log "[run] task=$TASK_ID retry loop detected (same error 3x)"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
     exit 0
   fi
@@ -278,6 +278,29 @@ AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 RESPONSE=""
 STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}.txt"
+: > "$STDERR_FILE"
+
+# Monitor stderr in background for stuck agent indicators (1Password, passphrase, etc.)
+MONITOR_PID=""
+(
+  # Wait for stderr file to have content
+  while true; do
+    sleep 10
+    [ -f "$STDERR_FILE" ] || continue
+    STDERR_SIZE=$(wc -c < "$STDERR_FILE" 2>/dev/null || echo 0)
+    if [ "$STDERR_SIZE" -gt 0 ]; then
+      # Check for interactive approval patterns
+      if grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
+        error_log "[run] task=$TASK_ID WARNING: agent may be stuck waiting for interactive approval"
+        error_log "[run] task=$TASK_ID stderr: $(tail -c 300 "$STDERR_FILE")"
+      fi
+    fi
+  done
+) &
+MONITOR_PID=$!
+# Clean up monitor when agent finishes
+cleanup_monitor() { kill "$MONITOR_PID" 2>/dev/null || true; wait "$MONITOR_PID" 2>/dev/null || true; }
+
 CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
@@ -324,6 +347,7 @@ ${AGENT_MESSAGE}"
 esac
 
 stop_spinner
+cleanup_monitor
 AGENT_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Calculate duration in seconds (macOS and Linux compatible)
 AGENT_START_EPOCH=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$AGENT_START" +%s 2>/dev/null || date -d "$AGENT_START" +%s 2>/dev/null || echo 0)
@@ -370,19 +394,26 @@ if [ "$CMD_STATUS" -ne 0 ]; then
 
   # Detect auth/token/billing errors
   if printf '%s' "$COMBINED_OUTPUT" | grep -qiE 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
-    log_err "[run] task=$TASK_ID AUTH/BILLING ERROR detected for agent=$TASK_AGENT"
+    error_log "[run] task=$TASK_ID AUTH/BILLING ERROR for agent=$TASK_AGENT"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — check API key or credits"
     exit 0
   fi
 
   # Detect timeout
   if [ "$CMD_STATUS" -eq 124 ]; then
-    log_err "[run] task=$TASK_ID TIMEOUT"
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent timed out (exit 124)"
+    # Check if timeout was caused by interactive approval prompt
+    TIMEOUT_REASON="agent timed out (exit 124)"
+    if [ -f "$STDERR_FILE" ] && grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
+      TIMEOUT_REASON="agent stuck waiting for interactive approval (1Password/SSH/passphrase) — configure headless auth"
+      error_log "[run] task=$TASK_ID TIMEOUT: stuck on interactive approval"
+    else
+      error_log "[run] task=$TASK_ID TIMEOUT after $(duration_fmt $AGENT_DURATION)"
+    fi
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "$TIMEOUT_REASON"
     exit 0
   fi
 
-  log_err "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS"
+  error_log "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS"
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent command failed (exit $CMD_STATUS)"
   exit 0
 fi
@@ -469,8 +500,11 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
     if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
       if (cd "$PROJECT_DIR" && git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null | grep -q .); then
         log_err "[run] task=$TASK_ID pushing branch $CURRENT_BRANCH"
-        if ! (cd "$PROJECT_DIR" && git push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
-          log_err "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
+        # Use HTTPS rewrite to avoid SSH/1Password interactive prompts
+        if ! (cd "$PROJECT_DIR" && git \
+          -c "url.https://github.com/.insteadOf=git@github.com:" \
+          push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
+          error_log "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
         fi
       fi
     fi

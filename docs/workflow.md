@@ -2,6 +2,23 @@
 
 How the orchestrator runs tasks end-to-end.
 
+## Full Development Cycle
+
+```
+Issue → Branch + Worktree → Agent works → Push → PR → Review → Merge → Cleanup
+```
+
+1. **Issue** — created via `orchestrator task add`, `gh_pull`, or `jobs_tick`
+2. **Branch + Worktree** — orchestrator creates via `gh issue develop` + `git worktree add`
+3. **Agent works** — runs inside worktree, edits files, commits changes
+4. **Push** — orchestrator pushes the branch after agent finishes
+5. **PR** — agent creates with `gh pr create --base main` and `Closes #N`
+6. **Review** — Codex auto-reviews on PR open (or `@codex review`)
+7. **Fix + Reply** — fix review findings, reply to each comment, resolve threads
+8. **Merge** — squash merge with conventional commit prefix (`feat:` / `fix:`)
+9. **Release** — CI auto-tags, generates changelog, creates GitHub release, updates Homebrew
+10. **Cleanup** — (TODO) orchestrator detects merged PR, removes worktree + local branch
+
 ## Task Lifecycle
 
 ```
@@ -132,6 +149,22 @@ The agent writes a JSON file with:
 - Includes: agent badge, summary, accomplished/remaining lists, metadata (duration, tokens, model)
 - Applies labels (e.g. `blocked` label when task is blocked)
 - Content-hash dedup prevents duplicate comments
+- Closes issues automatically when task status is `done` (configurable via `auto_close`)
+
+## PR Review Workflow
+
+After an agent creates a PR:
+
+1. Codex auto-reviews (triggered on PR open or `@codex review` comment)
+2. Fix findings, reply to each review comment:
+   ```bash
+   gh api repos/OWNER/REPO/pulls/PR/comments/ID/replies -X POST -f body="Fixed — ..."
+   ```
+3. Resolve review threads:
+   ```bash
+   gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "ID"}) { thread { isResolved } } }'
+   ```
+4. Squash merge with conventional commit prefix (`feat:` = minor, `fix:` = patch)
 
 ## Stuck Task Recovery
 
@@ -143,14 +176,14 @@ The agent writes a JSON file with:
 ## Retry / Unblock
 
 ```bash
-orchestrator retry <id>       # reset any task to new
-orchestrator unblock <id>     # reset a blocked task to new
-orchestrator unblock-all      # reset all blocked tasks to new
+orchestrator task retry <id>       # reset any task to new
+orchestrator task unblock <id>     # reset a blocked task to new
+orchestrator task unblock all      # reset all blocked tasks to new
 ```
 
 ## Max Attempts
 
-Default: 5 attempts per task (configurable via `config.yml`). After max attempts, task goes to `blocked` with error. Retry loop detection: if the same error repeats 3 times, task goes to `needs_review` instead of retrying.
+Default: 10 attempts per task (configurable via `config.yml`). After max attempts, task goes to `blocked` with error. Retry loop detection: if the same error repeats 3 times, task goes to `needs_review` instead of retrying.
 
 ## Context Enrichment
 
@@ -171,13 +204,31 @@ The agent prompt includes:
 ## Cron Jobs
 
 ```bash
-orchestrator jobs-add "0 9 * * *" "Daily report" "body" "labels"
-orchestrator jobs-list
-orchestrator jobs-enable <id>
-orchestrator jobs-disable <id>
+orchestrator job add "0 9 * * *" "Daily report" "body" "labels"
+orchestrator job add --type bash --command "echo hello" "@hourly" "Ping"
+orchestrator job list
+orchestrator job enable <id>
+orchestrator job disable <id>
 ```
 
-Jobs are checked every tick. When a schedule matches, a task is created. Jobs skip if a previous task from the same job is still in-flight.
+Two job types:
+- **task** (default): creates a task that goes through routing → agent execution
+- **bash**: runs a shell command directly, no LLM involved
+
+Jobs are checked every tick. When a schedule matches, a task is created (or command run). Jobs skip if a previous task from the same job is still in-flight.
+
+## CLI Namespaces
+
+```bash
+orchestrator task status|list|tree|add|plan|route|run|next|poll|retry|unblock|agent|stream|watch|unlock
+orchestrator service start|stop|restart|info|install|uninstall
+orchestrator gh pull|push|sync
+orchestrator project info|create|list
+orchestrator job add|list|remove|enable|disable|tick
+orchestrator skills list|sync
+```
+
+Top-level commands: `init`, `chat`, `dashboard`, `log`, `start`, `stop`, `restart`, `info`, `agents`.
 
 ## Chat
 
@@ -185,4 +236,13 @@ Jobs are checked every tick. When a schedule matches, a task is created. Jobs sk
 orchestrator chat
 ```
 
-Interactive mode — talk to the orchestrator, add tasks, check status. Runs in the current `PROJECT_DIR`. Chat tasks don't have GitHub issues, so no worktrees are created.
+Interactive mode with readline support (arrow keys, persistent history). Talk to the orchestrator, add tasks, check status. Runs in the current `PROJECT_DIR`. Chat tasks don't have GitHub issues, so no worktrees are created.
+
+## Release Pipeline
+
+1. Push to `main` → CI runs tests
+2. Auto-tag from conventional commits (`feat:` = minor, `fix:` = patch)
+3. Generate changelog (conventional commits + GitHub auto-generated PR notes)
+4. Create GitHub release
+5. Update `gabrielkoerich/homebrew-tap` Formula with new URL + sha256
+6. `brew upgrade orchestrator` picks up the new version
