@@ -112,6 +112,29 @@ def summarize_tool_history(history: list) -> str:
     return "\n".join(lines)
 
 
+def extract_usage(raw: str) -> dict:
+    """Extract token usage from claude JSON events stream."""
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    for line in raw.splitlines():
+        try:
+            ev = json.loads(line.strip())
+        except Exception:
+            continue
+        # claude --output-format json emits a final "result" event with usage
+        if ev.get("type") == "result" and "usage" in ev:
+            u = ev["usage"]
+            usage["input_tokens"] = u.get("input_tokens", 0)
+            usage["output_tokens"] = u.get("output_tokens", 0)
+        # Also check for usage in top-level (codex format)
+        elif "usage" in ev and isinstance(ev["usage"], dict):
+            u = ev["usage"]
+            if u.get("input_tokens", 0) > usage["input_tokens"]:
+                usage["input_tokens"] = u.get("input_tokens", 0)
+            if u.get("output_tokens", 0) > usage["output_tokens"]:
+                usage["output_tokens"] = u.get("output_tokens", 0)
+    return usage
+
+
 def main():
     raw = os.environ.get("RAW_RESPONSE")
     if raw is None:
@@ -130,6 +153,11 @@ def main():
         history = extract_tool_history(raw)
         if history:
             print(summarize_tool_history(history))
+        sys.exit(0)
+
+    if "--usage" in sys.argv:
+        usage = extract_usage(raw)
+        print(json.dumps(usage))
         sys.exit(0)
 
     out = normalize(raw)

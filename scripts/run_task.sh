@@ -292,7 +292,12 @@ esac
 
 stop_spinner
 AGENT_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-log_err "[run] task=$TASK_ID agent finished (exit=$CMD_STATUS) started=$AGENT_START ended=$AGENT_END"
+# Calculate duration in seconds (macOS and Linux compatible)
+AGENT_START_EPOCH=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$AGENT_START" +%s 2>/dev/null || date -d "$AGENT_START" +%s 2>/dev/null || echo 0)
+AGENT_END_EPOCH=$(date +%s)
+AGENT_DURATION=$((AGENT_END_EPOCH - AGENT_START_EPOCH))
+export AGENT_DURATION
+log_err "[run] task=$TASK_ID agent finished (exit=$CMD_STATUS) duration=$(duration_fmt $AGENT_DURATION)"
 
 # Save raw response for debugging
 RESPONSE_FILE="${STATE_DIR}/response-${TASK_ID}.txt"
@@ -302,17 +307,28 @@ log_err "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} b
 
 # Extract tool history from agent response (for debugging and retry context)
 TOOL_SUMMARY=$(RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-summary 2>/dev/null || true)
+TOOL_COUNT=0
 if [ -n "$TOOL_SUMMARY" ]; then
   RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-history > "${STATE_DIR}/tools-${TASK_ID}.json" 2>/dev/null || true
   append_task_context "$TASK_ID" "Commands run by agent (attempt $ATTEMPTS):\n$TOOL_SUMMARY"
-  log_err "[run] task=$TASK_ID tool history saved (${STATE_DIR}/tools-${TASK_ID}.json)"
+  TOOL_COUNT=$(printf '%s' "$TOOL_SUMMARY" | wc -l | tr -d ' ')
+  log_err "[run] task=$TASK_ID tool history saved ($TOOL_COUNT calls)"
+fi
+
+# Extract token usage
+INPUT_TOKENS=0
+OUTPUT_TOKENS=0
+USAGE_JSON=$(RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --usage 2>/dev/null || true)
+if [ -n "$USAGE_JSON" ]; then
+  INPUT_TOKENS=$(printf '%s' "$USAGE_JSON" | jq -r '.input_tokens // 0')
+  OUTPUT_TOKENS=$(printf '%s' "$USAGE_JSON" | jq -r '.output_tokens // 0')
 fi
 
 # Log stderr even on success (agents may print warnings)
 AGENT_STDERR=""
 if [ -f "$STDERR_FILE" ] && [ -s "$STDERR_FILE" ]; then
   AGENT_STDERR=$(cat "$STDERR_FILE")
-  log_err "[run] task=$TASK_ID stderr: $AGENT_STDERR"
+  log_err "[run] task=$TASK_ID stderr: $(printf '%s' "$AGENT_STDERR" | head -c 200)"
 fi
 
 # Classify error from exit code, stderr, and stdout
@@ -384,6 +400,16 @@ fi
 NOW=$(now_iso)
 export AGENT_STATUS SUMMARY NEEDS_HELP NOW FILES_CHANGED_STR ACCOMPLISHED_STR REMAINING_STR BLOCKERS_STR REASON
 
+# Store agent metadata
+RESP_AGENT=$(printf '%s' "$RESPONSE_JSON" | jq -r '.agent // ""')
+RESP_MODEL=$(printf '%s' "$RESPONSE_JSON" | jq -r '.model // ""')
+export RESP_MODEL
+STDERR_SNIPPET=""
+if [ -n "$AGENT_STDERR" ]; then
+  STDERR_SNIPPET=$(printf '%s' "$AGENT_STDERR" | tail -c 500)
+fi
+export STDERR_SNIPPET
+
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .status) = strenv(AGENT_STATUS) | \
    (.tasks[] | select(.id == $TASK_ID) | .summary) = strenv(SUMMARY) | \
@@ -395,6 +421,11 @@ with_lock yq -i \
    (.tasks[] | select(.id == $TASK_ID) | .needs_help) = (strenv(NEEDS_HELP) == \"true\") | \
    (.tasks[] | select(.id == $TASK_ID) | .last_error) = null | \
    (.tasks[] | select(.id == $TASK_ID) | .retry_at) = null | \
+   (.tasks[] | select(.id == $TASK_ID) | .duration) = $AGENT_DURATION | \
+   (.tasks[] | select(.id == $TASK_ID) | .input_tokens) = $INPUT_TOKENS | \
+   (.tasks[] | select(.id == $TASK_ID) | .output_tokens) = $OUTPUT_TOKENS | \
+   (.tasks[] | select(.id == $TASK_ID) | .agent_model) = strenv(RESP_MODEL) | \
+   (.tasks[] | select(.id == $TASK_ID) | .stderr_snippet) = strenv(STDERR_SNIPPET) | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
 
@@ -515,4 +546,4 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
   append_history "$TASK_ID" "blocked" "spawned children: ${CHILD_IDS[*]}"
 fi
 
-log_err "[run] task=$TASK_ID DONE status=$AGENT_STATUS agent=$TASK_AGENT attempt=$ATTEMPTS started=$AGENT_START ended=$AGENT_END"
+log_err "[run] task=$TASK_ID DONE status=$AGENT_STATUS agent=$TASK_AGENT model=${RESP_MODEL:-${AGENT_MODEL:-default}} attempt=$ATTEMPTS duration=$(duration_fmt $AGENT_DURATION) tokens=${INPUT_TOKENS}in/${OUTPUT_TOKENS}out tools=$TOOL_COUNT"

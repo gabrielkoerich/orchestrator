@@ -69,6 +69,55 @@ read_prompt_file() {
   fi
 }
 
+# Build a condensed tool activity summary from tools-{ID}.json
+# Returns markdown: table of tool counts + collapsed error details
+read_tool_summary() {
+  local task_dir="$1" task_id="$2"
+  local state_dir="${task_dir:+${task_dir}/.orchestrator}"
+  state_dir="${state_dir:-${STATE_DIR:-.orchestrator}}"
+  local tools_file="${state_dir}/tools-${task_id}.json"
+  if [ ! -f "$tools_file" ] || [ ! -s "$tools_file" ]; then return; fi
+
+  python3 - "$tools_file" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        history = json.load(f)
+except Exception:
+    sys.exit(0)
+if not history:
+    sys.exit(0)
+
+counts = {}
+errors = []
+for h in history:
+    tool = h.get("tool", "?")
+    counts[tool] = counts.get(tool, 0) + 1
+    if h.get("error"):
+        inp = h.get("input", {})
+        if tool == "Bash":
+            detail = inp.get("command", "?")[:120]
+        elif tool in ("Edit", "Write", "Read"):
+            detail = inp.get("file_path", "?")
+        else:
+            detail = tool
+        errors.append(f"- `{detail}`")
+
+lines = ["| Tool | Calls |", "|------|-------|"]
+for tool in sorted(counts, key=lambda t: -counts[t]):
+    lines.append(f"| {tool} | {counts[tool]} |")
+print("\n".join(lines))
+
+if errors:
+    print("")
+    print(f"<details><summary>Failed tool calls ({len(errors)})</summary>")
+    print("")
+    print("\n".join(errors[:10]))
+    print("")
+    print("</details>")
+PY
+}
+
 map_status_to_project() {
   local status="$1"
   case "$status" in
@@ -206,6 +255,10 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   PROMPT_HASH=$(yq -r ".tasks[$i].prompt_hash // \"\"" "$TASKS_PATH")
   TASK_DIR=$(yq -r ".tasks[$i].dir // \"\"" "$TASKS_PATH")
   ATTEMPTS=$(yq -r ".tasks[$i].attempts // 0" "$TASKS_PATH")
+  DURATION=$(yq -r ".tasks[$i].duration // 0" "$TASKS_PATH")
+  INPUT_TOKENS=$(yq -r ".tasks[$i].input_tokens // 0" "$TASKS_PATH")
+  OUTPUT_TOKENS=$(yq -r ".tasks[$i].output_tokens // 0" "$TASKS_PATH")
+  STDERR_SNIPPET=$(yq -r ".tasks[$i].stderr_snippet // \"\"" "$TASKS_PATH")
   UPDATED_AT=$(yq -r ".tasks[$i].updated_at // \"\"" "$TASKS_PATH")
   GH_SYNCED_AT=$(yq -r ".tasks[$i].gh_synced_at // \"\"" "$TASKS_PATH")
 
@@ -213,11 +266,10 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   skip=false
   for lbl in "${SKIP_LABELS[@]}"; do
-    if printf '%s' "$LABELS_JSON" | yq -r "index(\"$lbl\")" >/dev/null 2>&1; then
-      if [ "$(printf '%s' "$LABELS_JSON" | yq -r "index(\"$lbl\")")" != "null" ]; then
-        skip=true
-        break
-      fi
+    idx=$(printf '%s' "$LABELS_JSON" | yq -r "index(\"$lbl\")" 2>/dev/null || true)
+    if [ -n "$idx" ] && [ "$idx" != "null" ]; then
+      skip=true
+      break
     fi
   done
   if [ "$skip" = true ]; then
@@ -327,6 +379,26 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
       fi
       COMMENT="${COMMENT}
 | **Attempt** | ${ATTEMPTS} |"
+      if [ "$DURATION" -gt 0 ] 2>/dev/null; then
+        DURATION_FMT=$(duration_fmt "$DURATION")
+        COMMENT="${COMMENT}
+| **Duration** | ${DURATION_FMT} |"
+      fi
+      if [ "$INPUT_TOKENS" -gt 0 ] 2>/dev/null; then
+        # Format tokens as "15k in / 3k out"
+        if [ "$INPUT_TOKENS" -ge 1000 ]; then
+          IN_FMT="$((INPUT_TOKENS / 1000))k"
+        else
+          IN_FMT="$INPUT_TOKENS"
+        fi
+        if [ "$OUTPUT_TOKENS" -ge 1000 ]; then
+          OUT_FMT="$((OUTPUT_TOKENS / 1000))k"
+        else
+          OUT_FMT="$OUTPUT_TOKENS"
+        fi
+        COMMENT="${COMMENT}
+| **Tokens** | ${IN_FMT} in / ${OUT_FMT} out |"
+      fi
       if [ -n "$PROMPT_HASH" ] && [ "$PROMPT_HASH" != "null" ]; then
         COMMENT="${COMMENT}
 | **Prompt** | \`${PROMPT_HASH}\` |"
@@ -396,6 +468,29 @@ ${FILES_CHANGED_LIST}"
 
 ---
 ${OWNER_TAG} this task needs your attention."
+      fi
+
+      # Tool activity
+      TOOL_ACTIVITY=$(read_tool_summary "$TASK_DIR" "$ID")
+      if [ -n "$TOOL_ACTIVITY" ]; then
+        COMMENT="${COMMENT}
+
+### Agent Activity
+
+${TOOL_ACTIVITY}"
+      fi
+
+      # Collapsed stderr
+      if [ -n "$STDERR_SNIPPET" ] && [ "$STDERR_SNIPPET" != "null" ]; then
+        COMMENT="${COMMENT}
+
+<details><summary>Agent stderr</summary>
+
+\`\`\`
+${STDERR_SNIPPET}
+\`\`\`
+
+</details>"
       fi
 
       # Collapsed prompt

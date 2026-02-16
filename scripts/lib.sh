@@ -28,6 +28,17 @@ log_err() {
   echo "$(now_iso) $*" >&2
 }
 
+duration_fmt() {
+  local secs="${1:-0}"
+  if [ "$secs" -lt 60 ]; then
+    echo "${secs}s"
+  elif [ "$secs" -lt 3600 ]; then
+    echo "$((secs / 60))m $((secs % 60))s"
+  else
+    echo "$((secs / 3600))h $((secs % 3600 / 60))m"
+  fi
+}
+
 ensure_state_dir() {
   mkdir -p "$STATE_DIR"
 }
