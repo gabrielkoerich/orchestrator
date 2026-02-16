@@ -262,6 +262,7 @@ case "$TASK_AGENT" in
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --permission-mode acceptEdits \
+      --allowedTools "Write(${OUTPUT_FILE})" \
       "${DISALLOW_ARGS[@]}" \
       --output-format stream-json \
       --append-system-prompt "$SYSTEM_PROMPT" \
@@ -356,9 +357,15 @@ if [ "$CMD_STATUS" -ne 0 ]; then
   exit 0
 fi
 
-# Parse structured output from agent response
+# Read structured output from file (primary), fall back to stdout parsing
 RESPONSE_JSON=""
-RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+if [ -f "$OUTPUT_FILE" ]; then
+  RESPONSE_JSON=$(cat "$OUTPUT_FILE")
+  log_err "[run] read output from $OUTPUT_FILE"
+else
+  log_err "[run] output file not found, trying stdout fallback"
+  RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+fi
 
 if [ -z "$RESPONSE_JSON" ]; then
   log_err "[run] task=$TASK_ID invalid JSON response"
