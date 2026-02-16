@@ -161,7 +161,7 @@ elif [ -t 0 ]; then
     read -r -p "Configure GitHub integration? (y/N): " SETUP_GH
   fi
   if [ "$SETUP_GH" = "y" ] || [ "$SETUP_GH" = "Y" ]; then
-    DETECTED_REPO=${GH_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#(https://github.com/|git@github.com:)##; s#\.git$##' || true)}
+    DETECTED_REPO=${GH_REPO:-$(cd "$PROJECT_DIR" && git remote get-url origin 2>/dev/null | sed -E 's#(https://github.com/|git@github.com:)##; s#\.git$##' || true)}
     if [ -n "$DETECTED_REPO" ]; then
       read -r -p "GitHub repo (owner/repo) [$DETECTED_REPO]: " GH_REPO_INPUT
       GH_REPO="${GH_REPO_INPUT:-$DETECTED_REPO}"
