@@ -294,12 +294,12 @@ _job_tick:
 stop:
     @just service stop
 
-# Restar orchestrator service (via brew)
+# Start orchestrator service (via brew)
 [group('service')]
 start:
-    @just service restart
+    @just service start
 
-# Restar orchestrator service (via brew)
+# Restart orchestrator service (via brew)
 [group('service')]
 restart:
     @just service restart

@@ -354,7 +354,6 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   # Post a comment for the update (we already know task changed from the gate above)
   if [ -n "$UPDATED_AT" ]; then
-    OWNER_TAG="@$(repo_owner "$REPO")"
     BADGE=$(agent_badge "$AGENT")
     IS_BLOCKED=false
     if [ "$STATUS" = "blocked" ] || [ "$STATUS" = "needs_review" ]; then
@@ -470,12 +469,11 @@ ${REMAINING_LIST}"
 ${FILES_CHANGED_LIST}"
       fi
 
-      # Owner ping for blocked tasks
+      # Note for blocked tasks (no @mention since comment is posted as the owner)
       if [ "$IS_BLOCKED" = true ]; then
         COMMENT="${COMMENT}
 
----
-${OWNER_TAG} this task needs your attention."
+> ⚠️ This task needs your attention."
       fi
 
       # Tool activity
@@ -514,6 +512,13 @@ ${PROMPT_CONTENT}
 
 </details>"
       fi
+
+      # Footer
+      AGENT_NAME="${AGENT:-orchestrator}"
+      COMMENT="${COMMENT}
+
+---
+*Commented by ${AGENT_NAME}[bot] via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*"
 
       # --- Post with dedup ---
       if ! should_skip_comment "$ID" "$COMMENT"; then
