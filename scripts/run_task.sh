@@ -157,9 +157,18 @@ elif [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH
     cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
   fi
 
+  _save_worktree_info() {
+    export WORKTREE_DIR BRANCH_NAME
+    with_lock yq -i \
+      "(.tasks[] | select(.id == $TASK_ID) | .worktree) = strenv(WORKTREE_DIR) |
+       (.tasks[] | select(.id == $TASK_ID) | .branch) = strenv(BRANCH_NAME)" \
+      "$TASKS_PATH"
+  }
+
   if [ -d "$WORKTREE_DIR" ]; then
     PROJECT_DIR="$WORKTREE_DIR"
     export PROJECT_DIR
+    _save_worktree_info
     log_err "[run] task=$TASK_ID agent will run in worktree $WORKTREE_DIR"
   else
     # Retry: clean up and try again
@@ -171,6 +180,7 @@ elif [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH
     if [ -d "$WORKTREE_DIR" ]; then
       PROJECT_DIR="$WORKTREE_DIR"
       export PROJECT_DIR
+      _save_worktree_info
       log_err "[run] task=$TASK_ID worktree created on retry: $WORKTREE_DIR"
     else
       log_err "[run] task=$TASK_ID worktree creation failed, blocking task"
@@ -217,9 +227,8 @@ else
   GIT_DIFF=""
 fi
 
-# Output file for agentic mode
-ensure_state_dir
-OUTPUT_FILE="${STATE_DIR}/output-${TASK_ID}.json"
+# Output file for agentic mode — place inside project dir so codex sandbox can write to it
+OUTPUT_FILE="${PROJECT_DIR}/.orchestrator-output-${TASK_ID}.json"
 rm -f "$OUTPUT_FILE"
 export OUTPUT_FILE
 
@@ -468,14 +477,21 @@ fi
 RESPONSE_JSON=""
 if [ -f "$OUTPUT_FILE" ]; then
   RESPONSE_JSON=$(cat "$OUTPUT_FILE")
+  rm -f "$OUTPUT_FILE"  # Clean up so it doesn't get committed
   log_err "[run] read output from $OUTPUT_FILE"
 else
-  # Check if agent wrote output inside project dir instead
-  ALT_OUTPUT="${PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json"
-  if [ -f "$ALT_OUTPUT" ]; then
-    RESPONSE_JSON=$(cat "$ALT_OUTPUT")
-    log_err "[run] read output from $ALT_OUTPUT (project dir fallback)"
-  else
+  # Check common fallback locations
+  for _alt in "${PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json" \
+              "${STATE_DIR}/output-${TASK_ID}.json" \
+              "/tmp/output-${TASK_ID}.json"; do
+    if [ -f "$_alt" ]; then
+      RESPONSE_JSON=$(cat "$_alt")
+      rm -f "$_alt"
+      log_err "[run] read output from $_alt (fallback)"
+      break
+    fi
+  done
+  if [ -z "$RESPONSE_JSON" ]; then
     log_err "[run] output file not found, trying stdout fallback"
     RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
   fi

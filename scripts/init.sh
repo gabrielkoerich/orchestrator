@@ -53,6 +53,15 @@ YAML
   fi
   echo "Saved .orchestrator.yml"
 
+  # Add .orchestrator* to .gitignore if not already there
+  if [ -f ".gitignore" ]; then
+    if ! grep -q '\.orchestrator' .gitignore 2>/dev/null; then
+      echo '.orchestrator*' >> .gitignore
+    fi
+  else
+    echo '.orchestrator*' > .gitignore
+  fi
+
   if [ -n "$GH_PROJECT_ID" ]; then
     export GH_PROJECT_ID
     yq -i ".gh.project_id = strenv(GH_PROJECT_ID)" "$CONFIG_FILE"
