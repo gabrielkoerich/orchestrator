@@ -479,10 +479,41 @@ fi
 if [ "$CMD_STATUS" -ne 0 ]; then
   COMBINED_OUTPUT="${RESPONSE}${AGENT_STDERR}"
 
-  # Detect auth/token/billing errors
+  # Detect auth/token/billing errors — try switching to another agent
   if printf '%s' "$COMBINED_OUTPUT" | grep -qiE 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
     error_log "[run] task=$TASK_ID AUTH/BILLING ERROR for agent=$TASK_AGENT"
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — check API key or credits"
+    AVAILABLE=$(available_agents)
+    NEXT_AGENT=""
+    IFS=',' read -ra _agents <<< "$AVAILABLE"
+    for _a in "${_agents[@]}"; do
+      if [ "$_a" != "$TASK_AGENT" ]; then
+        NEXT_AGENT="$_a"
+        break
+      fi
+    done
+    if [ -n "$NEXT_AGENT" ]; then
+      log_err "[run] task=$TASK_ID switching from $TASK_AGENT to $NEXT_AGENT (auth/billing error)"
+      NOW=$(now_iso)
+      PREV_ATTEMPTS=$((ATTEMPTS - 1))
+      export NOW NEXT_AGENT PREV_ATTEMPTS
+      with_lock yq -i \
+        "(.tasks[] | select(.id == $TASK_ID) | .agent) = strenv(NEXT_AGENT) |
+         (.tasks[] | select(.id == $TASK_ID) | .status) = \"new\" |
+         (.tasks[] | select(.id == $TASK_ID) | .attempts) = (env(PREV_ATTEMPTS) | tonumber) |
+         (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"$TASK_AGENT auth/billing error, switched to $NEXT_AGENT\" |
+         (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
+        "$TASKS_PATH"
+      append_history "$TASK_ID" "new" "$TASK_AGENT auth/billing error — switched to $NEXT_AGENT"
+      STDERR_SNIPPET=$(printf '%s' "$COMBINED_OUTPUT" | tail -c 300)
+      comment_on_issue "$TASK_ID" "⚠️ **Agent switch**: \`$TASK_AGENT\` failed with auth/billing error. Switching to \`$NEXT_AGENT\`.
+
+\`\`\`
+${STDERR_SNIPPET}
+\`\`\`"
+    else
+      mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — no other agents available"
+      comment_on_issue "$TASK_ID" "🚨 **Auth/billing error**: \`$TASK_AGENT\` failed and no other agents are available. Manual intervention needed."
+    fi
     exit 0
   fi
 
