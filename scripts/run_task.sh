@@ -327,7 +327,7 @@ DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash
 
 # Save prompt for debugging
 ensure_state_dir
-PROMPT_FILE="${STATE_DIR}/prompt-${TASK_ID}.txt"
+PROMPT_FILE="${STATE_DIR}/prompt-${TASK_ID}-${TASK_AGENT}-${ATTEMPTS}.txt"
 printf '=== SYSTEM PROMPT ===\n%s\n\n=== AGENT MESSAGE ===\n%s\n' "$SYSTEM_PROMPT" "$AGENT_MESSAGE" > "$PROMPT_FILE"
 PROMPT_HASH=$(shasum -a 256 "$PROMPT_FILE" | cut -c1-8)
 export PROMPT_HASH
@@ -342,7 +342,7 @@ start_spinner "Running task $TASK_ID ($TASK_AGENT)"
 AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 RESPONSE=""
-STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}.txt"
+STDERR_FILE="${STATE_DIR}/stderr-${TASK_ID}-${TASK_AGENT}-${ATTEMPTS}.txt"
 : > "$STDERR_FILE"
 
 # Monitor stderr in background for stuck agent indicators (1Password, passphrase, etc.)
@@ -444,7 +444,7 @@ export AGENT_DURATION
 log_err "[run] task=$TASK_ID agent finished (exit=$CMD_STATUS) duration=$(duration_fmt $AGENT_DURATION)"
 
 # Save raw response for debugging
-RESPONSE_FILE="${STATE_DIR}/response-${TASK_ID}.txt"
+RESPONSE_FILE="${STATE_DIR}/response-${TASK_ID}-${TASK_AGENT}-${ATTEMPTS}.txt"
 printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
 RESPONSE_LEN=${#RESPONSE}
 log_err "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)"
@@ -453,7 +453,7 @@ log_err "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} b
 TOOL_SUMMARY=$(RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-summary 2>/dev/null || true)
 TOOL_COUNT=0
 if [ -n "$TOOL_SUMMARY" ]; then
-  RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-history > "${STATE_DIR}/tools-${TASK_ID}.json" 2>/dev/null || true
+  RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-history > "${STATE_DIR}/tools-${TASK_ID}-${TASK_AGENT}-${ATTEMPTS}.json" 2>/dev/null || true
   append_task_context "$TASK_ID" "Commands run by agent (attempt $ATTEMPTS):\n$TOOL_SUMMARY"
   TOOL_COUNT=$(printf '%s' "$TOOL_SUMMARY" | wc -l | tr -d ' ')
   log_err "[run] task=$TASK_ID tool history saved ($TOOL_COUNT calls)"
@@ -563,7 +563,7 @@ fi
 if [ -z "$RESPONSE_JSON" ]; then
   log_err "[run] task=$TASK_ID invalid JSON response"
   mkdir -p "$CONTEXTS_DIR"
-  printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/response-${TASK_ID}.md"
+  printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/response-${TASK_ID}-${TASK_AGENT}-${ATTEMPTS}.md"
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response invalid YAML/JSON"
   exit 0
 fi
