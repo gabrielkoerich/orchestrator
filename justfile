@@ -317,6 +317,42 @@ serve interval="10":
 test:
     @bats tests
 
+# Release: commit, push, watch CI, brew upgrade, restart
+[group('service')]
+release *msg:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Check for changes
+    if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+      echo "Nothing to commit"
+      exit 1
+    fi
+    # Commit
+    if [ -n "{{ msg }}" ]; then
+      git add -A && git commit -m "{{ msg }}"
+    else
+      echo "Usage: orchestrator release \"commit message\""
+      exit 1
+    fi
+    # Push
+    echo "==> Pushing to origin..."
+    git push
+    # Wait for CI
+    echo "==> Waiting for CI..."
+    sleep 3
+    RUN_ID=$(gh run list --limit 1 --json databaseId -q '.[0].databaseId')
+    gh run watch "$RUN_ID" --exit-status || { echo "CI failed!"; exit 1; }
+    # Brew upgrade
+    echo "==> Upgrading brew..."
+    brew update --quiet
+    brew upgrade orchestrator
+    # Restart
+    echo "==> Restarting orchestrator..."
+    orchestrator stop
+    sleep 1
+    orchestrator start
+    echo "==> Done! $(orchestrator version)"
+
 ############################
 #  Legacy manual & Services
 ############################
