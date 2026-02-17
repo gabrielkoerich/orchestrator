@@ -27,22 +27,47 @@ dashboard:
 [group('config')]
 log tail="50":
     #!/usr/bin/env bash
-    STATE="${STATE_DIR:-.orchestrator}"
+    ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
+    STATE="${ORCH_HOME}/.orchestrator"
     BREW_LOG="${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log"
-    # Show error log if it exists
+    BREW_ERR="${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.error.log"
     if [ -f "$STATE/orchestrator.error.log" ] && [ -s "$STATE/orchestrator.error.log" ]; then
       echo "=== Error Log ==="
       tail -n {{ tail }} "$STATE/orchestrator.error.log"
       echo ""
     fi
-    echo "=== Server Log ==="
-    if [ -f "$BREW_LOG" ]; then
-      tail -n {{ tail }} "$BREW_LOG"
-    elif [ -f "$STATE/orchestrator.log" ]; then
+    if [ -f "$STATE/orchestrator.log" ]; then
+      echo "=== Orchestrator Log ==="
       tail -n {{ tail }} "$STATE/orchestrator.log"
-    else
-      echo "(no log file found)"
+      echo ""
     fi
+    if [ -f "$BREW_LOG" ] && [ -s "$BREW_LOG" ]; then
+      echo "=== Brew Log ==="
+      tail -n {{ tail }} "$BREW_LOG"
+      echo ""
+    fi
+    if [ -f "$BREW_ERR" ] && [ -s "$BREW_ERR" ]; then
+      echo "=== Brew Error Log ==="
+      tail -n {{ tail }} "$BREW_ERR"
+    fi
+
+# Follow orchestrator logs in real time
+[group('config')]
+log-follow:
+    #!/usr/bin/env bash
+    ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
+    STATE="${ORCH_HOME}/.orchestrator"
+    BREW_ERR="${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.error.log"
+    # Tail all log files that exist
+    FILES=()
+    [ -f "$STATE/orchestrator.log" ] && FILES+=("$STATE/orchestrator.log")
+    [ -f "$STATE/orchestrator.error.log" ] && FILES+=("$STATE/orchestrator.error.log")
+    [ -f "$BREW_ERR" ] && FILES+=("$BREW_ERR")
+    if [ ${#FILES[@]} -eq 0 ]; then
+      echo "No log files found"
+      exit 1
+    fi
+    tail -f "${FILES[@]}"
 
 #################################
 # Namespace: skills (list, sync)
