@@ -23,11 +23,11 @@ if [ -n "$IN_PROGRESS_IDS" ]; then
     if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
       log "[poll] task=$sid stuck in_progress without agent"
       with_lock yq -i \
-        "(.tasks[] | select(.id == $sid) | .status) = \"blocked\" | \
+        "(.tasks[] | select(.id == $sid) | .status) = \"needs_review\" | \
          (.tasks[] | select(.id == $sid) | .last_error) = \"task stuck in_progress without agent\" | \
          (.tasks[] | select(.id == $sid) | .updated_at) = strenv(NOW)" \
         "$TASKS_PATH"
-      append_history "$sid" "blocked" "stuck in_progress without agent"
+      append_history "$sid" "needs_review" "stuck in_progress without agent"
       continue
     fi
 

@@ -89,8 +89,8 @@ if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ]; then
   else
     log_err "[run] task=$TASK_ID dir=$TASK_DIR does not exist"
     append_history "$TASK_ID" "blocked" "task dir does not exist: $TASK_DIR"
-    set_task_field "$TASK_ID" "status" "blocked"
-    set_task_field "$TASK_ID" "last_error" "task dir does not exist: $TASK_DIR"
+    task_set "$TASK_ID" ".status" "blocked"
+    task_set "$TASK_ID" ".last_error" "task dir does not exist: $TASK_DIR"
     exit 0
   fi
 fi
@@ -133,6 +133,10 @@ if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_I
     ISSUE_COMMENTS=$(fetch_issue_comments "$GH_REPO" "$GH_ISSUE_NUMBER" 10)
   fi
 fi
+
+# Save the main project dir before worktree override — used for sandbox restrictions
+MAIN_PROJECT_DIR="$PROJECT_DIR"
+export MAIN_PROJECT_DIR
 
 # Set up worktree for coding tasks — orchestrator creates it, not the agent
 export WORKTREE_DIR=""
@@ -217,8 +221,8 @@ else
   else
     log_err "[run] task=$TASK_ID worktree creation failed, blocking task"
     append_history "$TASK_ID" "blocked" "worktree creation failed for $WORKTREE_DIR"
-    set_task_field "$TASK_ID" "status" "blocked"
-    set_task_field "$TASK_ID" "last_error" "worktree creation failed: $WORKTREE_DIR"
+    task_set "$TASK_ID" ".status" "blocked"
+    task_set "$TASK_ID" ".last_error" "worktree creation failed: $WORKTREE_DIR"
     exit 0
   fi
 fi
@@ -287,12 +291,12 @@ fi
 if [ "$ATTEMPTS" -gt "$MAX" ]; then
   log_err "[run] task=$TASK_ID exceeded max attempts ($MAX)"
   with_lock yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
+    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
      (.tasks[] | select(.id == $TASK_ID) | .reason) = \"exceeded max attempts ($MAX)\" | \
      (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"max attempts exceeded\" | \
      (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
     "$TASKS_PATH"
-  append_history "$TASK_ID" "blocked" "exceeded max attempts ($MAX)"
+  append_history "$TASK_ID" "needs_review" "exceeded max attempts ($MAX)"
   exit 0
 fi
 
@@ -324,6 +328,18 @@ require_agent "$TASK_AGENT"
 
 # Build disallowed tools list
 DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash(rm -*)"] | join(",")')
+
+# Sandbox: block agent access to the main project directory (agent should only work in worktree)
+SANDBOX_ENABLED=$(config_get '.workflow.sandbox // true')
+if [ "$SANDBOX_ENABLED" = "true" ] && [ -n "$MAIN_PROJECT_DIR" ] && [ "$PROJECT_DIR" != "$MAIN_PROJECT_DIR" ]; then
+  SANDBOX_PATTERNS="Bash(cd ${MAIN_PROJECT_DIR}*),Read(${MAIN_PROJECT_DIR}/*),Write(${MAIN_PROJECT_DIR}/*),Edit(${MAIN_PROJECT_DIR}/*)"
+  if [ -n "$DISALLOWED_TOOLS" ]; then
+    DISALLOWED_TOOLS="${DISALLOWED_TOOLS},${SANDBOX_PATTERNS}"
+  else
+    DISALLOWED_TOOLS="$SANDBOX_PATTERNS"
+  fi
+  log_err "[run] task=$TASK_ID sandbox enabled: blocking access to $MAIN_PROJECT_DIR"
+fi
 
 # Save prompt for debugging
 ensure_state_dir
@@ -402,9 +418,25 @@ case "$TASK_AGENT" in
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
+    CODEX_SANDBOX=${CODEX_SANDBOX:-$(config_get '.agents.codex.sandbox // "full-auto"')}
+    CODEX_ARGS=()
+    case "$CODEX_SANDBOX" in
+      full-auto)
+        CODEX_ARGS+=(--full-auto -c 'sandbox_workspace_write.network_access=true')
+        ;;
+      workspace-write)
+        CODEX_ARGS+=(--sandbox workspace-write -c 'sandbox_workspace_write.network_access=true')
+        ;;
+      danger-full-access)
+        CODEX_ARGS+=(--sandbox danger-full-access)
+        ;;
+      none)
+        CODEX_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+        ;;
+    esac
     RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
       ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-      --full-auto \
+      "${CODEX_ARGS[@]}" \
       --json \
       - 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;

@@ -36,6 +36,13 @@ YAML
 }
 
 teardown() {
+  # Clean up worktrees created by tests (they live outside TMP_DIR)
+  PROJECT_NAME=$(basename "$TMP_DIR")
+  WORKTREE_BASE="$HOME/.worktrees/${PROJECT_NAME}"
+  if [ -d "$WORKTREE_BASE" ]; then
+    (cd "$TMP_DIR" && git worktree prune 2>/dev/null) || true
+    rm -rf "$WORKTREE_BASE"
+  fi
   rm -rf "${TMP_DIR}"
 }
 
@@ -752,7 +759,7 @@ SH
 
   run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
   [ "$status" -eq 0 ]
-  [ "$output" = "blocked" ]
+  [ "$output" = "needs_review" ]
 
   run yq -r '.tasks[] | select(.id == 2) | .reason' "$TASKS_PATH"
   [ "$status" -eq 0 ]
@@ -1843,10 +1850,10 @@ SH
     "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  # Task should be blocked due to retry loop
+  # Task should be needs_review due to retry loop
   run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
   [ "$status" -eq 0 ]
-  [ "$output" = "blocked" ]
+  [ "$output" = "needs_review" ]
 
   run yq -r '.tasks[] | select(.id == 2) | .last_error' "$TASKS_PATH"
   [ "$status" -eq 0 ]
@@ -2970,10 +2977,10 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  # Task should be blocked after reject
+  # Task should be needs_review after reject
   run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
   [ "$status" -eq 0 ]
-  [ "$output" = "blocked" ]
+  [ "$output" = "needs_review" ]
 
   # Last error should mention rejection
   run yq -r '.tasks[] | select(.id == 2) | .last_error' "$TASKS_PATH"
@@ -2998,4 +3005,25 @@ SH
   run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity claude complex"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+@test "run_task.sh sandbox adds disallowed tools for main project dir" {
+  # Verify the sandbox code block exists and generates correct patterns
+  run grep -c 'SANDBOX_PATTERNS' "${REPO_DIR}/scripts/run_task.sh"
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+
+  # Verify sandbox patterns include Read, Write, Edit, Bash restrictions
+  run grep 'SANDBOX_PATTERNS=' "${REPO_DIR}/scripts/run_task.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Read('* ]]
+  [[ "$output" == *'Write('* ]]
+  [[ "$output" == *'Edit('* ]]
+  [[ "$output" == *'Bash(cd'* ]]
+}
+
+@test "run_task.sh saves MAIN_PROJECT_DIR before worktree override" {
+  run grep -n 'MAIN_PROJECT_DIR=' "${REPO_DIR}/scripts/run_task.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'MAIN_PROJECT_DIR="$PROJECT_DIR"'* ]]
 }

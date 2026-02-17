@@ -871,8 +871,8 @@ label_issue() {
     --input - <<< "{\"labels\":[\"$label\"]}" >/dev/null 2>&1 || true
 }
 
-# Mark a task as blocked with error details.
-# The task will not be retried until manually unblocked.
+# Mark a task as needs_review — requires human attention.
+# The task will not be retried until manually addressed.
 # GitHub comments and labels are handled by gh_push.sh on next sync.
 # Usage: mark_needs_review TASK_ID ATTEMPTS "error message" ["history note"]
 mark_needs_review() {
@@ -881,11 +881,11 @@ mark_needs_review() {
   now=$(now_iso)
   export now
   with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .status) = \"blocked\" | \
+    "(.tasks[] | select(.id == $task_id) | .status) = \"needs_review\" | \
      (.tasks[] | select(.id == $task_id) | .last_error) = \"$error\" | \
      (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
     "$TASKS_PATH"
-  append_history "$task_id" "blocked" "$note"
+  append_history "$task_id" "needs_review" "$note"
 }
 
 fetch_issue_comments() {

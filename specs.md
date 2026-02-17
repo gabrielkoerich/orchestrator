@@ -40,6 +40,87 @@ serve.sh (10s tick loop)
 - **150 tests**: comprehensive bats test suite, all passing
 - **Release pipeline**: push → CI → auto-tag → GitHub release → Homebrew tap update
 
+## Agent Sandbox
+
+Agents are sandboxed to their worktree directory. The orchestrator creates the worktree from the main repo, then restricts agents from accessing the main project directory.
+
+### Enforcement Layers
+
+| Layer | Mechanism | Status |
+|-------|-----------|--------|
+| **Prompt** | System prompt tells agents the main project dir is read-only | Done |
+| **Disallowed tools** | Dynamic `--disallowedTools` patterns block Read/Write/Edit/Bash on main dir | Done (v0.19) |
+| **Codex sandbox** | `--full-auto` runs in Docker container | Built-in but too restrictive |
+| **Container** | Full Docker isolation with worktree mounted | Not planned — auth problem |
+
+### How It Works
+1. `run_task.sh` saves `MAIN_PROJECT_DIR` before creating the worktree
+2. If `workflow.sandbox` is `true` (default), sandbox patterns are added to `--disallowedTools`:
+   - `Read($MAIN_PROJECT_DIR/*)` — blocks reading main repo files
+   - `Write($MAIN_PROJECT_DIR/*)` — blocks writing main repo files
+   - `Edit($MAIN_PROJECT_DIR/*)` — blocks editing main repo files
+   - `Bash(cd $MAIN_PROJECT_DIR*)` — blocks navigating to main repo
+3. These patterns are added to the configured `workflow.disallowed_tools` list
+4. Config: `workflow.sandbox: false` to disable (not recommended)
+
+### Codex Limitations
+Codex's `--full-auto` mode runs in a Docker sandbox that blocks network access and external tools. This means:
+- No `gh` CLI (GitHub API calls fail with "error connecting to api.github.com")
+- No `bun` (missing from container PATH)
+- No `solana-test-validator` or other system tools
+- Codex can only do pure code changes — no CI, no API calls, no package installs
+
+Container-based sandboxing for other agents (Claude, OpenCode) is impractical because:
+- Agents require authenticated subscriptions (Claude Code login, API keys)
+- Interactive auth flows (1Password, biometric) don't work in containers
+- Each agent would need its own container image with auth pre-configured
+
+### Task Status Semantics
+- **`blocked`** — waiting on a dependency (children not done, or infrastructure issue like missing worktree)
+- **`needs_review`** — requires human attention (max attempts, review rejection, agent failures, retry loops)
+- `mark_needs_review()` in lib.sh sets `needs_review`, not `blocked`
+- Only parent tasks waiting on children should be `blocked`
+- `poll.sh` auto-unblocks parent tasks when all children are done; `needs_review` tasks require manual action
+
+## GitHub App (Investigation)
+
+### What It Would Do
+A GitHub App could replace the current `gh` CLI-based API calls with proper app authentication. Benefits:
+- **No personal access token needed** — app generates its own installation tokens
+- **Fine-grained permissions** — only the permissions the app needs (issues, PRs, projects)
+- **Webhooks** — instant event delivery instead of 60s polling
+- **Rate limits** — higher API rate limits than personal tokens
+- **Multi-user** — anyone can install the app on their repo, no shared credentials
+
+### What It Needs
+- A server to receive webhooks (or use GitHub Actions as a relay)
+- App registration on GitHub (name, description, permissions, webhook URL)
+- Private key for JWT signing (stored securely)
+- Installation token refresh logic (tokens expire every hour)
+
+### Permissions Required
+- **Issues**: read/write (create, update, comment, close)
+- **Pull requests**: read/write (create, review, merge)
+- **Contents**: read/write (push branches)
+- **Projects**: read/write (board status updates)
+- **Metadata**: read (repo info)
+
+### Installation
+- Anyone can install via "Install App" button on the GitHub App page
+- One-click install per repo or org-wide
+- No coding required for the installer — just approve permissions
+
+### Architecture Options
+1. **Hosted app**: Run a small server (Cloudflare Worker, Vercel, etc.) that receives webhooks and calls orchestrator APIs
+2. **GitHub Actions relay**: App triggers a workflow, workflow runs orchestrator commands
+3. **Hybrid**: App handles webhooks for instant sync, orchestrator still runs locally for agent execution
+
+### Decision
+Optional enhancement. The current `gh` CLI approach works fine for single-user setups. A GitHub App makes sense when:
+- Multiple users need to install orchestrator on their repos
+- Webhook-based instant sync is needed (eliminates 60s polling delay)
+- Higher API rate limits are required (heavy sync workloads)
+
 ## What's Not Working / Known Issues
 
 ### PR Creation Gaps
