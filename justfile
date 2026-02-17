@@ -318,7 +318,7 @@ test:
     @bats tests
 
 # Release: commit, push, watch CI, brew upgrade, restart
-[group('service')]
+[private]
 release *msg:
     #!/usr/bin/env bash
     set -euo pipefail

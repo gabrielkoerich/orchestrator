@@ -142,14 +142,23 @@ if [ "$DECOMPOSE" = "true" ]; then
 fi
 
 # Always create a worktree — never work in the main project dir
+# Reuse existing branch/worktree from task if already set (deterministic across retries)
+SAVED_BRANCH=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .branch // \"\"" "$TASKS_PATH")
+SAVED_WORKTREE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .worktree // \"\"" "$TASKS_PATH")
 PROJECT_NAME=$(basename "$PROJECT_DIR")
-BRANCH_SLUG=$(printf '%s' "$TASK_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 40)
-if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-  BRANCH_NAME="gh-task-${GH_ISSUE_NUMBER}-${BRANCH_SLUG}"
+
+if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
+  BRANCH_NAME="$SAVED_BRANCH"
+  WORKTREE_DIR="${SAVED_WORKTREE:-$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}}"
 else
-  BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
+  BRANCH_SLUG=$(printf '%s' "$TASK_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 40)
+  if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
+    BRANCH_NAME="gh-task-${GH_ISSUE_NUMBER}-${BRANCH_SLUG}"
+  else
+    BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
+  fi
+  WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
 fi
-WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
 export BRANCH_NAME
 
 if [ ! -d "$WORKTREE_DIR" ]; then
