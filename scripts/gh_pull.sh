@@ -38,13 +38,35 @@ GH_BACKOFF_MAX_SECONDS=${GITHUB_BACKOFF_MAX_SECONDS:-$(config_get '.gh.backoff.m
 export GH_BACKOFF_MODE GH_BACKOFF_BASE_SECONDS GH_BACKOFF_MAX_SECONDS
 
 log "[gh_pull] repo=$REPO"
-ISSUES_JSON=$(gh_api -X GET "repos/$REPO/issues" --paginate -f state=all -f per_page=100)
+
+# Fetch open issues only — we don't import closed issues as new tasks
+ISSUES_JSON=$(gh_api -X GET "repos/$REPO/issues" --paginate -f state=open -f per_page=100)
 # gh api --paginate may return one JSON array per page; merge into one
 ISSUES_JSON=$(printf '%s' "$ISSUES_JSON" | yq ea -p=json -o=json -I=0 '[.[]]')
 FILTERED=$(printf '%s' "$ISSUES_JSON" | yq -o=json -I=0 'map(select(.pull_request == null))')
 if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
   FILTERED=$(printf '%s' "$FILTERED" | yq -o=json -I=0 "map(select(.labels | map(.name) | any_c(. == \"$SYNC_LABEL\")))")
 fi
+
+# Check local tasks linked to GitHub issues — mark done if issue was closed
+OPEN_NUMS=$(printf '%s' "$FILTERED" | yq -r '.[].number')
+LOCAL_GH_TASKS=$(yq -r '.tasks[] | select(.gh_issue_number != null and .gh_issue_number != "" and .status != "done") | .gh_issue_number' "$TASKS_PATH" 2>/dev/null || true)
+for _GH_NUM in $LOCAL_GH_TASKS; do
+  # If this issue number is not in the open issues list, check if it's closed
+  if ! printf '%s\n' "$OPEN_NUMS" | grep -qx "$_GH_NUM"; then
+    _GH_STATE=$(gh_api "repos/$REPO/issues/$_GH_NUM" -q '.state' 2>/dev/null || true)
+    if [ "$_GH_STATE" = "closed" ]; then
+      NOW=$(now_iso)
+      export NOW
+      yq -i \
+        "(.tasks[] | select(.gh_issue_number == $_GH_NUM) | .status) = \"done\" |
+         (.tasks[] | select(.gh_issue_number == $_GH_NUM) | .gh_state) = \"closed\" |
+         (.tasks[] | select(.gh_issue_number == $_GH_NUM) | .updated_at) = strenv(NOW)" \
+        "$TASKS_PATH"
+      log "[gh_pull] issue #$_GH_NUM closed on GitHub — marked task done"
+    fi
+  fi
+done
 
 acquire_lock
 
@@ -80,24 +102,10 @@ for i in $(seq 0 $((COUNT - 1))); do
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_updated_at) = strenv(UPDATED)" \
       "$TASKS_PATH"
 
-    if [ "$STATE" = "closed" ]; then
-      CURRENT_STATUS=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .status" "$TASKS_PATH")
-      if [ "$CURRENT_STATUS" != "done" ]; then
-        NOW=$(now_iso)
-        export NOW
-        yq -i \
-          "(.tasks[] | select(.gh_issue_number == $NUM) | .status) = \"done\" | \
-           (.tasks[] | select(.gh_issue_number == $NUM) | .updated_at) = strenv(NOW)" \
-          "$TASKS_PATH"
-      fi
-    fi
   else
     NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
     NOW=$(now_iso)
     STATUS="new"
-    if [ "$STATE" = "closed" ]; then
-      STATUS="done"
-    fi
     export NEXT_ID TITLE BODY LABELS_CSV STATUS NOW STATE URL UPDATED NUM
 
     yq -i \
