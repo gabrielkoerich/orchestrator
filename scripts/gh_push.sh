@@ -606,3 +606,59 @@ ${PROMPT_CONTENT}
   sync_project_status "$GH_NUM" "$STATUS"
 
 done
+
+# --- Catch-all: create PRs for pushed branches that don't have one ---
+for i in $(seq 0 $((TASK_COUNT - 1))); do
+  _ID=$(yq -r ".tasks[$i].id" "$TASKS_PATH")
+  _BRANCH=$(yq -r ".tasks[$i].branch // \"\"" "$TASKS_PATH")
+  _STATUS=$(yq -r ".tasks[$i].status" "$TASKS_PATH")
+  _GH_NUM=$(yq -r ".tasks[$i].gh_issue_number // \"\"" "$TASKS_PATH")
+  _TITLE=$(yq -r ".tasks[$i].title" "$TASKS_PATH")
+  _SUMMARY=$(yq -r ".tasks[$i].summary // \"\"" "$TASKS_PATH")
+  _WORKTREE=$(yq -r ".tasks[$i].worktree // \"\"" "$TASKS_PATH")
+  _AGENT=$(yq -r ".tasks[$i].agent // \"\"" "$TASKS_PATH")
+
+  # Skip tasks without branches or on main
+  [ -n "$_BRANCH" ] && [ "$_BRANCH" != "null" ] && [ "$_BRANCH" != "main" ] && [ "$_BRANCH" != "master" ] || continue
+  # Only for tasks that are done, in_review, in_progress, or blocked
+  case "$_STATUS" in done|in_review|in_progress|blocked) ;; *) continue ;; esac
+
+  # Check if branch exists on remote
+  if ! git ls-remote --heads origin "$_BRANCH" 2>/dev/null | grep -q "$_BRANCH"; then
+    continue
+  fi
+
+  # Check if PR already exists
+  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$_BRANCH" --json number -q '.[0].number' 2>/dev/null || true)
+  if [ -n "$EXISTING_PR" ]; then
+    continue
+  fi
+
+  # Check if branch has commits beyond main
+  HAS_COMMITS=false
+  if [ -n "$_WORKTREE" ] && [ -d "$_WORKTREE" ]; then
+    if (cd "$_WORKTREE" && git log "origin/main..HEAD" --oneline 2>/dev/null | grep -q .); then
+      HAS_COMMITS=true
+    fi
+  else
+    if git log "origin/main..origin/$_BRANCH" --oneline 2>/dev/null | grep -q .; then
+      HAS_COMMITS=true
+    fi
+  fi
+  [ "$HAS_COMMITS" = true ] || continue
+
+  PR_TITLE="${_SUMMARY:-$_TITLE}"
+  PR_BODY="## Summary
+
+${_SUMMARY:-$_TITLE}
+
+${_GH_NUM:+Closes #${_GH_NUM}}
+
+---
+*Created by ${_AGENT:-orchestrator}[bot] via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*"
+
+  PR_URL=$(gh pr create --repo "$REPO" --title "$PR_TITLE" --body "$PR_BODY" --head "$_BRANCH" 2>/dev/null || true)
+  if [ -n "$PR_URL" ]; then
+    log "[gh_push] task=$_ID created catch-all PR for branch $_BRANCH: $PR_URL"
+  fi
+done
