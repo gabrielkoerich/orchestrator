@@ -67,7 +67,7 @@ teardown() {
   cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
 cat <<'JSON'
-{"executor":"codex","reason":"test route","profile":{"role":"backend specialist","skills":["api","sql"],"tools":["git","rg"],"constraints":["no migrations"]},"selected_skills":[]}
+{"executor":"codex","complexity":"medium","reason":"test route","profile":{"role":"backend specialist","skills":["api","sql"],"tools":["git","rg"],"constraints":["no migrations"]},"selected_skills":[]}
 JSON
 SH
   chmod +x "$CODEX_STUB"
@@ -2786,4 +2786,216 @@ STUB
   # Clean up worktree
   git -C "$PROJECT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
   git -C "$PROJECT_DIR" branch -D "gh-task-55-add-license" 2>/dev/null || true
+}
+
+@test "model_for_complexity resolves agent model from config" {
+  # Add model_map to config
+  yq -i '.model_map.simple.claude = "haiku" |
+         .model_map.simple.codex = "gpt-5.1-codex-mini" |
+         .model_map.medium.claude = "sonnet" |
+         .model_map.medium.codex = "gpt-5.2" |
+         .model_map.complex.claude = "opus" |
+         .model_map.complex.codex = "gpt-5.3-codex"' "$CONFIG_PATH"
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity claude simple"
+  [ "$status" -eq 0 ]
+  [ "$output" = "haiku" ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity claude medium"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sonnet" ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity claude complex"
+  [ "$status" -eq 0 ]
+  [ "$output" = "opus" ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity codex medium"
+  [ "$status" -eq 0 ]
+  [ "$output" = "gpt-5.2" ]
+
+  # Unconfigured agent returns empty
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity opencode simple"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "route_task.sh stores complexity label instead of model" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Route Complexity" "Test complexity routing" ""
+  [ "$status" -eq 0 ]
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"executor":"codex","complexity":"simple","reason":"docs task","profile":{"role":"writer","skills":["docs"],"tools":["git"],"constraints":[]},"selected_skills":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/route_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Complexity should be stored on the task
+  run yq -r '.tasks[] | select(.id == 2) | .complexity' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "simple" ]
+
+  # Label should be complexity:simple, not model:*
+  run yq -r '.tasks[] | select(.id == 2) | .labels[]' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"complexity:simple"* ]]
+  [[ "$output" != *"model:"* ]]
+}
+
+@test "route_task.sh fallback sets complexity to medium" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Fallback Complexity" "Test fallback" ""
+  [ "$status" -eq 0 ]
+
+  run yq -i '.router.agent = "claude" | .router.timeout_seconds = 0 | .router.fallback_executor = "codex"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "stub"
+SH
+  chmod +x "$CODEX_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/route_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Fallback should default to medium complexity
+  run yq -r '.tasks[] | select(.id == 2) | .complexity' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "medium" ]
+
+  # Label should include complexity:medium
+  run yq -r '.tasks[] | select(.id == 2) | .labels[]' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"complexity:medium"* ]]
+}
+
+@test "create_task_entry includes complexity field" {
+  NOW="2026-01-01T00:00:00Z"
+  export NOW PROJECT_DIR="$TMP_DIR"
+
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    TASKS_PATH='$TASKS_PATH'
+    create_task_entry 99 'Complexity Task' 'Test body' 'test' '' ''
+  "
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 99) | .complexity' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "null" ]
+}
+
+@test "run_task.sh resolves model from complexity config" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Resolve Model" "Test model resolution" ""
+  [ "$status" -eq 0 ]
+
+  # Add model_map and set complexity on task
+  yq -i '.model_map.simple.codex = "gpt-5.1-codex-mini" |
+         .model_map.medium.codex = "gpt-5.2" |
+         .model_map.complex.codex = "gpt-5.3-codex"' "$CONFIG_PATH"
+
+  yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex" |
+         (.tasks[] | select(.id == 2) | .complexity) = "simple"' "$TASKS_PATH"
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"status":"done","summary":"resolved model","files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+}
+
+@test "review agent uses reject decision to close PR" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Review Reject" "Test reject" ""
+  [ "$status" -eq 0 ]
+
+  run yq -i '.workflow.enable_review_agent = true | .workflow.review_agent = "codex"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+prompt="$*"
+if printf '%s' "$prompt" | grep -q "reviewing agent"; then
+  cat <<'JSON'
+{"decision":"reject","notes":"hallucinated API calls"}
+JSON
+else
+  cat <<'JSON'
+{"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+fi
+SH
+  chmod +x "$CODEX_STUB"
+
+  # Mock gh — return empty for pr list, mock for api calls
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "pr" ]; then
+  echo ""
+elif [ "$1" = "issue" ]; then
+  echo ""
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Task should be blocked after reject
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "blocked" ]
+
+  # Last error should mention rejection
+  run yq -r '.tasks[] | select(.id == 2) | .last_error' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"review rejected"* ]]
+}
+
+@test "model_for_complexity defaults to medium when null" {
+  yq -i '.model_map.medium.claude = "sonnet"' "$CONFIG_PATH"
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity claude ''"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sonnet" ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity claude null"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sonnet" ]
+}
+
+@test "model_for_complexity returns empty for unconfigured model_map" {
+  # No model_map in config at all
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; model_for_complexity claude complex"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }

@@ -126,7 +126,7 @@ if [ "${CMD_STATUS:-0}" -ne 0 ]; then
     ROUTE_WARNING=""
     PROFILE_JSON='{}'
     SELECTED_SKILLS_CSV=""
-    MODEL=""
+    COMPLEXITY="medium"
     NOW=$(now_iso)
     # Apply static defaults to fallback profile
     if [ -n "$ALLOWED_TOOLS_CSV" ]; then
@@ -138,17 +138,17 @@ if [ "${CMD_STATUS:-0}" -ne 0 ]; then
     ROLE="general"
     AGENT_LABEL="agent:${ROUTED_AGENT}"
     ROLE_LABEL="role:${ROLE}"
-    MODEL_LABEL=""
-    export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV MODEL MODEL_LABEL
+    COMPLEXITY_LABEL="complexity:${COMPLEXITY}"
+    export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV COMPLEXITY COMPLEXITY_LABEL
     with_lock yq -i \
       "(.tasks[] | select(.id == $TASK_ID) | .agent) = (strenv(ROUTED_AGENT) | select(length > 0)) | \
-       (.tasks[] | select(.id == $TASK_ID) | .agent_model) = (strenv(MODEL) | select(length > 0) // null) | \
+       (.tasks[] | select(.id == $TASK_ID) | .complexity) = strenv(COMPLEXITY) | \
        (.tasks[] | select(.id == $TASK_ID) | .status) = \"routed\" | \
        (.tasks[] | select(.id == $TASK_ID) | .route_reason) = strenv(REASON) | \
        (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (strenv(ROUTE_WARNING) | select(length > 0) // null) | \
        (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = load(\"$TMP_PROFILE\") | \
        (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (strenv(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0)) | unique) | \
-       (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL)]) | unique) | \
+       (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL), strenv(COMPLEXITY_LABEL)]) | unique) | \
        (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
       "$TASKS_PATH"
     append_history "$TASK_ID" "routed" "$REASON"
@@ -190,8 +190,7 @@ ROUTED_AGENT=$(printf '%s' "$RESPONSE_JSON" | jq -r '.executor // ""')
 REASON=$(printf '%s' "$RESPONSE_JSON" | jq -r '.reason // ""')
 PROFILE_JSON=$(printf '%s' "$RESPONSE_JSON" | jq -c '.profile // {}')
 SELECTED_SKILLS_CSV=$(printf '%s' "$RESPONSE_JSON" | jq -r '.selected_skills // [] | join(",")')
-MODEL=$(printf '%s' "$RESPONSE_JSON" | jq -r '.model // ""')
-DECOMPOSE=$(printf '%s' "$RESPONSE_JSON" | jq -r '.decompose // false')
+COMPLEXITY=$(printf '%s' "$RESPONSE_JSON" | jq -r '.complexity // "medium"')
 NOW=$(now_iso)
 
 # Validate routed agent is installed
@@ -243,40 +242,29 @@ printf '%s
 ROLE=$(printf '%s' "$PROFILE_JSON" | jq -r '.role // "general"')
 AGENT_LABEL="agent:${ROUTED_AGENT}"
 ROLE_LABEL="role:${ROLE}"
-MODEL_LABEL=""
-if [ -n "$MODEL" ] && [ "$MODEL" != "null" ]; then
-  MODEL_LABEL="model:${MODEL}"
-fi
+COMPLEXITY_LABEL="complexity:${COMPLEXITY}"
 
-# Decompose: router decision or manual "plan" label
+# Decompose: manual "plan" label
 DECOMPOSE_LABEL=""
-if [ "$DECOMPOSE" = "true" ]; then
-  DECOMPOSE_LABEL="plan"
-fi
-# Manual "plan" label always wins
 if echo "$LABELS_LOWER" | grep -qE '(^|,)plan(,|$)'; then
-  DECOMPOSE="true"
   DECOMPOSE_LABEL="plan"
 fi
 
-export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV MODEL MODEL_LABEL DECOMPOSE_LABEL
+export ROUTED_AGENT REASON NOW ROUTE_WARNING AGENT_LABEL ROLE_LABEL SELECTED_SKILLS_CSV COMPLEXITY COMPLEXITY_LABEL DECOMPOSE_LABEL
 
 with_lock yq -i \
   "(.tasks[] | select(.id == $TASK_ID) | .agent) = (strenv(ROUTED_AGENT) | select(length > 0)) | \
-   (.tasks[] | select(.id == $TASK_ID) | .agent_model) = (strenv(MODEL) | select(length > 0) // null) | \
+   (.tasks[] | select(.id == $TASK_ID) | .complexity) = strenv(COMPLEXITY) | \
    (.tasks[] | select(.id == $TASK_ID) | .status) = \"routed\" | \
    (.tasks[] | select(.id == $TASK_ID) | .route_reason) = strenv(REASON) | \
    (.tasks[] | select(.id == $TASK_ID) | .route_warning) = (strenv(ROUTE_WARNING) | select(length > 0) // null) | \
    (.tasks[] | select(.id == $TASK_ID) | .agent_profile) = load(\"$TMP_PROFILE\") | \
    (.tasks[] | select(.id == $TASK_ID) | .selected_skills) = (strenv(SELECTED_SKILLS_CSV) | split(\",\") | map(select(length > 0)) | unique) | \
-   (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL)] + (strenv(MODEL_LABEL) | select(length > 0) | [.] // []) + (strenv(DECOMPOSE_LABEL) | select(length > 0) | [.] // [])) | unique) | \
+   (.tasks[] | select(.id == $TASK_ID) | .labels) |= ((. + [strenv(AGENT_LABEL), strenv(ROLE_LABEL), strenv(COMPLEXITY_LABEL)] + (strenv(DECOMPOSE_LABEL) | select(length > 0) | [.] // [])) | unique) | \
    (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
   "$TASKS_PATH"
 
-NOTE="routed to $ROUTED_AGENT"
-if [ -n "$MODEL" ] && [ "$MODEL" != "null" ]; then
-  NOTE="$NOTE (model: $MODEL)"
-fi
+NOTE="routed to $ROUTED_AGENT (complexity: $COMPLEXITY)"
 if [ -n "$ROUTE_WARNING" ]; then
   NOTE="$NOTE (warning: $ROUTE_WARNING)"
 fi

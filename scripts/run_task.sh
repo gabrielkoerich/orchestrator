@@ -372,22 +372,9 @@ export GIT_COMMITTER_NAME="${TASK_AGENT}[bot]"
 export GIT_AUTHOR_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
 export GIT_COMMITTER_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
 
-# Map model names to agent-specific equivalents
-map_model() {
-  local agent="$1" model="$2"
-  if [ "$agent" = "codex" ]; then
-    case "$model" in
-      opus|claude-opus*) echo "gpt-5.3-codex" ;;
-      sonnet|claude-sonnet*) echo "gpt-5.2" ;;
-      haiku|claude-haiku*) echo "gpt-5.1-codex-mini" ;;
-      *) echo "$model" ;;
-    esac
-  else
-    echo "$model"
-  fi
-}
-if [ -n "$AGENT_MODEL" ]; then
-  AGENT_MODEL=$(map_model "$TASK_AGENT" "$AGENT_MODEL")
+# Resolve model from complexity + config model_map
+if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
+  AGENT_MODEL=$(model_for_complexity "$TASK_AGENT" "${TASK_COMPLEXITY:-medium}")
 fi
 
 CMD_STATUS=0
@@ -772,14 +759,15 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
 
   REVIEW_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/review.md")
 
+  REVIEW_MODEL=$(model_for_complexity "$REVIEW_AGENT" "review")
   REVIEW_RESPONSE=""
   REVIEW_STATUS=0
   case "$REVIEW_AGENT" in
     codex)
-      REVIEW_RESPONSE=$(run_with_timeout codex --print "$REVIEW_PROMPT") || REVIEW_STATUS=$?
+      REVIEW_RESPONSE=$(run_with_timeout codex ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") || REVIEW_STATUS=$?
       ;;
     claude)
-      REVIEW_RESPONSE=$(run_with_timeout claude --print "$REVIEW_PROMPT") || REVIEW_STATUS=$?
+      REVIEW_RESPONSE=$(run_with_timeout claude ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") || REVIEW_STATUS=$?
       ;;
     *)
       log_err "[run] task=$TASK_ID unknown review agent: $REVIEW_AGENT"
@@ -794,6 +782,20 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
 
   REVIEW_DECISION=$(printf '%s' "$REVIEW_RESPONSE" | yq -r '.decision // ""')
   REVIEW_NOTES=$(printf '%s' "$REVIEW_RESPONSE" | yq -r '.notes // ""')
+
+  if [ "$REVIEW_DECISION" = "reject" ]; then
+    log_err "[run] task=$TASK_ID review rejected — closing PR"
+    # Close the PR if one exists
+    if [ -n "${BRANCH_NAME:-}" ] && [ "$BRANCH_NAME" != "main" ] && command -v gh >/dev/null 2>&1 && [ -d "$PROJECT_DIR" ]; then
+      PR_NUM=$(cd "$PROJECT_DIR" && gh pr list --head "$BRANCH_NAME" --json number -q '.[0].number' 2>/dev/null || true)
+      if [ -n "$PR_NUM" ]; then
+        (cd "$PROJECT_DIR" && gh pr close "$PR_NUM" --comment "Rejected by review agent: ${REVIEW_NOTES:-no notes}" 2>/dev/null) || true
+        log_err "[run] task=$TASK_ID closed PR #$PR_NUM"
+      fi
+    fi
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review rejected: ${REVIEW_NOTES:-hallucination or broken changes}"
+    exit 0
+  fi
 
   if [ "$REVIEW_DECISION" = "request_changes" ]; then
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "review requested changes"

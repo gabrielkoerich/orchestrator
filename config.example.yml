@@ -26,6 +26,19 @@ router:
   default_skills:
     - gh
     - git-worktree
+model_map:
+  simple:
+    claude: haiku
+    codex: gpt-5.1-codex-mini
+  medium:
+    claude: sonnet
+    codex: gpt-5.2
+  complex:
+    claude: opus
+    codex: gpt-5.3-codex
+  review:
+    claude: sonnet
+    codex: gpt-5.2
 llm:
   input_format: ""
   output_format: "json"

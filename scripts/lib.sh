@@ -655,6 +655,7 @@ load_task() {
     "\nexport TASK_LABELS=" + ((.labels // []) | join(",") | @sh) +
     "\nexport TASK_AGENT=" + (.agent // "" | @sh) +
     "\nexport AGENT_MODEL=" + (.agent_model // "" | @sh) +
+    "\nexport TASK_COMPLEXITY=" + (.complexity // "medium" | @sh) +
     "\nexport AGENT_PROFILE_JSON=" + (.agent_profile // {} | tojson | @sh) +
     "\nexport ATTEMPTS=" + (.attempts // 0 | tostring | @sh) +
     "\nexport SELECTED_SKILLS=" + ((.selected_skills // []) | join(",") | @sh) +
@@ -728,6 +729,17 @@ dir_filter() {
   fi
 }
 
+# Resolve the agent-specific model for a complexity level.
+# Reads from config model_map; returns empty string if not configured.
+# Usage: model_for_complexity "claude" "complex"  →  "opus"
+model_for_complexity() {
+  local agent="$1" complexity="$2"
+  if [ -z "$complexity" ] || [ "$complexity" = "null" ]; then
+    complexity="medium"
+  fi
+  config_get ".model_map.${complexity}.${agent} // \"\""
+}
+
 max_attempts() {
   local max
   max=$(config_get '.workflow.max_attempts // ""')
@@ -761,6 +773,7 @@ create_task_entry() {
       \"status\": \"new\",
       \"agent\": (strenv(suggested_agent) | select(length > 0) // null),
       \"agent_model\": null,
+      \"complexity\": null,
       \"agent_profile\": null,
       \"selected_skills\": [],
       \"parent_id\": ${parent_expr},
