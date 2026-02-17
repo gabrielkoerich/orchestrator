@@ -404,7 +404,7 @@ case "$TASK_AGENT" in
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --permission-mode acceptEdits \
-      --allowedTools "Write" "Edit" "Bash(git:*)" "Bash(gh:*)" "Bash(rg:*)" "Bash(bun:*)" "Bash(npm:*)" "Bash(npx:*)" "Bash(yarn:*)" "Bash(cargo:*)" "Bash(pytest:*)" "Bash(make:*)" \
+      --allowedTools "Write" "Edit" "Bash(git:*)" "Bash(gh:*)" "Bash(rg:*)" "Bash(bun:*)" "Bash(npm:*)" "Bash(npx:*)" "Bash(yarn:*)" "Bash(cargo:*)" "Bash(anchor:*)" "Bash(just:*)" "Bash(pytest:*)" "Bash(make:*)" "Bash(rustup:*)" "Bash(solana:*)" \
       "${DISALLOW_ARGS[@]}" \
       --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
