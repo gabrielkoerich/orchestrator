@@ -2,6 +2,8 @@ Task:
 ID: {{TASK_ID}}
 Title: {{TASK_TITLE}}
 Labels: {{TASK_LABELS}}
+Branch: {{BRANCH_NAME}}
+Worktree: {{WORKTREE_DIR}}
 GitHub Issue: {{GH_ISSUE_REF}}
 Body:
 {{TASK_BODY}}

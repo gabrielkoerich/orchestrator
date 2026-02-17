@@ -151,13 +151,31 @@ if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
   BRANCH_NAME="$SAVED_BRANCH"
   WORKTREE_DIR="${SAVED_WORKTREE:-$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}}"
 else
-  BRANCH_SLUG=$(printf '%s' "$TASK_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 40)
-  if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-    BRANCH_NAME="gh-task-${GH_ISSUE_NUMBER}-${BRANCH_SLUG}"
-  else
-    BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
+  # Try to find an existing worktree by issue/task prefix
+  EXISTING_WT=""
+  WORKTREES_BASE="$HOME/.worktrees/${PROJECT_NAME}"
+  if [ -d "$WORKTREES_BASE" ]; then
+    if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
+      EXISTING_WT=$(find "$WORKTREES_BASE" -maxdepth 1 -type d -name "gh-task-${GH_ISSUE_NUMBER}-*" 2>/dev/null | head -1)
+    fi
+    if [ -z "$EXISTING_WT" ]; then
+      EXISTING_WT=$(find "$WORKTREES_BASE" -maxdepth 1 -type d -name "task-${TASK_ID}-*" 2>/dev/null | head -1)
+    fi
   fi
-  WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
+
+  if [ -n "$EXISTING_WT" ]; then
+    BRANCH_NAME=$(basename "$EXISTING_WT")
+    WORKTREE_DIR="$EXISTING_WT"
+    log_err "[run] task=$TASK_ID found existing worktree: $WORKTREE_DIR"
+  else
+    BRANCH_SLUG=$(printf '%s' "$TASK_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 40)
+    if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
+      BRANCH_NAME="gh-task-${GH_ISSUE_NUMBER}-${BRANCH_SLUG}"
+    else
+      BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
+    fi
+    WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
+  fi
 fi
 export BRANCH_NAME
 

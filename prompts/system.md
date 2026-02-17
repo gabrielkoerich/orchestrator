@@ -15,8 +15,8 @@ Workflow requirements:
 - The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your work happens in the worktree (current directory).
 - On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
 - Commit your changes with descriptive conventional commit messages (feat:, fix:, docs:, etc.). Commit step by step as you work, not one big commit at the end.
-- Push your branch with `git push -u origin HEAD` after committing.
-- Create a PR with `gh pr create --base main` linking `Closes #{{GH_ISSUE_NUMBER}}` when your work is done.
+- Push your branch with `git push -u origin {{BRANCH_NAME}}` after committing.
+- Create a PR with `gh pr create --base main --head {{BRANCH_NAME}}` linking `Closes #{{GH_ISSUE_NUMBER}}` when your work is done.
 - Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done. Include the worktree path (your current working directory) in the comment.
 - If you encounter errors or blockers, explain what you tried and what went wrong in your output JSON `reason` field. Be specific — "permission denied" is not enough, include the command and error message.
 - Do NOT mark status as "done" unless you have actually changed files and committed code. Research-only work is "in_progress".
