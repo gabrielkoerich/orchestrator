@@ -256,6 +256,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   LAST_ERROR=$(yq -r ".tasks[$i].last_error // \"\"" "$TASKS_PATH")
   AGENT=$(yq -r ".tasks[$i].agent // \"\"" "$TASKS_PATH")
   AGENT_MODEL=$(yq -r ".tasks[$i].agent_model // \"\"" "$TASKS_PATH")
+  PARENT_ID=$(yq -r ".tasks[$i].parent_id // \"\"" "$TASKS_PATH")
   PROMPT_HASH=$(yq -r ".tasks[$i].prompt_hash // \"\"" "$TASKS_PATH")
   TASK_DIR=$(yq -r ".tasks[$i].dir // \"\"" "$TASKS_PATH")
   ATTEMPTS=$(yq -r ".tasks[$i].attempts // 0" "$TASKS_PATH")
@@ -346,6 +347,29 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
       "$TASKS_PATH"
 
     log "[gh_push] task=$ID created issue #$NUM"
+
+    # Link as sub-issue if task has a parent with a GitHub issue
+    if [ -n "$PARENT_ID" ] && [ "$PARENT_ID" != "null" ]; then
+      PARENT_GH_NUM=$(yq -r ".tasks[] | select(.id == $PARENT_ID) | .gh_issue_number // \"\"" "$TASKS_PATH")
+      if [ -n "$PARENT_GH_NUM" ] && [ "$PARENT_GH_NUM" != "null" ] && [ "$PARENT_GH_NUM" != "0" ]; then
+        PARENT_NODE_ID=$(gh_api "repos/$REPO/issues/$PARENT_GH_NUM" -q '.node_id' 2>/dev/null || true)
+        CHILD_NODE_ID=$(gh_api "repos/$REPO/issues/$NUM" -q '.node_id' 2>/dev/null || true)
+        if [ -n "$PARENT_NODE_ID" ] && [ -n "$CHILD_NODE_ID" ]; then
+          gh api graphql \
+            -H GraphQL-Features:sub_issues \
+            -f parentIssueId="$PARENT_NODE_ID" \
+            -f childIssueId="$CHILD_NODE_ID" \
+            -f query='mutation($parentIssueId: ID!, $childIssueId: ID!) {
+              addSubIssue(input: {issueId: $parentIssueId, subIssueId: $childIssueId}) {
+                issue { number }
+                subIssue { number }
+              }
+            }' >/dev/null 2>&1 || log_err "[gh_push] task=$ID failed to link as sub-issue of #$PARENT_GH_NUM"
+          log "[gh_push] task=$ID linked #$NUM as sub-issue of #$PARENT_GH_NUM"
+        fi
+      fi
+    fi
+
     sync_project_status "$NUM" "$STATUS"
     continue
   fi
