@@ -4,6 +4,7 @@ source "$(dirname "$0")/lib.sh"
 require_yq
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
+PROJECT_NAME=$(basename "$PROJECT_DIR")
 init_config_file
 load_project_config
 if [ "${DEBUG_GH:-0}" = "1" ]; then
@@ -37,7 +38,7 @@ GH_BACKOFF_BASE_SECONDS=${GITHUB_BACKOFF_BASE_SECONDS:-$(config_get '.gh.backoff
 GH_BACKOFF_MAX_SECONDS=${GITHUB_BACKOFF_MAX_SECONDS:-$(config_get '.gh.backoff.max_seconds // 900')}
 export GH_BACKOFF_MODE GH_BACKOFF_BASE_SECONDS GH_BACKOFF_MAX_SECONDS
 
-log "[gh_pull] repo=$REPO"
+log "[gh_pull] [$PROJECT_NAME] repo=$REPO"
 
 # Fetch open issues only — we don't import closed issues as new tasks
 ISSUES_JSON=$(gh_api -X GET "repos/$REPO/issues" --paginate -f state=open -f per_page=100)
@@ -49,24 +50,41 @@ if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
 fi
 
 # Check local tasks linked to GitHub issues — mark done if issue was closed
+# Uses a single GraphQL batch query instead of N+1 REST calls
 OPEN_NUMS=$(printf '%s' "$FILTERED" | yq -r '.[].number')
 LOCAL_GH_TASKS=$(yq -r '.tasks[] | select(.gh_issue_number != null and .gh_issue_number != "" and .status != "done") | .gh_issue_number' "$TASKS_PATH" 2>/dev/null || true)
+MISSING_NUMS=()
 for _GH_NUM in $LOCAL_GH_TASKS; do
-  # If this issue number is not in the open issues list, check if it's closed
   if ! printf '%s\n' "$OPEN_NUMS" | grep -qx "$_GH_NUM"; then
-    _GH_STATE=$(gh_api "repos/$REPO/issues/$_GH_NUM" -q '.state' 2>/dev/null || true)
-    if [ "$_GH_STATE" = "closed" ]; then
+    MISSING_NUMS+=("$_GH_NUM")
+  fi
+done
+
+if [ ${#MISSING_NUMS[@]} -gt 0 ]; then
+  # Build a single GraphQL query to check all missing issues at once
+  OWNER=$(printf '%s' "$REPO" | cut -d/ -f1)
+  REPO_NAME=$(printf '%s' "$REPO" | cut -d/ -f2)
+  GQL_FIELDS=""
+  for _num in "${MISSING_NUMS[@]}"; do
+    GQL_FIELDS="${GQL_FIELDS} issue_${_num}: issue(number: ${_num}) { number state }"
+  done
+  GQL_QUERY="query { repository(owner: \"${OWNER}\", name: \"${REPO_NAME}\") { ${GQL_FIELDS} } }"
+  BATCH_RESULT=$(gh api graphql -f query="$GQL_QUERY" 2>/dev/null || true)
+
+  for _num in "${MISSING_NUMS[@]}"; do
+    _STATE=$(printf '%s' "$BATCH_RESULT" | jq -r ".data.repository.issue_${_num}.state // \"\"" 2>/dev/null || true)
+    if [ "$_STATE" = "CLOSED" ]; then
       NOW=$(now_iso)
       export NOW
       yq -i \
-        "(.tasks[] | select(.gh_issue_number == $_GH_NUM) | .status) = \"done\" |
-         (.tasks[] | select(.gh_issue_number == $_GH_NUM) | .gh_state) = \"closed\" |
-         (.tasks[] | select(.gh_issue_number == $_GH_NUM) | .updated_at) = strenv(NOW)" \
+        "(.tasks[] | select(.gh_issue_number == $_num) | .status) = \"done\" |
+         (.tasks[] | select(.gh_issue_number == $_num) | .gh_state) = \"closed\" |
+         (.tasks[] | select(.gh_issue_number == $_num) | .updated_at) = strenv(NOW)" \
         "$TASKS_PATH"
-      log "[gh_pull] issue #$_GH_NUM closed on GitHub — marked task done"
+      log "[gh_pull] [$PROJECT_NAME] issue #$_num closed on GitHub — marked task done"
     fi
-  fi
-done
+  done
+fi
 
 acquire_lock
 

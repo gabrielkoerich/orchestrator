@@ -18,9 +18,10 @@ if [ "$GH_ENABLED" != "true" ]; then
   exit 0
 fi
 
-log "[gh_sync] pull start"
+PROJECT_NAME=$(basename "${PROJECT_DIR:-$(pwd)}")
+log "[gh_sync] project=$PROJECT_NAME pull start"
 "$SCRIPT_DIR/gh_pull.sh"
-log "[gh_sync] pull done"
-log "[gh_sync] push start"
+log "[gh_sync] project=$PROJECT_NAME pull done"
+log "[gh_sync] project=$PROJECT_NAME push start"
 "$SCRIPT_DIR/gh_push.sh"
-log "[gh_sync] push done"
+log "[gh_sync] project=$PROJECT_NAME push done"

@@ -77,6 +77,40 @@ if [ -n "$IN_REVIEW_IDS" ] && command -v gh >/dev/null 2>&1; then
   done <<< "$IN_REVIEW_IDS"
 fi
 
+# Worktree janitor: clean up worktrees and branches for done tasks
+DONE_WITH_WORKTREE=$(yq -r '.tasks[] | select(.status == "done" and .worktree != null and .worktree != "") | [.id, .worktree, .branch, .dir // ""] | @tsv' "$TASKS_PATH")
+if [ -n "$DONE_WITH_WORKTREE" ]; then
+  while IFS=$'\t' read -r tid wt branch task_dir; do
+    [ -n "$tid" ] || continue
+    [ -n "$wt" ] || continue
+    [ -d "$wt" ] || continue
+
+    # Find the main repo to run git commands against
+    MAIN_DIR="${task_dir:-.}"
+    if [ ! -d "$MAIN_DIR/.git" ] && [ ! -f "$MAIN_DIR/.git" ]; then
+      # Try to find main repo from worktree parent structure
+      MAIN_DIR=$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/.git$||' || true)
+    fi
+    [ -d "$MAIN_DIR" ] || continue
+
+    log "[poll] task=$tid cleaning up worktree $wt (branch=$branch)"
+    (cd "$MAIN_DIR" && git worktree remove --force "$wt" 2>/dev/null) || true
+    if [ -n "$branch" ] && [ "$branch" != "null" ] && [ "$branch" != "main" ] && [ "$branch" != "master" ]; then
+      (cd "$MAIN_DIR" && git branch -D "$branch" 2>/dev/null) || true
+    fi
+
+    # Clear worktree/branch fields so we don't retry cleanup
+    NOW=$(now_iso)
+    export NOW
+    with_lock yq -i \
+      "(.tasks[] | select(.id == $tid) | .worktree) = null |
+       (.tasks[] | select(.id == $tid) | .branch) = null |
+       (.tasks[] | select(.id == $tid) | .updated_at) = strenv(NOW)" \
+      "$TASKS_PATH"
+    append_history "$tid" "done" "cleaned up worktree and branch"
+  done <<< "$DONE_WITH_WORKTREE"
+fi
+
 # Run all new/routed tasks in parallel
 NEW_IDS=$(yq -r '.tasks[] | select(.status == "new" or .status == "routed") | .id' "$TASKS_PATH")
 if [ -n "$NEW_IDS" ]; then

@@ -5,6 +5,7 @@ require_yq
 require_jq
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
+PROJECT_NAME=$(basename "$PROJECT_DIR")
 init_config_file
 load_project_config
 
@@ -282,7 +283,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     fi
   fi
 
-  log "[gh_push] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
+  log "[gh_push] [$PROJECT_NAME] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
 
   # Skip done tasks that already have a closed GitHub issue — nothing to sync
   if [ "$STATUS" = "done" ] && [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$GH_STATE" = "closed" ]; then
@@ -359,7 +360,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
        (.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at" \
       "$TASKS_PATH"
 
-    log "[gh_push] task=$ID created issue #$NUM"
+    log "[gh_push] [$PROJECT_NAME] task=$ID created issue #$NUM"
 
     # Link as sub-issue if task has a parent with a GitHub issue
     if [ -n "$PARENT_ID" ] && [ "$PARENT_ID" != "null" ]; then
@@ -378,7 +379,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
                 subIssue { number }
               }
             }' >/dev/null 2>&1 || log_err "[gh_push] task=$ID failed to link as sub-issue of #$PARENT_GH_NUM"
-          log "[gh_push] task=$ID linked #$NUM as sub-issue of #$PARENT_GH_NUM"
+          log "[gh_push] [$PROJECT_NAME] task=$ID linked #$NUM as sub-issue of #$PARENT_GH_NUM"
         fi
       fi
     fi
@@ -396,7 +397,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     continue
   fi
 
-  log "[gh_push] task=$ID syncing (updated_at=$UPDATED_AT gh_synced_at=$GH_SYNCED_AT)"
+  log "[gh_push] [$PROJECT_NAME] task=$ID syncing (updated_at=$UPDATED_AT gh_synced_at=$GH_SYNCED_AT)"
 
   LABEL_ARGS=()
   LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
@@ -600,9 +601,9 @@ ${PROMPT_CONTENT}
       if ! should_skip_comment "$ID" "$COMMENT"; then
         gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
         store_comment_hash "$ID" "$COMMENT"
-        log "[gh_push] task=$ID posted comment on #$GH_NUM (status=$STATUS prompt=$PROMPT_HASH)"
+        log "[gh_push] [$PROJECT_NAME] task=$ID posted comment on #$GH_NUM (status=$STATUS prompt=$PROMPT_HASH)"
       else
-        log "[gh_push] task=$ID skipped duplicate comment on #$GH_NUM"
+        log "[gh_push] [$PROJECT_NAME] task=$ID skipped duplicate comment on #$GH_NUM"
       fi
     fi
   fi
@@ -611,7 +612,7 @@ ${PROMPT_CONTENT}
   with_lock yq -i \
     "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at" \
     "$TASKS_PATH"
-  log "[gh_push] task=$ID synced"
+  log "[gh_push] [$PROJECT_NAME] task=$ID synced"
 
   # Don't auto-close issues — GitHub handles this via "Closes #N" in the PR body.
   # When the PR merges, GitHub closes the issue, gh_pull.sh detects it, and marks the task "done".
@@ -672,6 +673,6 @@ ${_GH_NUM:+Closes #${_GH_NUM}}
 
   PR_URL=$(gh pr create --repo "$REPO" --title "$PR_TITLE" --body "$PR_BODY" --head "$_BRANCH" 2>/dev/null || true)
   if [ -n "$PR_URL" ]; then
-    log "[gh_push] task=$_ID created catch-all PR for branch $_BRANCH: $PR_URL"
+    log "[gh_push] [$PROJECT_NAME] task=$_ID created catch-all PR for branch $_BRANCH: $PR_URL"
   fi
 done
