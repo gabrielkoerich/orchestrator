@@ -23,7 +23,7 @@ chat:
 dashboard:
     @scripts/dashboard.sh
 
-# Tail orchestrator logs (server + errors)
+# Tail orchestrator logs (server + errors). Use "orchestrator log watch" for live follow.
 [group('config')]
 log tail="50":
     #!/usr/bin/env bash
@@ -31,43 +31,24 @@ log tail="50":
     STATE="${ORCH_HOME}/.orchestrator"
     BREW_LOG="${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.log"
     BREW_ERR="${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.error.log"
-    if [ -f "$STATE/orchestrator.error.log" ] && [ -s "$STATE/orchestrator.error.log" ]; then
-      echo "=== Error Log ==="
-      tail -n {{ tail }} "$STATE/orchestrator.error.log"
-      echo ""
-    fi
-    if [ -f "$STATE/orchestrator.log" ]; then
-      echo "=== Orchestrator Log ==="
-      tail -n {{ tail }} "$STATE/orchestrator.log"
-      echo ""
-    fi
-    if [ -f "$BREW_LOG" ] && [ -s "$BREW_LOG" ]; then
-      echo "=== Brew Log ==="
-      tail -n {{ tail }} "$BREW_LOG"
-      echo ""
-    fi
-    if [ -f "$BREW_ERR" ] && [ -s "$BREW_ERR" ]; then
-      echo "=== Brew Error Log ==="
-      tail -n {{ tail }} "$BREW_ERR"
-    fi
-
-# Follow orchestrator logs in real time
-[group('config')]
-log-follow:
-    #!/usr/bin/env bash
-    ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
-    STATE="${ORCH_HOME}/.orchestrator"
-    BREW_ERR="${HOMEBREW_PREFIX:-/opt/homebrew}/var/log/orchestrator.error.log"
-    # Tail all log files that exist
     FILES=()
     [ -f "$STATE/orchestrator.log" ] && FILES+=("$STATE/orchestrator.log")
     [ -f "$STATE/orchestrator.error.log" ] && FILES+=("$STATE/orchestrator.error.log")
-    [ -f "$BREW_ERR" ] && FILES+=("$BREW_ERR")
+    [ -f "$BREW_LOG" ] && [ -s "$BREW_LOG" ] && FILES+=("$BREW_LOG")
+    [ -f "$BREW_ERR" ] && [ -s "$BREW_ERR" ] && FILES+=("$BREW_ERR")
     if [ ${#FILES[@]} -eq 0 ]; then
       echo "No log files found"
       exit 1
     fi
-    tail -f "${FILES[@]}"
+    if [ "{{ tail }}" = "watch" ]; then
+      tail -f "${FILES[@]}"
+    else
+      for f in "${FILES[@]}"; do
+        echo "=== $(basename "$f") ==="
+        tail -n {{ tail }} "$f"
+        echo ""
+      done
+    fi
 
 #################################
 # Namespace: skills (list, sync)
