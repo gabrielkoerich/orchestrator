@@ -227,8 +227,10 @@ fi
 
 DIRTY_COUNT=$(yq -r '
   [.tasks[] | select(
-    (.gh_issue_number == null or .gh_issue_number == "") or
-    (.updated_at != .gh_synced_at)
+    (.status != "done" or .gh_state != "closed") and (
+      (.gh_issue_number == null or .gh_issue_number == "") or
+      (.updated_at != .gh_synced_at)
+    )
   )] | length
 ' "$TASKS_PATH")
 # Always run the loop if project board is configured (status may need syncing)
@@ -281,6 +283,17 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   fi
 
   log "[gh_push] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
+
+  # Skip done tasks that already have a closed GitHub issue — nothing to sync
+  if [ "$STATUS" = "done" ] && [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$GH_STATE" = "closed" ]; then
+    # Mark synced so we don't re-check next time
+    if [ "$UPDATED_AT" != "$GH_SYNCED_AT" ]; then
+      with_lock yq -i \
+        "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at" \
+        "$TASKS_PATH"
+    fi
+    continue
+  fi
 
   skip=false
   for lbl in "${SKIP_LABELS[@]}"; do
