@@ -38,9 +38,6 @@ if [ -z "$PROJECT_STATUS_MAP_JSON" ]; then
   PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
 fi
 
-AUTO_CLOSE=${AUTO_CLOSE:-$(config_get '.workflow.auto_close // true')}
-REVIEW_OWNER=${REVIEW_OWNER:-$(config_get '.workflow.review_owner // ""')}
-
 SKIP_LABELS=("no_gh" "local-only")
 
 agent_badge() {
@@ -122,7 +119,7 @@ map_status_to_project() {
     in_progress|blocked)
       echo "in_progress"
       ;;
-    needs_review)
+    in_review|needs_review)
       echo "review"
       ;;
     done)
@@ -314,6 +311,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     in_progress)   ensure_label "$STATUS_LABEL" "fbca04" "Agent is working on this task" ;;
     done)          ensure_label "$STATUS_LABEL" "0e8a16" "Task is completed" ;;
     blocked)       ensure_label "$STATUS_LABEL" "d73a4a" "Task is blocked" ;;
+    in_review)     ensure_label "$STATUS_LABEL" "0075ca" "PR open, awaiting merge" ;;
     needs_review)  ensure_label "$STATUS_LABEL" "e4e669" "Task needs human review" ;;
     *)             ensure_label "$STATUS_LABEL" "c5def5" "" ;;
   esac
@@ -578,24 +576,8 @@ ${PROMPT_CONTENT}
     "$TASKS_PATH"
   log "[gh_push] task=$ID synced"
 
-  # Review/close behavior
-  if [ "$STATUS" = "done" ] && [ "$AUTO_CLOSE" != "true" ]; then
-    OWNER_TAG="@$(repo_owner "$REPO")"
-    if [ -n "$OWNER_TAG" ] && [ "$OWNER_TAG" != "@" ]; then
-      gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="Review requested ${OWNER_TAG}" >/dev/null
-    elif [ -n "$REVIEW_OWNER" ]; then
-      gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="Review requested ${REVIEW_OWNER}" >/dev/null
-    fi
-    sync_project_status "$GH_NUM" "needs_review"
-  fi
-
-  # Close issue if task done and auto_close
-  if [ "$STATUS" = "done" ] && [ "$GH_STATE" != "closed" ] && [ "$AUTO_CLOSE" = "true" ]; then
-    gh_api "repos/$REPO/issues/$GH_NUM" -X PATCH -f state=closed >/dev/null
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $ID) | .gh_state) = \"closed\"" \
-      "$TASKS_PATH"
-  fi
+  # Don't auto-close issues — GitHub handles this via "Closes #N" in the PR body.
+  # When the PR merges, GitHub closes the issue, gh_pull.sh detects it, and marks the task "done".
 
   sync_project_status "$GH_NUM" "$STATUS"
 

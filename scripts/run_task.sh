@@ -404,19 +404,20 @@ case "$TASK_AGENT" in
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --permission-mode acceptEdits \
-      --allowedTools "Write" "Edit" "Bash(git:*)" "Bash(gh:*)" "Bash(rg:*)" \
+      --allowedTools "Write" "Edit" "Bash(git:*)" "Bash(gh:*)" "Bash(rg:*)" "Bash(bun:*)" "Bash(npm:*)" "Bash(npx:*)" "Bash(yarn:*)" "Bash(cargo:*)" "Bash(pytest:*)" "Bash(make:*)" \
       "${DISALLOW_ARGS[@]}" \
       --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
       "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   codex)
-    log_err "[run] cmd: codex exec ${AGENT_MODEL:+-m $AGENT_MODEL} --json <stdin>"
+    log_err "[run] cmd: codex exec ${AGENT_MODEL:+-m $AGENT_MODEL} --full-auto --json <stdin>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
       ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+      --full-auto \
       --json \
       - 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
@@ -680,9 +681,34 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
             PR_TITLE="${SUMMARY:-$TASK_TITLE}"
             PR_BODY="## Summary
 
-${REASON:-Agent task completed.}
+${SUMMARY:-$TASK_TITLE}"
+            # Add accomplished items
+            if [ -n "$ACCOMPLISHED_STR" ]; then
+              PR_BODY="${PR_BODY}
 
-Closes #${GH_ISSUE_NUMBER:-}
+### What was done
+
+$(printf '%s\n' "$ACCOMPLISHED_STR" | sed 's/^/- /')"
+            fi
+            # Add remaining items
+            if [ -n "$REMAINING_STR" ]; then
+              PR_BODY="${PR_BODY}
+
+### Remaining
+
+$(printf '%s\n' "$REMAINING_STR" | sed 's/^/- /')"
+            fi
+            # Add files changed
+            if [ -n "$FILES_CHANGED_STR" ]; then
+              PR_BODY="${PR_BODY}
+
+### Files changed
+
+$(printf '%s\n' "$FILES_CHANGED_STR" | sed 's/^/- `/' | sed 's/$/`/')"
+            fi
+            PR_BODY="${PR_BODY}
+
+${GH_ISSUE_NUMBER:+Closes #${GH_ISSUE_NUMBER}}
 
 ---
 *Created by ${TASK_AGENT}[bot] via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*"
@@ -699,6 +725,25 @@ Closes #${GH_ISSUE_NUMBER:-}
         fi
       fi
     fi
+  fi
+fi
+
+# Override "done" → "in_review" when there's an open PR.
+# Tasks should only reach "done" when the PR is merged (GitHub auto-closes the issue).
+if [ "$AGENT_STATUS" = "done" ]; then
+  PR_NUMBER=""
+  if [ -n "${BRANCH_NAME:-}" ] && [ "$BRANCH_NAME" != "main" ] && [ "$BRANCH_NAME" != "master" ]; then
+    if command -v gh >/dev/null 2>&1 && [ -d "$PROJECT_DIR" ]; then
+      PR_NUMBER=$(cd "$PROJECT_DIR" && gh pr list --head "$BRANCH_NAME" --json number,state -q '.[] | select(.state == "OPEN") | .number' 2>/dev/null || true)
+    fi
+  fi
+  if [ -n "$PR_NUMBER" ]; then
+    log_err "[run] task=$TASK_ID overriding done → in_review (PR #$PR_NUMBER open)"
+    AGENT_STATUS="in_review"
+    export AGENT_STATUS
+    with_lock yq -i \
+      "(.tasks[] | select(.id == $TASK_ID) | .status) = \"in_review\"" \
+      "$TASKS_PATH"
   fi
 fi
 
@@ -765,7 +810,16 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
   append_history "$TASK_ID" "done" "review approved"
 fi
 
-DELEG_COUNT=$(printf '%s' "$DELEGATIONS_JSON" | jq -r 'length')
+# Only allow delegations from plan/decompose tasks — agents should do the work, not create subtasks
+DELEG_COUNT=0
+if [ "$DECOMPOSE" = true ]; then
+  DELEG_COUNT=$(printf '%s' "$DELEGATIONS_JSON" | jq -r 'length')
+else
+  _raw_deleg=$(printf '%s' "$DELEGATIONS_JSON" | jq -r 'length')
+  if [ "$_raw_deleg" -gt 0 ] 2>/dev/null; then
+    log_err "[run] task=$TASK_ID ignoring $_raw_deleg delegations (not a plan task)"
+  fi
+fi
 
 if [ "$DELEG_COUNT" -gt 0 ]; then
   acquire_lock

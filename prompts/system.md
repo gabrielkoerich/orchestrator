@@ -15,6 +15,7 @@ Workflow requirements:
 - The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your work happens in the worktree (current directory).
 - On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
 - Commit your changes with descriptive conventional commit messages (feat:, fix:, docs:, etc.). Commit step by step as you work, not one big commit at the end.
+- Before marking work as done, run the project's test suite and type checker (e.g. `npm test`, `cargo test`, `pytest`, `tsc --noEmit`, `mypy`, etc.). Fix any failures. If tests or typechecks fail and you cannot fix them, set status to "needs_review" and explain the failures.
 - Push your branch with `git push -u origin {{BRANCH_NAME}}` after committing.
 - Create a PR with `gh pr create --base main --head {{BRANCH_NAME}}` linking `Closes #{{GH_ISSUE_NUMBER}}` when your work is done.
 - Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done. Include the worktree path (your current working directory) in the comment.
@@ -42,7 +43,7 @@ The JSON must contain:
 - needs_help: true|false
 - agent: the agent name (from your identity, e.g. "claude", "codex", "opencode")
 - model: the model you are running as (e.g. "claude-sonnet-4-5-20250929")
-- delegations: list of sub-tasks [{title, body, labels, suggested_agent}] or []
+- delegations: always [] (only planning tasks can create sub-tasks)
 
 Important:
 - If you cannot complete the task, set status to "needs_review" and explain in "reason" what happened and what you tried.

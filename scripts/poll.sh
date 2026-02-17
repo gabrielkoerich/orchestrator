@@ -51,6 +51,32 @@ if [ -n "$IN_PROGRESS_IDS" ]; then
   done <<< "$IN_PROGRESS_IDS"
 fi
 
+# Check in_review tasks for merged PRs → mark done
+IN_REVIEW_IDS=$(yq -r '.tasks[] | select(.status == "in_review") | .id' "$TASKS_PATH")
+if [ -n "$IN_REVIEW_IDS" ] && command -v gh >/dev/null 2>&1; then
+  while IFS= read -r rid; do
+    [ -n "$rid" ] || continue
+    BRANCH=$(yq -r ".tasks[] | select(.id == $rid) | .branch // \"\"" "$TASKS_PATH")
+    TASK_DIR=$(yq -r ".tasks[] | select(.id == $rid) | .dir // \"\"" "$TASKS_PATH")
+    WORKTREE=$(yq -r ".tasks[] | select(.id == $rid) | .worktree // \"\"" "$TASKS_PATH")
+    CHECK_DIR="${WORKTREE:-${TASK_DIR:-.}}"
+
+    if [ -n "$BRANCH" ] && [ "$BRANCH" != "null" ] && [ -d "$CHECK_DIR" ]; then
+      PR_STATE=$(cd "$CHECK_DIR" && gh pr view "$BRANCH" --json state -q '.state' 2>/dev/null || true)
+      if [ "$PR_STATE" = "MERGED" ]; then
+        log "[poll] task=$rid PR merged (branch=$BRANCH), marking done"
+        NOW=$(now_iso)
+        export NOW
+        with_lock yq -i \
+          "(.tasks[] | select(.id == $rid) | .status) = \"done\" | \
+           (.tasks[] | select(.id == $rid) | .updated_at) = strenv(NOW)" \
+          "$TASKS_PATH"
+        append_history "$rid" "done" "PR merged"
+      fi
+    fi
+  done <<< "$IN_REVIEW_IDS"
+fi
+
 # Run all new/routed tasks in parallel
 NEW_IDS=$(yq -r '.tasks[] | select(.status == "new" or .status == "routed") | .id' "$TASKS_PATH")
 if [ -n "$NEW_IDS" ]; then

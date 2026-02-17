@@ -87,7 +87,7 @@ SH
 }
 
 @test "run_task.sh updates task and handles delegations" {
-  run "${REPO_DIR}/scripts/add_task.sh" "Run Me" "Run body" ""
+  run "${REPO_DIR}/scripts/add_task.sh" "Run Me" "Run body" "plan"
   [ "$status" -eq 0 ]
 
   # Stub prints JSON to stdout (parsed by normalize_json_response)
@@ -114,6 +114,37 @@ SH
   run yq -r '.tasks[] | select(.parent_id == 2) | .title' "$TASKS_PATH"
   [ "$status" -eq 0 ]
   [ "$output" = "Child Task" ]
+}
+
+@test "run_task.sh ignores delegations from non-plan tasks" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Regular Task" "Regular body" ""
+  [ "$status" -eq 0 ]
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"status":"done","summary":"did the work","files_changed":[],"needs_help":false,"delegations":[{"title":"Unwanted Subtask","body":"Should be ignored","labels":[],"suggested_agent":"codex"}]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+  export PATH="${TMP_DIR}:${PATH}"
+
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Task should be done, not blocked
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+
+  # No child tasks should be created
+  run yq -r '.tasks[] | select(.parent_id == 2) | .title' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 @test "poll.sh runs new tasks and rejoins blocked parents" {
