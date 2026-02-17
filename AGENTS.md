@@ -61,6 +61,43 @@ See [specs.md](specs.md) for architecture overview, what's working, what's not, 
 
 1. Push to `main`
 2. CI runs tests, auto-tags (semver from conventional commits)
-3. GitHub release created, Homebrew tap formula updated
+3. GitHub release created, Homebrew tap formula updated automatically
 4. `brew upgrade orchestrator` picks up the new version
 5. `orchestrator stop && orchestrator start` to load new code
+
+**Do NOT manually edit the tap formula** — the CI pipeline handles it. The `Formula/orchestrator.rb` in this repo is a local reference copy, not the real tap.
+
+## Task status semantics
+
+- **`blocked`** — waiting on a dependency (parent blocked on children, missing worktree/dir)
+- **`needs_review`** — requires human attention (max attempts, review rejection, agent failures, retry loops, timeouts)
+- `mark_needs_review()` sets `needs_review`, NOT `blocked`
+- Only parent tasks waiting on children should be `blocked`
+- `poll.sh` auto-unblocks parent tasks when all children are done
+
+## Agent sandbox
+
+Agents run in worktrees, NOT the main project directory. The orchestrator enforces this:
+
+1. **Prompt-level**: system prompt tells agents the main project dir is read-only
+2. **Tool-level**: dynamic `--disallowedTools` blocks Read/Write/Edit/Bash targeting the main project dir
+3. Config: `workflow.sandbox: false` to disable (not recommended)
+
+## Codex sandbox config
+
+Codex runs with `--full-auto` + network access enabled by default. Configurable:
+
+```yaml
+# In config.yml or .orchestrator.yml
+agents:
+  codex:
+    sandbox: full-auto  # full-auto | workspace-write | danger-full-access | none
+```
+
+Or per-run: `CODEX_SANDBOX=danger-full-access orchestrator task run 5`
+
+Modes:
+- `full-auto` (default) — filesystem sandboxed, network enabled
+- `workspace-write` — same sandbox, explicit mode
+- `danger-full-access` — no sandbox (for tasks needing bun, solana-test-validator, etc.)
+- `none` — bypasses all Codex sandboxing (orchestrator is the sandbox)
