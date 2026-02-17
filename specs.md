@@ -1,0 +1,172 @@
+# Orchestrator — Specs & Roadmap
+
+## What It Does
+
+Orchestrator is an autonomous task management system that delegates work to AI coding agents (Claude, Codex, OpenCode). It runs as a background service, picking up tasks, routing them to agents with specialized profiles, managing worktrees for isolation, syncing state to GitHub issues/projects, and handling retries/failures.
+
+## Architecture
+
+```
+serve.sh (10s tick loop)
+  ├── poll.sh          — pick new/routed tasks, detect stuck, unblock parents
+  │     ├── route_task.sh  — LLM router assigns agent + complexity + profile
+  │     └── run_task.sh    — build prompt, invoke agent, parse response, push branch, create PR
+  ├── jobs_tick.sh     — run scheduled jobs (cron-like)
+  └── gh_sync.sh       — bidirectional GitHub sync (every 60s)
+        ├── gh_pull.sh   — import open issues → local tasks, mark closed → done
+        └── gh_push.sh   — push task state → issues, post comments, create sub-issues, catch-all PRs
+```
+
+### Key Design Decisions
+- **One worktree per task** — agents never work in the main repo directory
+- **Complexity-based model routing** — router returns `simple|medium|complex`, config maps to agent-specific models
+- **Plan label for decomposition** — only manual `plan` label triggers subtask creation, not router
+- **Parent/child linking** — local `parent_id` + GitHub sub-issues API
+- **Lock-based concurrency** — mkdir locks for tasks.yml and per-task locks to prevent double-runs
+- **Config-driven** — `~/.orchestrator/config.yml` + per-project `.orchestrator.yml` (merged)
+
+## What's Working
+
+- **Core loop**: serve → poll → route → run → push/PR is solid
+- **GitHub sync**: bidirectional, with backoff, comment dedup, project board status
+- **Agent profiles**: router generates role/skills/tools/constraints per task
+- **Retry & recovery**: stuck detection, max attempts, exponential backoff, agent switching on auth errors
+- **Worktree lifecycle**: create branch, create worktree, agent works, auto-commit, push, create PR
+- **Review agent**: optional post-completion review with reject (auto-close PR) support
+- **Sub-issues**: child tasks linked as GitHub sub-issues via GraphQL
+- **Catch-all PR creation**: detects pushed branches without PRs and creates them
+- **Skills system**: SKILL.md-based catalog, required/reference skills injected into prompts
+- **Jobs**: cron-like scheduled tasks (bash commands or task creation)
+- **150 tests**: comprehensive bats test suite, all passing
+- **Release pipeline**: push → CI → auto-tag → GitHub release → Homebrew tap update
+
+## What's Not Working / Known Issues
+
+### PR Creation Gaps
+- PR creation only happens inside `run_task.sh` for `done|in_progress` status. If the script crashes between push and PR creation, the branch is orphaned. The catch-all in `gh_push.sh` mitigates this but runs on a 60s cycle.
+
+### Worktree Cleanup
+- No automated cleanup of merged worktrees and local branches. After a PR merges, the worktree and branch remain on disk indefinitely.
+- TODO: poll.sh should detect merged PRs for `done` tasks and `git worktree remove` + `git branch -D`.
+
+### GitHub Sync Edge Cases
+- `gh_pull.sh` makes one API call per local task to check if closed (N+1 queries). Should batch-check via a single `state=closed` query for known issue numbers.
+- No handling of issue reopens — if someone reopens a closed issue, the local task stays `done`.
+
+### Agent Reliability
+- Agents sometimes produce empty or malformed responses, especially on timeout. Current fallback is `needs_review` but no automatic retry with a different model.
+- No token budget enforcement — agents can burn unlimited tokens on a single task.
+- SSH/1Password interactive prompts can block agents silently. Detection exists but recovery is just a log warning.
+
+### Observability
+- Dashboard (`dashboard.sh`) exists but is basic. No web UI.
+- No metrics collection (success rate, avg duration, tokens per task, cost tracking).
+- Error log exists but no alerting.
+
+## Improvement Ideas
+
+### Short Term
+- [ ] **Worktree janitor**: poll.sh cleans up merged worktrees + branches on `done` tasks
+- [ ] **Token budget**: config `max_tokens_per_task`, abort agent if exceeded
+- [ ] **Batch closed-issue check**: single API call in gh_pull instead of N+1
+- [ ] **Issue reopen handling**: gh_pull detects reopened issues → reset task to `new`
+- [ ] **Review model in config**: already in `model_map.review`, wire up to config UI in `init.sh`
+- [ ] **Cost tracking**: estimate cost from input/output tokens + model pricing table
+
+### Medium Term
+- [ ] **Web dashboard**: simple HTTP server showing task tree, status, logs, token usage
+- [ ] **Webhook receiver**: GitHub webhook for instant issue sync instead of 60s polling
+- [ ] **Agent memory**: persist agent learnings across retries (what worked, what didn't)
+- [ ] **PR review integration**: parse GitHub PR review comments, create follow-up tasks
+- [ ] **Multi-repo orchestration**: single orchestrator managing tasks across multiple repos
+- [ ] **Parallel task execution**: currently sequential within a poll tick, could use job queue
+
+### Long Term
+- [ ] **Self-improvement loop**: orchestrator creates issues for its own improvements, agents implement them
+- [ ] **Cost optimization**: track spend per task, auto-downgrade complexity for retries
+- [ ] **Agent benchmarking**: A/B test agents on similar tasks, track success rates
+- [ ] **Plugin system**: custom hooks for pre/post task execution
+- [ ] **Team mode**: multiple users, role-based access, task assignment
+
+## CLI Reference
+
+```
+orchestrator init                    # interactive setup
+orchestrator status                  # task counts overview
+orchestrator dashboard               # full TUI dashboard
+
+# Tasks
+orchestrator task list|tree|add|plan|route|run|next|poll
+orchestrator task retry|unblock|agent|stream|watch|unlock
+
+# Service
+orchestrator start|stop|restart|info
+orchestrator service install|uninstall
+
+# GitHub
+orchestrator gh pull|push|sync
+
+# Projects
+orchestrator project info|create|list
+
+# Jobs
+orchestrator job add|list|remove|enable|disable|tick
+
+# Skills
+orchestrator skills list|sync
+
+# Other
+orchestrator chat                    # interactive chat with context
+orchestrator log [watch]             # view logs
+orchestrator agents                  # list available agents
+orchestrator version                 # current version
+```
+
+## Config Structure
+
+```yaml
+# ~/.orchestrator/config.yml
+workflow:
+  auto_close: true
+  review_owner: "@owner"
+  enable_review_agent: false
+  review_agent: "claude"
+  max_attempts: 10
+
+router:
+  agent: "claude"
+  model: "haiku"              # model for the router itself
+  timeout_seconds: 120
+  fallback_executor: "codex"
+
+model_map:
+  simple:   { claude: haiku, codex: gpt-5.1-codex-mini }
+  medium:   { claude: sonnet, codex: gpt-5.2 }
+  complex:  { claude: opus, codex: gpt-5.3-codex }
+  review:   { claude: sonnet, codex: gpt-5.2 }
+
+gh:
+  repo: "owner/repo"
+  sync_label: ""
+  project_id: ""
+```
+
+## File Map
+
+| File | Purpose |
+|------|---------|
+| `justfile` | CLI entrypoint, dispatches to scripts |
+| `scripts/lib.sh` | Shared helpers (log, lock, yq, config, model_for_complexity) |
+| `scripts/serve.sh` | Main loop (10s tick) |
+| `scripts/poll.sh` | Pick tasks, detect stuck, unblock parents |
+| `scripts/route_task.sh` | LLM router → agent + complexity + profile |
+| `scripts/run_task.sh` | Invoke agent, parse response, push, PR |
+| `scripts/gh_pull.sh` | Import GitHub issues → local tasks |
+| `scripts/gh_push.sh` | Push task state → GitHub issues + comments |
+| `scripts/output.sh` | Shared formatting (tables, sections) |
+| `prompts/route.md` | Router prompt template |
+| `prompts/system.md` | Agent system prompt template |
+| `prompts/agent.md` | Agent message template |
+| `prompts/review.md` | Review agent prompt template |
+| `prompts/plan.md` | Plan/decompose prompt template |
+| `tests/orchestrator.bats` | 150 bats tests |

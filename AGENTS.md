@@ -31,15 +31,31 @@ orchestrator tasks unblock all
 - Brew stdout: `/opt/homebrew/var/log/orchestrator.log` (startup messages only)
 - Brew stderr: `/opt/homebrew/var/log/orchestrator.error.log`
 
-## Model mapping (codex agent)
+## Complexity-based model routing
 
-Codex uses OpenAI models, not Anthropic ones. The router assigns Anthropic model names (haiku, sonnet, opus) which get mapped automatically in `run_task.sh`:
+The router assigns `complexity: simple|medium|complex` instead of specific model names. The actual model is resolved per agent from `config.yml`:
 
-| Router model | Codex model |
-|---|---|
-| haiku | gpt-5.1-codex-mini |
-| sonnet | gpt-5.2 |
-| opus | gpt-5.3-codex |
+```yaml
+model_map:
+  simple:
+    claude: haiku
+    codex: gpt-5.1-codex-mini
+  medium:
+    claude: sonnet
+    codex: gpt-5.2
+  complex:
+    claude: opus
+    codex: gpt-5.3-codex
+  review:
+    claude: sonnet
+    codex: gpt-5.2
+```
+
+See `model_for_complexity()` in `scripts/lib.sh`.
+
+## Specs & Roadmap
+
+See [specs.md](specs.md) for architecture overview, what's working, what's not, and improvement ideas.
 
 ## Release pipeline
 
