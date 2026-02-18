@@ -272,15 +272,16 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   # Reload project config if task belongs to a different project
   if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ] && [ "$TASK_DIR" != "$PROJECT_DIR" ]; then
-    if [ -f "$TASK_DIR/.orchestrator.yml" ]; then
-      PROJECT_DIR="$TASK_DIR"
-      export PROJECT_DIR
-      load_project_config
-      REPO=$(config_get '.gh.repo // ""')
-      PROJECT_ID=$(config_get '.gh.project_id // ""')
-      PROJECT_STATUS_FIELD_ID=$(config_get '.gh.project_status_field_id // ""')
-      PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
-    fi
+    PROJECT_DIR="$TASK_DIR"
+    export PROJECT_DIR
+    PROJECT_NAME=$(basename "$PROJECT_DIR")
+    # Reset to global config first, then merge project override if it exists
+    CONFIG_PATH="$GLOBAL_CONFIG_PATH"
+    load_project_config
+    REPO=$(config_get '.gh.repo // ""')
+    PROJECT_ID=$(config_get '.gh.project_id // ""')
+    PROJECT_STATUS_FIELD_ID=$(config_get '.gh.project_status_field_id // ""')
+    PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
   fi
 
   log "[gh_push] [$PROJECT_NAME] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
