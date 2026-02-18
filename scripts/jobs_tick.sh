@@ -9,6 +9,15 @@ init_tasks_file
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
+ensure_state_dir
+JOBS_LOG="${STATE_DIR}/jobs.log"
+
+job_log() {
+  local msg="$(now_iso) $*"
+  echo "$msg" >> "$JOBS_LOG"
+  log_err "$@"
+}
+
 JOB_COUNT=$(yq -r '.jobs | length' "$JOBS_PATH")
 if [ "$JOB_COUNT" -eq 0 ]; then
   exit 0
@@ -34,7 +43,7 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
 
     if [ -z "$TASK_STATUS" ]; then
       # Task no longer exists — clear active_task_id
-      log_err "[jobs] job=$JOB_ID active task $ACTIVE_TASK_ID not found, clearing"
+      job_log "[jobs] job=$JOB_ID active task $ACTIVE_TASK_ID not found, clearing"
       yq -i ".jobs[$i].active_task_id = null" "$JOBS_PATH"
       ACTIVE_TASK_ID=""
     elif [ "$TASK_STATUS" != "done" ]; then
@@ -69,11 +78,11 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
     # Bash job: run command directly, no LLM involved
     JOB_CMD=$(yq -r ".jobs[$i].command // \"\"" "$JOBS_PATH")
     if [ -z "$JOB_CMD" ]; then
-      log_err "[jobs] job=$JOB_ID type=bash but no command, skipping"
+      job_log "[jobs] job=$JOB_ID type=bash but no command, skipping"
       continue
     fi
 
-    log_err "[jobs] job=$JOB_ID running bash command"
+    job_log "[jobs] job=$JOB_ID running bash command"
     BASH_RC=0
     BASH_OUTPUT=$(cd "${JOB_DIR:-.}" && bash -c "$JOB_CMD" 2>&1) || BASH_RC=$?
 
@@ -87,9 +96,9 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
     export BASH_STATUS
     yq -i ".jobs[$i].last_run = strenv(NOW) | .jobs[$i].last_task_status = strenv(BASH_STATUS)" "$JOBS_PATH"
 
-    log_err "[jobs] job=$JOB_ID bash exit=$BASH_RC status=$BASH_STATUS"
+    job_log "[jobs] job=$JOB_ID bash exit=$BASH_RC status=$BASH_STATUS"
     if [ -n "$BASH_OUTPUT" ]; then
-      log_err "[jobs] job=$JOB_ID output: $(printf '%.500s' "$BASH_OUTPUT")"
+      job_log "[jobs] job=$JOB_ID output: $(printf '%.500s' "$BASH_OUTPUT")"
     fi
     continue
   fi
@@ -123,10 +132,10 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
   export NOW NEW_TASK_ID
   yq -i ".jobs[$i].last_run = strenv(NOW) | .jobs[$i].active_task_id = (env(NEW_TASK_ID) | tonumber)" "$JOBS_PATH"
 
-  log_err "[jobs] job=$JOB_ID created task $NEW_TASK_ID"
+  job_log "[jobs] job=$JOB_ID created task $NEW_TASK_ID"
   CREATED=$((CREATED + 1))
 done
 
 if [ "$CREATED" -gt 0 ]; then
-  log_err "[jobs] created $CREATED task(s)"
+  job_log "[jobs] created $CREATED task(s)"
 fi

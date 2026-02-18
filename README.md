@@ -418,8 +418,9 @@ All state lives under `~/.orchestrator` (the install dir). Logs and runtime file
 
 | File | Path | Description |
 |---|---|---|
-| **Server log** | `.orchestrator/orchestrator.log` | Main loop output: ticks, poll, jobs, gh sync, restarts |
+| **Server log** | `.orchestrator/orchestrator.log` | Main loop output: ticks, poll, gh sync, restarts |
 | **Archive log** | `.orchestrator/orchestrator.archive.log` | Previous server sessions (rotated on each start) |
+| **Jobs log** | `.orchestrator/jobs.log` | Scheduled job execution: triggers, task creation, bash output |
 | **Brew log** | `/opt/homebrew/var/log/orchestrator.log` | stdout when running via `brew services` |
 
 View the server log:
