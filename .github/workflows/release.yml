@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches: ['**']
+  pull_request:
   schedule:
     - cron: '0 18 * * *' # Every day at 6pm UTC
   workflow_dispatch: {}

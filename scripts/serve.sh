@@ -124,6 +124,11 @@ clear_stale_task_lock() {
 }
 
 snapshot_hash() {
+  # Guard: ROOT_DIR may vanish after brew upgrade deletes old cellar
+  if [ ! -d "$ROOT_DIR" ]; then
+    echo "stale"
+    return 0
+  fi
   # Hash all repo files except runtime state
   fd --type f --no-ignore --hidden \
     --exclude '.git' \
