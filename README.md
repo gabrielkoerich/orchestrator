@@ -6,22 +6,12 @@ A lightweight autonomous agent orchestrator that routes tasks, spawns specialize
 
 ## Install
 
-### Homebrew (recommended)
 ```bash
-brew tap gabrielkoerich/orchestrator
+brew tap gabrielkoerich/tap
 brew install orchestrator
 ```
 
-All dependencies (`yq`, `jq`, `just`, `python3`) are installed automatically.
-
-### From source
-```bash
-git clone https://github.com/gabrielkoerich/orchestrator.git
-cd orchestrator
-just install
-```
-
-Requires `yq`, `jq`, `just`, `python3` in your PATH.
+All dependencies (`yq`, `jq`, `just`, `python3`, `rg`, `fd`) are installed automatically.
 
 ### Agent CLIs
 
@@ -37,11 +27,13 @@ Optional: `gh` for GitHub sync, `bats` for tests.
 ## Quick Start
 ```bash
 cd ~/projects/my-app
-orchestrator init               # configure project (optional GitHub setup)
-orchestrator task add "title"   # add a task
-orchestrator task next          # route + run next task
-orchestrator start              # start background server
+orch init               # configure project (optional GitHub setup)
+orch task add "title"   # add a task
+orch task next          # route + run next task
+orch start              # start background server
 ```
+
+`orch` is a short alias for `orchestrator` — both work interchangeably.
 
 ## Files
 
@@ -272,19 +264,13 @@ A single `orchestrator serve` handles all projects — it reads each task's `dir
 ## Background Service
 
 ```bash
-orchestrator start      # start (uses brew services if installed via brew, otherwise runs directly)
+orchestrator start      # start (delegates to brew services)
 orchestrator stop       # stop
 orchestrator restart    # restart
 orchestrator info       # check status
 ```
 
-When installed via Homebrew, these commands delegate to `brew services` automatically (auto-starts on login, auto-restarts on crash).
-
-### Via launchd (from-source installs)
-```bash
-orchestrator service install    # install and start launchd service
-orchestrator service uninstall  # stop and remove
-```
+Auto-starts on login, auto-restarts on crash via `brew services`.
 
 ## Scheduled Jobs (Cron)
 

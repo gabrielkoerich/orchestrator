@@ -71,12 +71,11 @@ class Orchestrator < Formula
     <<~EOS
       To get started:
         cd ~/your-project
-        orchestrator init         # configure project
-        orchestrator add "title"  # add a task
-        orchestrator serve        # start the server
+        orch init             # configure project
+        orch task add "title" # add a task
+        orch start            # start background server
 
-      Background service (auto-start on login):
-        brew services start orchestrator
+      `orch` is a short alias for `orchestrator`.
 
       Required agent CLIs (install at least one):
         brew install --cask claude-code   # Claude
