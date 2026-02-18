@@ -87,7 +87,7 @@ fi
 
 # Show active worktrees
 section "Worktrees:"
-WORKTREE_BASE="${HOME}/.worktrees"
+WORKTREE_BASE="${ORCH_WORKTREES}"
 if [ -d "$WORKTREE_BASE" ]; then
   WORKTREES=$(fd --min-depth 2 --max-depth 2 --type d . "$WORKTREE_BASE" 2>/dev/null || true)
   if [ -z "$WORKTREES" ]; then

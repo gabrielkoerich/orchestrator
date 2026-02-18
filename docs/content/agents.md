@@ -45,7 +45,7 @@ Agents are constrained by rules in the system prompt:
 
 The orchestrator creates worktrees before launching agents. Agents do NOT create worktrees themselves.
 
-**Path:** `~/.worktrees/<project>/gh-task-<issue>-<slug>` (or `task-<id>-<slug>` without an issue)
+**Path:** `~/.orchestrator/worktrees/<project>/gh-task-<issue>-<slug>` (or `task-<id>-<slug>` without an issue)
 
 **Steps:**
 1. `gh issue develop <issue> --base main --name <branch>` — registers branch with GitHub

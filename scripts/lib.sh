@@ -4,6 +4,7 @@ set -euo pipefail
 ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
 mkdir -p "$ORCH_HOME"
 
+ORCH_WORKTREES="${ORCH_WORKTREES:-${ORCH_HOME}/worktrees}"
 TASKS_PATH=${TASKS_PATH:-"${ORCH_HOME}/tasks.yml"}
 LOCK_PATH=${LOCK_PATH:-"${TASKS_PATH}.lock"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}

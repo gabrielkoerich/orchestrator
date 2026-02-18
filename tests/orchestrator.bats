@@ -38,7 +38,7 @@ YAML
 teardown() {
   # Clean up worktrees created by tests (they live outside TMP_DIR)
   PROJECT_NAME=$(basename "$TMP_DIR")
-  WORKTREE_BASE="$HOME/.worktrees/${PROJECT_NAME}"
+  WORKTREE_BASE="${ORCH_HOME}/worktrees/${PROJECT_NAME}"
   if [ -d "$WORKTREE_BASE" ]; then
     (cd "$TMP_DIR" && git worktree prune 2>/dev/null) || true
     rm -rf "$WORKTREE_BASE"
@@ -2709,7 +2709,7 @@ STUB
   [ "$status" -eq 0 ]
 
   # Verify worktree was created
-  WORKTREE_DIR="$HOME/.worktrees/$(basename "$PROJECT_DIR")/gh-task-42-add-readme"
+  WORKTREE_DIR="${ORCH_HOME}/worktrees/$(basename "$PROJECT_DIR" .git)/gh-task-42-add-readme"
   [ -d "$WORKTREE_DIR" ]
 
   # Verify worktree info saved to task
@@ -2794,7 +2794,7 @@ STUB
   [ "$status" -eq 0 ]
 
   # Verify worktree was created
-  WORKTREE_DIR="$HOME/.worktrees/$(basename "$PROJECT_DIR")/gh-task-55-add-license"
+  WORKTREE_DIR="${ORCH_HOME}/worktrees/$(basename "$PROJECT_DIR" .git)/gh-task-55-add-license"
   [ -d "$WORKTREE_DIR" ]
 
   # Verify orchestrator auto-committed the changes
@@ -3391,7 +3391,7 @@ SH
   git -C "$SRC" init -b main --quiet
   git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
 
-  BARE_DIR="${ORCH_HOME}/repos/testowner/testrepo.git"
+  BARE_DIR="${ORCH_HOME}/projects/testowner/testrepo.git"
   mkdir -p "$(dirname "$BARE_DIR")"
   git clone --bare "$SRC" "$BARE_DIR" 2>/dev/null
 
@@ -3422,7 +3422,7 @@ SH
   git -C "$SRC" init -b main --quiet
   git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
 
-  BARE_DIR="${ORCH_HOME}/repos/fetchowner/fetchrepo.git"
+  BARE_DIR="${ORCH_HOME}/projects/fetchowner/fetchrepo.git"
   mkdir -p "$(dirname "$BARE_DIR")"
   git clone --bare "$SRC" "$BARE_DIR" 2>/dev/null
 
@@ -3449,12 +3449,12 @@ SH
   git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
 
   # Pre-clone for HTTPS URL test
-  BARE_HTTPS="${ORCH_HOME}/repos/urlowner/urlrepo.git"
+  BARE_HTTPS="${ORCH_HOME}/projects/urlowner/urlrepo.git"
   mkdir -p "$(dirname "$BARE_HTTPS")"
   git clone --bare "$SRC" "$BARE_HTTPS" 2>/dev/null
 
   # Pre-clone for SSH URL test
-  BARE_SSH="${ORCH_HOME}/repos/sshowner/sshrepo.git"
+  BARE_SSH="${ORCH_HOME}/projects/sshowner/sshrepo.git"
   mkdir -p "$(dirname "$BARE_SSH")"
   git clone --bare "$SRC" "$BARE_SSH" 2>/dev/null
 

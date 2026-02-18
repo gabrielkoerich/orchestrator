@@ -30,7 +30,7 @@ if [ -f "$CONFIG_FILE" ]; then
   }
 fi
 
-echo "Initialized orchestrator for $(basename "$PROJECT_DIR")"
+echo "Initialized orchestrator for $(basename "$PROJECT_DIR" .git)"
 echo "  Project: $PROJECT_DIR"
 [ -f "$CONFIG_FILE" ] && echo "  Config: .orchestrator.yml (existing)"
 
@@ -248,7 +248,7 @@ elif [ -t 0 ]; then
 
           # Create a new project if none selected
           if [ -z "${GH_PROJECT_ID_INPUT:-}" ]; then
-            project_name=$(basename "$PROJECT_DIR")
+            project_name=$(basename "$PROJECT_DIR" .git)
             read -r -p "Create a new GitHub Project? (y/N): " CREATE_PROJECT
             if [ "$CREATE_PROJECT" = "y" ] || [ "$CREATE_PROJECT" = "Y" ]; then
               read -r -p "Project title [$project_name]: " PROJECT_TITLE

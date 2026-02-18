@@ -11,7 +11,7 @@ weight = 10
 orch task list|tree|add|plan|route|run|next|poll|retry|unblock|agent|stream|watch|unlock
 orch service start|stop|restart|info|install|uninstall
 orch gh pull|push|sync
-orch project info|create|list
+orch project info|create|list|add
 orch job add|list|remove|enable|disable|tick
 orch skills list|sync
 ```
@@ -24,6 +24,7 @@ Top-level shortcuts: `init`, `chat`, `status`, `dashboard`, `log`, `start`, `sto
 
 ```bash
 orch task add "title" "body" "labels"  # create a task
+orch task add "title" -p owner/repo   # create a task for a managed project
 orch task plan "title" "body"          # create a decompose task
 orch task list                          # list tasks for current project
 orch task tree                          # show parent-child tree
@@ -91,9 +92,11 @@ orch log                    # tail server logs
 orch gh pull                # import issues into tasks
 orch gh push                # push task updates to issues
 orch gh sync                # both directions
-orch project info           # show GitHub Project field IDs
-orch project info --fix     # auto-fill project config
-orch project create "name"  # create a new Project v2
+orch project add owner/repo  # bare clone + import issues
+orch project info            # show GitHub Project field IDs
+orch project info --fix      # auto-fill project config
+orch project create "name"   # create or link a GitHub Project v2
+orch project list             # list GitHub Projects
 ```
 
 ## Agent Management

@@ -28,8 +28,8 @@ fi
 OWNER=$(printf '%s' "$SLUG" | cut -d/ -f1)
 REPO_NAME=$(printf '%s' "$SLUG" | cut -d/ -f2)
 
-REPOS_DIR="${ORCH_HOME}/repos"
-BARE_DIR="${REPOS_DIR}/${OWNER}/${REPO_NAME}.git"
+PROJECTS_DIR="${ORCH_HOME}/projects"
+BARE_DIR="${PROJECTS_DIR}/${OWNER}/${REPO_NAME}.git"
 
 CLONE_URL="git@github.com:${SLUG}.git"
 

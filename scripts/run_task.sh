@@ -155,11 +155,11 @@ PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 
 if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
   BRANCH_NAME="$SAVED_BRANCH"
-  WORKTREE_DIR="${SAVED_WORKTREE:-$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}}"
+  WORKTREE_DIR="${SAVED_WORKTREE:-${ORCH_WORKTREES}/${PROJECT_NAME}/${BRANCH_NAME}}"
 else
   # Try to find an existing worktree by issue/task prefix
   EXISTING_WT=""
-  WORKTREES_BASE="$HOME/.worktrees/${PROJECT_NAME}"
+  WORKTREES_BASE="${ORCH_WORKTREES}/${PROJECT_NAME}"
   if [ -d "$WORKTREES_BASE" ]; then
     if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
       EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1)
@@ -180,7 +180,7 @@ else
     else
       BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
     fi
-    WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
+    WORKTREE_DIR="${ORCH_WORKTREES}/${PROJECT_NAME}/${BRANCH_NAME}"
   fi
 fi
 export BRANCH_NAME
@@ -692,8 +692,8 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
           HAS_UNPUSHED=true
         fi
       else
-        # Remote branch doesn't exist — check for any commits beyond main
-        if (cd "$PROJECT_DIR" && git log "main..HEAD" --oneline 2>/dev/null | rg -q .); then
+        # Remote branch doesn't exist — check for any commits beyond default branch
+        if (cd "$PROJECT_DIR" && git log "${DEFAULT_BRANCH}..HEAD" --oneline 2>/dev/null | rg -q .); then
           HAS_UNPUSHED=true
         fi
       fi

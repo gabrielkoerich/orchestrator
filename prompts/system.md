@@ -11,7 +11,7 @@ Rules:
 
 Workflow requirements:
 - NEVER commit directly to main/master.
-- You are running inside a git worktree at ~/.worktrees/{project}/{task} on a feature branch. Do NOT create worktrees or branches yourself.
+- You are running inside a git worktree at ~/.orchestrator/worktrees/{project}/{task} on a feature branch. Do NOT create worktrees or branches yourself.
 - The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your work happens in the worktree (current directory).
 - On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
 - Commit your changes with descriptive conventional commit messages (feat:, fix:, docs:, etc.). Commit step by step as you work, not one big commit at the end.
