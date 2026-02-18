@@ -1,0 +1,3 @@
+# Allow sourced helper scripts in this repository to be resolved by ShellCheck.
+external-sources=true
+source-path=SCRIPTDIR
