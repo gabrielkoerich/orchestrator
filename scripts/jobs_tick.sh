@@ -82,6 +82,15 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
       continue
     fi
 
+    if [ -n "$JOB_DIR" ] && [ "$JOB_DIR" != "null" ] && [ ! -d "$JOB_DIR" ]; then
+      job_log "[jobs] job=$JOB_ID invalid dir=$JOB_DIR, disabling job to prevent repeated failures"
+      NOW=$(now_iso)
+      BASH_STATUS="failed"
+      export NOW BASH_STATUS
+      yq -i ".jobs[$i].enabled = false | .jobs[$i].last_run = strenv(NOW) | .jobs[$i].last_task_status = strenv(BASH_STATUS)" "$JOBS_PATH"
+      continue
+    fi
+
     job_log "[jobs] job=$JOB_ID running bash command"
     BASH_RC=0
     BASH_OUTPUT=$(cd "${JOB_DIR:-.}" && bash -c "$JOB_CMD" 2>&1) || BASH_RC=$?

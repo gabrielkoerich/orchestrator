@@ -2418,6 +2418,24 @@ JSON
   [ "$output" = "failed" ]
 }
 
+@test "jobs_tick.sh disables bash job when dir is missing" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+
+  MISSING_DIR="${TMP_DIR}/does-not-exist"
+  PROJECT_DIR="$MISSING_DIR" "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test-output" "* * * * *" "Bad Dir Job" >/dev/null
+
+  run "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.jobs[0].enabled' "$JOBS_PATH"
+  [ "$output" = "false" ]
+
+  run yq -r '.jobs[0].last_task_status' "$JOBS_PATH"
+  [ "$output" = "failed" ]
+}
+
 # --- status.sh ---
 
 @test "status.sh shows counts table" {
