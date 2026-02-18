@@ -27,6 +27,8 @@ Optional: `gh` for GitHub sync, `bats` for tests.
 
 ## Quick Start
 
+### Option A: Existing local repo
+
 ```bash
 cd ~/projects/my-app
 orch init               # configure project (optional GitHub setup)
@@ -34,6 +36,16 @@ orch task add "title"   # add a task
 orch task next          # route + run next task
 orch start              # start background server
 ```
+
+### Option B: Any GitHub repo
+
+```bash
+orch project add owner/repo          # bare clone + import issues
+orch task add "title" -p owner/repo  # add a task to that project
+orch start                           # serve loop picks it up
+```
+
+Bare clones live at `~/.orchestrator/projects/<owner>/<repo>.git`. Agents always work in worktrees — never in the main clone.
 
 `orch` is a short alias for `orchestrator` — both work interchangeably.
 
@@ -49,6 +61,8 @@ All runtime state lives in `~/.orchestrator/` (`ORCH_HOME`):
 | `skills.yml` | Approved skill repositories and catalog |
 | `skills/` | Cloned skill repositories (via `skills-sync`) |
 | `contexts/` | Persisted context files per task/profile |
+| `projects/` | Bare clones added via `project add` |
+| `worktrees/` | Agent worktrees (`<project>/<branch>/`) |
 | `.orchestrator/` | Runtime state (pid, logs, locks, output, tool history, prompts) |
 
 Source files:

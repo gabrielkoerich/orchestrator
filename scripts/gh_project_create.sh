@@ -21,43 +21,107 @@ CONFIG_FILE="${PROJECT_DIR}/.orchestrator.yml"
 
 REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
-  REPO=$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null \
-    | sed -E 's#(https://github.com/|git@github.com:)##; s#\.git$##' || true)
+  REPO=$(git -C "$PROJECT_DIR" config remote.origin.url 2>/dev/null \
+    | sed -E 's#^https?://github\.com/##; s#^git@github\.com:##; s#\.git$##' || true)
 fi
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
   echo "No GitHub repo configured. Run 'orchestrator init' first or set gh.repo in .orchestrator.yml." >&2
   exit 1
 fi
 
-TITLE="${1:-$(basename "$PROJECT_DIR")}"
-
+TITLE="${1:-$(basename "$PROJECT_DIR" .git)}"
 repo_owner=$(printf '%s' "$REPO" | cut -d'/' -f1)
 owner_type=$(gh api "users/$repo_owner" -q .type 2>/dev/null || echo "User")
 
-echo "Creating GitHub Project '$TITLE' for $REPO..."
+# --- List existing projects and let user pick or create ---
+user_login=$(gh api user -q .login 2>/dev/null || true)
+orgs=$(gh api user/orgs -q '.[].login' 2>/dev/null || true)
 
-if [ "$owner_type" = "Organization" ]; then
-  create_json=$(gh api graphql \
-    -f query='mutation($owner:ID!,$title:String!){ createProjectV2(input:{ownerId:$owner, title:$title}){ projectV2{ id number } } }' \
-    -f owner="$(gh api "orgs/$repo_owner" -q .node_id)" \
-    -f title="$TITLE")
-else
-  create_json=$(gh api graphql \
-    -f query='mutation($owner:ID!,$title:String!){ createProjectV2(input:{ownerId:$owner, title:$title}){ projectV2{ id number } } }' \
-    -f owner="$(gh api user -q .node_id)" \
-    -f title="$TITLE")
+projects=()
+ids=()
+
+if [ -n "$user_login" ]; then
+  user_json=$(gh api graphql -f query='query($user:String!){ user(login:$user){ projectsV2(first:100){ nodes{ id number title } } } }' -f user="$user_login" 2>/dev/null || true)
+  if [ -n "$user_json" ]; then
+    while IFS=$'\t' read -r number title id; do
+      [ -n "$id" ] || continue
+      projects+=("user:${user_login} #${number} ${title}")
+      ids+=("$id")
+    done < <(printf '%s' "$user_json" | yq -r '.data.user.projectsV2.nodes[] | [.number, .title, .id] | @tsv' 2>/dev/null)
+  fi
 fi
 
-PROJECT_ID=$(printf '%s' "$create_json" | yq -r '.data.createProjectV2.projectV2.id // ""')
-PROJECT_NUM=$(printf '%s' "$create_json" | yq -r '.data.createProjectV2.projectV2.number // ""')
-
-if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
-  echo "Failed to create project." >&2
-  printf '%s\n' "$create_json" >&2
-  exit 1
+if [ -n "$orgs" ]; then
+  while IFS= read -r org; do
+    [ -n "$org" ] || continue
+    org_json=$(gh api graphql -f query='query($org:String!){ organization(login:$org){ projectsV2(first:100){ nodes{ id number title } } } }' -f org="$org" 2>/dev/null || true)
+    if [ -n "$org_json" ]; then
+      while IFS=$'\t' read -r number title id; do
+        [ -n "$id" ] || continue
+        projects+=("org:${org} #${number} ${title}")
+        ids+=("$id")
+      done < <(printf '%s' "$org_json" | yq -r '.data.organization.projectsV2.nodes[] | [.number, .title, .id] | @tsv' 2>/dev/null)
+    fi
+  done <<< "$orgs"
 fi
 
-echo "Created project #$PROJECT_NUM: $TITLE"
+PROJECT_ID=""
+
+if [ ${#projects[@]} -gt 0 ] && [ -t 0 ]; then
+  echo "Existing GitHub Projects:"
+  i=1
+  for p in "${projects[@]}"; do
+    echo "  [$i] $p"
+    i=$((i + 1))
+  done
+  echo "  [n] Create new project"
+  read -r -p "Select project to link (or 'n' to create new) [skip]: " selection
+
+  if [ "$selection" = "n" ] || [ "$selection" = "N" ]; then
+    : # fall through to create
+  elif [ -n "$selection" ] && [[ "$selection" =~ ^[0-9]+$ ]]; then
+    idx=$((selection - 1))
+    if [ "$idx" -ge 0 ] && [ "$idx" -lt ${#ids[@]} ]; then
+      PROJECT_ID="${ids[$idx]}"
+      echo "Linking to existing project: ${projects[$idx]}"
+    fi
+  else
+    echo "Skipped."
+    exit 0
+  fi
+fi
+
+# Create new project if none selected
+if [ -z "$PROJECT_ID" ]; then
+  echo "Creating GitHub Project '$TITLE' for $REPO..."
+
+  if [ "$owner_type" = "Organization" ]; then
+    create_json=$(gh api graphql \
+      -f query='mutation($owner:ID!,$title:String!){ createProjectV2(input:{ownerId:$owner, title:$title}){ projectV2{ id number } } }' \
+      -f owner="$(gh api "orgs/$repo_owner" -q .node_id)" \
+      -f title="$TITLE")
+  else
+    create_json=$(gh api graphql \
+      -f query='mutation($owner:ID!,$title:String!){ createProjectV2(input:{ownerId:$owner, title:$title}){ projectV2{ id number } } }' \
+      -f owner="$(gh api user -q .node_id)" \
+      -f title="$TITLE")
+  fi
+
+  PROJECT_ID=$(printf '%s' "$create_json" | yq -r '.data.createProjectV2.projectV2.id // ""')
+  PROJECT_NUM=$(printf '%s' "$create_json" | yq -r '.data.createProjectV2.projectV2.number // ""')
+
+  if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+    echo "Failed to create project." >&2
+    printf '%s\n' "$create_json" >&2
+    exit 1
+  fi
+
+  echo "Created project #$PROJECT_NUM: $TITLE"
+
+  # Configure status columns and board view on new project
+  configure_project_status_field "$PROJECT_ID"
+  create_project_board_view "$PROJECT_NUM" "$repo_owner" "$owner_type"
+fi
 
 # Link project to repository
 link_project_to_repo "$PROJECT_ID" "$REPO"
@@ -75,13 +139,14 @@ YAML
   yq -i ".gh.project_id = strenv(GH_PROJECT_ID)" "$CONFIG_FILE"
 fi
 
-# Configure status columns and board view on new project
-configure_project_status_field "$PROJECT_ID"
-create_project_board_view "$PROJECT_NUM" "$repo_owner" "$owner_type"
-
 # Auto-detect status field options
-status_json=$(gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:100){ nodes{ ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }' -f project="$PROJECT_ID" 2>/dev/null || true)
-if [ -n "$status_json" ]; then
+auto_detect_status() {
+  local config_file="$1" project_id="$2"
+  local status_json
+  status_json=$(gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:100){ nodes{ ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }' -f project="$project_id" 2>/dev/null || true)
+  [ -n "$status_json" ] || return 0
+
+  local status_field_id
   status_field_id=$(printf '%s' "$status_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .id' 2>/dev/null | head -n1)
 
   find_option_id() {
@@ -96,6 +161,7 @@ if [ -n "$status_json" ]; then
     done
   }
 
+  local backlog_id inprog_id review_id done_id
   backlog_id=$(find_option_id "$status_json" "Backlog" "Todo" "To Do" "New")
   inprog_id=$(find_option_id "$status_json" "In Progress" "In progress" "Doing" "Active" "Working")
   review_id=$(find_option_id "$status_json" "Review" "In Review" "Needs Review")
@@ -103,30 +169,40 @@ if [ -n "$status_json" ]; then
 
   export status_field_id backlog_id inprog_id review_id done_id
   if [ -n "$status_field_id" ] && [ "$status_field_id" != "null" ]; then
-    yq -i ".gh.project_status_field_id = strenv(status_field_id)" "$CONFIG_FILE"
+    yq -i ".gh.project_status_field_id = strenv(status_field_id)" "$config_file"
   fi
-  [ -n "${backlog_id:-}" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = strenv(backlog_id)' "$CONFIG_FILE"
-  [ -n "${inprog_id:-}" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = strenv(inprog_id)' "$CONFIG_FILE"
-  [ -n "${review_id:-}" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = strenv(review_id)' "$CONFIG_FILE"
-  [ -n "${done_id:-}" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = strenv(done_id)' "$CONFIG_FILE"
+  [ -n "${backlog_id:-}" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = strenv(backlog_id)' "$config_file"
+  [ -n "${inprog_id:-}" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = strenv(inprog_id)' "$config_file"
+  [ -n "${review_id:-}" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = strenv(review_id)' "$config_file"
+  [ -n "${done_id:-}" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = strenv(done_id)' "$config_file"
 
   echo "Detected status options:"
   [ -n "${backlog_id:-}" ] && echo "  backlog -> $backlog_id" || echo "  backlog -> (not found)"
   [ -n "${inprog_id:-}" ] && echo "  in_progress -> $inprog_id" || echo "  in_progress -> (not found)"
   [ -n "${review_id:-}" ] && echo "  review -> $review_id" || echo "  review -> (not found)"
   [ -n "${done_id:-}" ] && echo "  done -> $done_id" || echo "  done -> (not found)"
-fi
+}
+
+auto_detect_status "$CONFIG_FILE" "$PROJECT_ID"
 
 echo ""
 echo "Project ID: $PROJECT_ID"
 
 # Auto-add guidance
-if [ "$owner_type" = "Organization" ]; then
-  workflows_url="https://github.com/orgs/$repo_owner/projects/$PROJECT_NUM/workflows"
-else
-  workflows_url="https://github.com/users/$repo_owner/projects/$PROJECT_NUM/workflows"
+PROJECT_NUM="${PROJECT_NUM:-}"
+if [ -z "$PROJECT_NUM" ]; then
+  # Extract project number for linked projects
+  PROJECT_NUM=$(gh api graphql -f query='query($id:ID!){ node(id:$id){ ... on ProjectV2 { number } } }' -f id="$PROJECT_ID" -q '.data.node.number' 2>/dev/null || true)
 fi
-echo ""
-echo "To enable auto-add (new issues -> project), visit:"
-echo "  $workflows_url"
-echo "and enable 'Auto-add to project' for this repo."
+
+if [ -n "$PROJECT_NUM" ]; then
+  if [ "$owner_type" = "Organization" ]; then
+    workflows_url="https://github.com/orgs/$repo_owner/projects/$PROJECT_NUM/workflows"
+  else
+    workflows_url="https://github.com/users/$repo_owner/projects/$PROJECT_NUM/workflows"
+  fi
+  echo ""
+  echo "To enable auto-add (new issues -> project), visit:"
+  echo "  $workflows_url"
+  echo "and enable 'Auto-add to project' for this repo."
+fi

@@ -18,7 +18,7 @@ if [ "$GH_ENABLED" != "true" ]; then
   exit 0
 fi
 
-PROJECT_NAME=$(basename "${PROJECT_DIR:-$(pwd)}")
+PROJECT_NAME=$(basename "${PROJECT_DIR:-$(pwd)}" .git)
 log "[gh_sync] project=$PROJECT_NAME pull start"
 "$SCRIPT_DIR/gh_pull.sh"
 log "[gh_sync] project=$PROJECT_NAME pull done"

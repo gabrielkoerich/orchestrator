@@ -5,7 +5,7 @@ require_yq
 require_jq
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
-PROJECT_NAME=$(basename "$PROJECT_DIR")
+PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 init_config_file
 load_project_config
 
@@ -274,7 +274,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ] && [ "$TASK_DIR" != "$PROJECT_DIR" ]; then
     PROJECT_DIR="$TASK_DIR"
     export PROJECT_DIR
-    PROJECT_NAME=$(basename "$PROJECT_DIR")
+    PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
     # Reset to global config first, then merge project override if it exists
     CONFIG_PATH="$GLOBAL_CONFIG_PATH"
     load_project_config

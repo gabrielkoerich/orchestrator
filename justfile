@@ -97,8 +97,8 @@ _task_tree:
     @scripts/tree.sh
 
 [private]
-_task_add title body="" labels="":
-    @scripts/add_task.sh "{{ title }}" "{{ body }}" "{{ labels }}"
+_task_add *args:
+    @scripts/add_task.sh "$@"
 
 # Set PLAN_INTERACTIVE=0 to skip interactive planning and just add task with plan label
 [private]
@@ -259,6 +259,10 @@ _project_info *args:
 [private]
 _project_create title="":
     @scripts/gh_project_create.sh "{{ title }}"
+
+[private]
+_project_add *args:
+    @scripts/project_add.sh "$@"
 
 [private]
 _project_list org="" user="":

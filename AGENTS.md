@@ -53,6 +53,35 @@ model_map:
 
 See `model_for_complexity()` in `scripts/lib.sh`.
 
+## Directory layout
+
+```
+~/.orchestrator/
+  tasks.yml              # task database (all projects, filtered by dir)
+  config.yml             # global config
+  jobs.yml               # scheduled jobs
+  projects/              # bare clones added via `orch project add`
+    owner/repo.git       #   each has .orchestrator.yml inside
+  worktrees/             # agent worktrees (all projects)
+    repo/branch/         #   created by run_task.sh, one per task
+  .orchestrator/         # runtime state (logs, prompts, pid, locks)
+```
+
+- **User-managed projects** (e.g. `~/Projects/foo`): user clones, runs `orch init`. Project dir stays where the user put it.
+- **Orch-managed projects** (`orch project add owner/repo`): bare clone at `~/.orchestrator/projects/<owner>/<repo>.git`.
+- **Worktrees**: always at `~/.orchestrator/worktrees/<project>/<branch>/` regardless of project type.
+- `ORCH_WORKTREES` env var overrides the worktrees base directory.
+
+## Adding external projects
+
+```bash
+orch project add owner/repo               # bare clone + write config + sync issues
+orch task add "title" -p owner/repo        # add task to managed project
+orch project create                        # link or create GitHub Project board
+```
+
+`project add` clones via SSH (`git@github.com:owner/repo.git`), writes `.orchestrator.yml` inside the bare repo, and imports open GitHub issues as tasks.
+
 ## Specs & Roadmap
 
 See [specs.md](specs.md) for architecture overview, what's working, what's not, and improvement ideas.

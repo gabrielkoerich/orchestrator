@@ -4,6 +4,7 @@ set -euo pipefail
 ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
 mkdir -p "$ORCH_HOME"
 
+ORCH_WORKTREES="${ORCH_WORKTREES:-${ORCH_HOME}/worktrees}"
 TASKS_PATH=${TASKS_PATH:-"${ORCH_HOME}/tasks.yml"}
 LOCK_PATH=${LOCK_PATH:-"${TASKS_PATH}.lock"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
@@ -256,6 +257,11 @@ link_project_to_repo() {
       -f repoId="$repo_node_id" >/dev/null 2>&1 || true
     echo "Linked project to $repo"
   fi
+}
+
+is_bare_repo() {
+  local dir="${1:-$PROJECT_DIR}"
+  [ -d "$dir" ] && git -C "$dir" rev-parse --is-bare-repository 2>/dev/null | grep -q true
 }
 
 require_yq() {

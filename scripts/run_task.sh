@@ -151,15 +151,15 @@ fi
 # Reuse existing branch/worktree from task if already set (deterministic across retries)
 SAVED_BRANCH=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .branch // \"\"" "$TASKS_PATH")
 SAVED_WORKTREE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .worktree // \"\"" "$TASKS_PATH")
-PROJECT_NAME=$(basename "$PROJECT_DIR")
+PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 
 if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
   BRANCH_NAME="$SAVED_BRANCH"
-  WORKTREE_DIR="${SAVED_WORKTREE:-$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}}"
+  WORKTREE_DIR="${SAVED_WORKTREE:-${ORCH_WORKTREES}/${PROJECT_NAME}/${BRANCH_NAME}}"
 else
   # Try to find an existing worktree by issue/task prefix
   EXISTING_WT=""
-  WORKTREES_BASE="$HOME/.worktrees/${PROJECT_NAME}"
+  WORKTREES_BASE="${ORCH_WORKTREES}/${PROJECT_NAME}"
   if [ -d "$WORKTREES_BASE" ]; then
     if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
       EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1)
@@ -180,17 +180,23 @@ else
     else
       BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
     fi
-    WORKTREE_DIR="$HOME/.worktrees/${PROJECT_NAME}/${BRANCH_NAME}"
+    WORKTREE_DIR="${ORCH_WORKTREES}/${PROJECT_NAME}/${BRANCH_NAME}"
   fi
 fi
 export BRANCH_NAME
 
+# Detect default branch (bare repos may use a different name)
+DEFAULT_BRANCH=$(git -C "$PROJECT_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "main")
+
 if [ ! -d "$WORKTREE_DIR" ]; then
   log_err "[run] task=$TASK_ID creating worktree at $WORKTREE_DIR"
-  if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-    cd "$PROJECT_DIR" && gh issue develop "$GH_ISSUE_NUMBER" --base main --name "$BRANCH_NAME" 2>/dev/null || true
+  # Bare repos: fetch latest before creating worktree; skip gh issue develop (requires working tree)
+  if is_bare_repo "$PROJECT_DIR"; then
+    git -C "$PROJECT_DIR" fetch --all --prune 2>/dev/null || true
+  elif [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
+    cd "$PROJECT_DIR" && gh issue develop "$GH_ISSUE_NUMBER" --base "$DEFAULT_BRANCH" --name "$BRANCH_NAME" 2>/dev/null || true
   fi
-  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
+  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" "$DEFAULT_BRANCH" 2>/dev/null || true
   mkdir -p "$(dirname "$WORKTREE_DIR")"
   cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
 fi
@@ -209,7 +215,7 @@ else
   log_err "[run] task=$TASK_ID worktree creation failed, retrying"
   cd "$PROJECT_DIR" && git worktree prune 2>/dev/null || true
   cd "$PROJECT_DIR" && git branch -D "$BRANCH_NAME" 2>/dev/null || true
-  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
+  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" "$DEFAULT_BRANCH" 2>/dev/null || true
   cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
   if [ -d "$WORKTREE_DIR" ]; then
     PROJECT_DIR="$WORKTREE_DIR"
@@ -686,8 +692,8 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
           HAS_UNPUSHED=true
         fi
       else
-        # Remote branch doesn't exist — check for any commits beyond main
-        if (cd "$PROJECT_DIR" && git log "main..HEAD" --oneline 2>/dev/null | rg -q .); then
+        # Remote branch doesn't exist — check for any commits beyond default branch
+        if (cd "$PROJECT_DIR" && git log "${DEFAULT_BRANCH}..HEAD" --oneline 2>/dev/null | rg -q .); then
           HAS_UNPUSHED=true
         fi
       fi
