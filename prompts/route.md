@@ -20,6 +20,10 @@ Labels: {{TASK_LABELS}}
 Body:
 {{TASK_BODY}}
 
+Label handling:
+- Labels may include routing metadata from previous runs (for example `agent:*`, `role:*`, `complexity:*`).
+- Treat those metadata labels as historical context only. Do not let them bias executor/complexity selection for this routing pass.
+
 Return ONLY JSON with the following keys:
 executor: codex|claude|opencode
 complexity: simple|medium|complex
@@ -31,7 +35,15 @@ profile:
   constraints: list of constraints
 selected_skills: list of skill ids from the catalog
 
+selected_skills guidance:
+- `selected_skills: []` is valid when no catalog skill materially improves execution for this task.
+
 Complexity guide:
 - simple: docs, config changes, single-file edits, typos, README updates
 - medium: multi-file features, bug fixes, test additions, small refactors
 - complex: architecture changes, large refactors, cross-system debugging, migrations
+
+Complexity controls model tier:
+- The selected complexity directly determines the model tier via `config.yml` `model_map` (resolved per executor).
+- Choose complexity carefully because this is not just a label; it affects capability/cost.
+- If uncertain between `simple` and `medium`, prefer `medium`.
