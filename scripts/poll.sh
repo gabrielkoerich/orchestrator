@@ -35,7 +35,7 @@ if [ -n "$IN_PROGRESS_IDS" ]; then
     if [ ! -d "$TASK_LOCK" ]; then
       UPDATED_AT=$(yq -r ".tasks[] | select(.id == $sid) | .updated_at // \"\"" "$TASKS_PATH")
       if [ -n "$UPDATED_AT" ] && [ "$UPDATED_AT" != "null" ]; then
-        UPDATED_EPOCH=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$UPDATED_AT" +%s 2>/dev/null || date -d "$UPDATED_AT" +%s 2>/dev/null || echo 0)
+        UPDATED_EPOCH=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$UPDATED_AT" +%s 2>/dev/null || date -d "$UPDATED_AT" +%s 2>/dev/null || echo 0)
         ELAPSED=$((NOW_EPOCH - UPDATED_EPOCH))
         if [ "$ELAPSED" -ge "$STUCK_TIMEOUT" ]; then
           log "[poll] task=$sid stuck in_progress for ${ELAPSED}s (no lock held), recovering"

@@ -459,7 +459,7 @@ stop_spinner
 cleanup_monitor
 AGENT_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Calculate duration in seconds (macOS and Linux compatible)
-AGENT_START_EPOCH=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$AGENT_START" +%s 2>/dev/null || date -d "$AGENT_START" +%s 2>/dev/null || echo 0)
+AGENT_START_EPOCH=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$AGENT_START" +%s 2>/dev/null || date -d "$AGENT_START" +%s 2>/dev/null || echo 0)
 AGENT_END_EPOCH=$(date +%s)
 AGENT_DURATION=$((AGENT_END_EPOCH - AGENT_START_EPOCH))
 export AGENT_DURATION

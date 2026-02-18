@@ -52,7 +52,7 @@ if [ -n "$USAGE_TSV" ]; then
   USAGE_SUMMARY=$(printf '%s\n' "$USAGE_TSV" | awk -F'\t' '
     BEGIN { ti=0; to=0; dur=0; cost=0 }
     {
-      ti += $1; to += $2; dur += $3
+      ti += $1; to += $2; dur += ($3 > 0 ? $3 : 0)
       m = $4
       if (m == "haiku" || m == "gpt-5.1-codex-mini")
         cost += ($1 * 0.25 + $2 * 1.25) / 1000000
