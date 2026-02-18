@@ -70,7 +70,7 @@ _run_task_cleanup() {
       now=$(now_iso 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")
       export now
       yq -i \
-        "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
+        "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
          (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"run_task crashed (exit $exit_code)\" | \
          (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(now)" \
         "$TASKS_PATH" 2>/dev/null || true
@@ -501,8 +501,22 @@ fi
 if [ "$CMD_STATUS" -ne 0 ]; then
   COMBINED_OUTPUT="${RESPONSE}${AGENT_STDERR}"
 
+  # Detect timeout first — exit code 124 is definitive
+  if [ "$CMD_STATUS" -eq 124 ]; then
+    # Check if timeout was caused by interactive approval prompt
+    TIMEOUT_REASON="agent timed out (exit 124)"
+    if [ -f "$STDERR_FILE" ] && grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
+      TIMEOUT_REASON="agent stuck waiting for interactive approval (1Password/SSH/passphrase) — configure headless auth"
+      error_log "[run] task=$TASK_ID TIMEOUT: stuck on interactive approval"
+    else
+      error_log "[run] task=$TASK_ID TIMEOUT after $(duration_fmt $AGENT_DURATION)"
+    fi
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "$TIMEOUT_REASON"
+    exit 0
+  fi
+
   # Detect auth/token/billing errors — try switching to another agent
-  if printf '%s' "$COMBINED_OUTPUT" | grep -qiE 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required|state.db.missing.rollout|rollout.*missing'; then
+  if printf '%s' "$COMBINED_OUTPUT" | grep -qiE 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
     error_log "[run] task=$TASK_ID AUTH/BILLING ERROR for agent=$TASK_AGENT"
     AVAILABLE=$(available_agents)
     NEXT_AGENT=""
@@ -536,20 +550,6 @@ ${STDERR_SNIPPET}
       mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — no other agents available"
       comment_on_issue "$TASK_ID" "🚨 **Auth/billing error**: \`$TASK_AGENT\` failed and no other agents are available. Manual intervention needed."
     fi
-    exit 0
-  fi
-
-  # Detect timeout
-  if [ "$CMD_STATUS" -eq 124 ]; then
-    # Check if timeout was caused by interactive approval prompt
-    TIMEOUT_REASON="agent timed out (exit 124)"
-    if [ -f "$STDERR_FILE" ] && grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
-      TIMEOUT_REASON="agent stuck waiting for interactive approval (1Password/SSH/passphrase) — configure headless auth"
-      error_log "[run] task=$TASK_ID TIMEOUT: stuck on interactive approval"
-    else
-      error_log "[run] task=$TASK_ID TIMEOUT after $(duration_fmt $AGENT_DURATION)"
-    fi
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "$TIMEOUT_REASON"
     exit 0
   fi
 
