@@ -326,28 +326,50 @@ SH
   run "${REPO_DIR}/scripts/add_task.sh" "Review Me" "Review body" ""
   [ "$status" -eq 0 ]
 
-  run yq -i '.workflow.enable_review_agent = true | .workflow.review_agent = "codex"' "$CONFIG_PATH"
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
 
+  # Task agent is codex → review agent should be claude (opposite)
   run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
-  # Execution stub prints JSON to stdout; review stub also prints to stdout
+  # Execution stub (codex) prints done JSON to stdout
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-prompt="$*"
-if printf '%s' "$prompt" | grep -q "reviewing agent"; then
-  cat <<'JSON'
-{"decision":"approve","notes":"looks good"}
-JSON
-else
-  cat <<'JSON'
+cat <<'JSON'
 {"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
-fi
 SH
   chmod +x "$CODEX_STUB"
+
+  # Review stub (claude) prints approve JSON
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"decision":"approve","notes":"looks good"}
+JSON
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  # Mock gh — return PR number for pr list, empty diff, accept pr review
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  echo "42"
+elif [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+  echo "+added line"
+elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+  echo "Approved"
+elif [ "$1" = "issue" ]; then
+  echo ""
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
 
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
@@ -2938,34 +2960,44 @@ SH
   run "${REPO_DIR}/scripts/add_task.sh" "Review Reject" "Test reject" ""
   [ "$status" -eq 0 ]
 
-  run yq -i '.workflow.enable_review_agent = true | .workflow.review_agent = "codex"' "$CONFIG_PATH"
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
 
   run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
   [ "$status" -eq 0 ]
 
+  # Execution stub (codex) returns done
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-prompt="$*"
-if printf '%s' "$prompt" | grep -q "reviewing agent"; then
-  cat <<'JSON'
-{"decision":"reject","notes":"hallucinated API calls"}
-JSON
-else
-  cat <<'JSON'
+cat <<'JSON'
 {"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
 JSON
-fi
 SH
   chmod +x "$CODEX_STUB"
 
-  # Mock gh — return empty for pr list, mock for api calls
+  # Review stub (claude) returns reject
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"decision":"reject","notes":"hallucinated API calls"}
+JSON
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  # Mock gh — return PR number for list, accept diff/review/close
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
 #!/usr/bin/env bash
-if [ "$1" = "pr" ]; then
-  echo ""
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  echo "42"
+elif [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+  echo "+added line"
+elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+  echo "ok"
+elif [ "$1" = "pr" ] && [ "$2" = "close" ]; then
+  echo "ok"
 elif [ "$1" = "issue" ]; then
   echo ""
 else
@@ -3026,4 +3058,94 @@ SH
   run grep -n 'MAIN_PROJECT_DIR=' "${REPO_DIR}/scripts/run_task.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *'MAIN_PROJECT_DIR="$PROJECT_DIR"'* ]]
+}
+
+@test "opposite_agent picks different agent from task agent" {
+  # Make both codex and claude available; opposite of codex should be claude
+  CODEX_STUB="${TMP_DIR}/codex"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$CODEX_STUB"
+  chmod +x "$CODEX_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  printf '#!/usr/bin/env bash\necho ok\n' > "$CLAUDE_STUB"
+  chmod +x "$CLAUDE_STUB"
+
+  run bash -c "export PATH='${TMP_DIR}:${PATH}'; source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; opposite_agent codex"
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+
+  # opposite of claude should be codex
+  run bash -c "export PATH='${TMP_DIR}:${PATH}'; source '${REPO_DIR}/scripts/lib.sh'; CONFIG_PATH='$CONFIG_PATH'; opposite_agent claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+}
+
+@test "review agent request_changes posts review but does not close PR" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Review Changes" "Test request_changes" ""
+  [ "$status" -eq 0 ]
+
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  # Execution stub (codex) returns done
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  # Review stub (claude) returns request_changes
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"decision":"request_changes","notes":"missing error handling"}
+JSON
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  # Mock gh — track calls to detect if pr close was called
+  GH_LOG="${STATE_DIR}/gh_calls.log"
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<SH
+#!/usr/bin/env bash
+echo "\$@" >> "${GH_LOG}"
+if [ "\$1" = "pr" ] && [ "\$2" = "list" ]; then
+  echo "42"
+elif [ "\$1" = "pr" ] && [ "\$2" = "diff" ]; then
+  echo "+added line"
+elif [ "\$1" = "pr" ] && [ "\$2" = "review" ]; then
+  echo "ok"
+elif [ "\$1" = "pr" ] && [ "\$2" = "close" ]; then
+  echo "ok"
+elif [ "\$1" = "issue" ]; then
+  echo ""
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Task should be needs_review (not done)
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "needs_review" ]
+
+  # gh pr review should have been called (request-changes)
+  run grep "pr review" "$GH_LOG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--request-changes"* ]]
+
+  # gh pr close should NOT have been called
+  run grep "pr close" "$GH_LOG"
+  [ "$status" -ne 0 ]
 }

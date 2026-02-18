@@ -424,10 +424,16 @@ ${AGENT_MESSAGE}"
     CODEX_ARGS=()
     case "$CODEX_SANDBOX" in
       full-auto)
-        CODEX_ARGS+=(--full-auto -c 'sandbox_workspace_write.network_access=true')
+        CODEX_ARGS+=(--full-auto)
+        CODEX_ARGS+=(-c 'sandbox_workspace_write.network_access=true')
+        CODEX_ARGS+=(-c 'sandbox_permissions=["disk-full-read-access"]')
+        CODEX_ARGS+=(-c 'shell_environment_policy.inherit=all')
         ;;
       workspace-write)
-        CODEX_ARGS+=(--sandbox workspace-write -c 'sandbox_workspace_write.network_access=true')
+        CODEX_ARGS+=(--sandbox workspace-write)
+        CODEX_ARGS+=(-c 'sandbox_workspace_write.network_access=true')
+        CODEX_ARGS+=(-c 'sandbox_permissions=["disk-full-read-access"]')
+        CODEX_ARGS+=(-c 'shell_environment_policy.inherit=all')
         ;;
       danger-full-access)
         CODEX_ARGS+=(--sandbox danger-full-access)
@@ -780,18 +786,20 @@ append_task_context "$TASK_ID" "[$NOW] status: $AGENT_STATUS\nsummary: $SUMMARY\
 
 # Optional review step
 ENABLE_REVIEW_AGENT=${ENABLE_REVIEW_AGENT:-$(config_get '.workflow.enable_review_agent // false')}
-REVIEW_AGENT=${REVIEW_AGENT:-$(config_get '.workflow.review_agent // "claude"')}
+REVIEW_AGENT=${REVIEW_AGENT:-$(opposite_agent "$TASK_AGENT")}
 
-if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
+if [ "$AGENT_STATUS" = "in_review" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ] && [ -n "$PR_NUMBER" ]; then
   FILES_CHANGED=$(printf '%s' "$RESPONSE_JSON" | jq -r '.files_changed | join(", ")')
 
-  # Build review context with git diff
+  # Get the actual PR diff (truncated to 500 lines)
   export TASK_SUMMARY="$SUMMARY"
   export TASK_FILES_CHANGED="$FILES_CHANGED"
-  export GIT_DIFF
-  GIT_DIFF=$(build_git_diff "$PROJECT_DIR")
+  export GIT_DIFF PR_NUMBER
+  GIT_DIFF=$(cd "$PROJECT_DIR" && gh pr diff "$PR_NUMBER" 2>/dev/null | head -500 || true)
 
   REVIEW_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/review.md")
+
+  log_err "[run] task=$TASK_ID starting review by $REVIEW_AGENT for PR #$PR_NUMBER"
 
   REVIEW_MODEL=$(model_for_complexity "$REVIEW_AGENT" "review")
   REVIEW_RESPONSE=""
@@ -802,6 +810,9 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
       ;;
     claude)
       REVIEW_RESPONSE=$(run_with_timeout claude ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") || REVIEW_STATUS=$?
+      ;;
+    opencode)
+      REVIEW_RESPONSE=$(run_with_timeout opencode ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") || REVIEW_STATUS=$?
       ;;
     *)
       log_err "[run] task=$TASK_ID unknown review agent: $REVIEW_AGENT"
@@ -817,22 +828,21 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
   REVIEW_DECISION=$(printf '%s' "$REVIEW_RESPONSE" | yq -r '.decision // ""')
   REVIEW_NOTES=$(printf '%s' "$REVIEW_RESPONSE" | yq -r '.notes // ""')
 
-  if [ "$REVIEW_DECISION" = "reject" ]; then
-    log_err "[run] task=$TASK_ID review rejected — closing PR"
-    # Close the PR if one exists
-    if [ -n "${BRANCH_NAME:-}" ] && [ "$BRANCH_NAME" != "main" ] && command -v gh >/dev/null 2>&1 && [ -d "$PROJECT_DIR" ]; then
-      PR_NUM=$(cd "$PROJECT_DIR" && gh pr list --head "$BRANCH_NAME" --json number -q '.[0].number' 2>/dev/null || true)
-      if [ -n "$PR_NUM" ]; then
-        (cd "$PROJECT_DIR" && gh pr close "$PR_NUM" --comment "Rejected by review agent: ${REVIEW_NOTES:-no notes}" 2>/dev/null) || true
-        log_err "[run] task=$TASK_ID closed PR #$PR_NUM"
-      fi
-    fi
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review rejected: ${REVIEW_NOTES:-hallucination or broken changes}"
+  # Post real GitHub PR review
+  if [ "$REVIEW_DECISION" = "approve" ]; then
+    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --approve --body "${REVIEW_NOTES:-Approved by $REVIEW_AGENT review agent}" 2>/dev/null) || true
+    log_err "[run] task=$TASK_ID review approved PR #$PR_NUMBER"
+  elif [ "$REVIEW_DECISION" = "request_changes" ]; then
+    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --request-changes --body "${REVIEW_NOTES:-Changes requested by $REVIEW_AGENT review agent}" 2>/dev/null) || true
+    log_err "[run] task=$TASK_ID review requested changes on PR #$PR_NUMBER"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review requested changes: ${REVIEW_NOTES:-}"
     exit 0
-  fi
-
-  if [ "$REVIEW_DECISION" = "request_changes" ]; then
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review requested changes"
+  elif [ "$REVIEW_DECISION" = "reject" ]; then
+    log_err "[run] task=$TASK_ID review rejected — closing PR #$PR_NUMBER"
+    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --request-changes --body "Rejected by $REVIEW_AGENT: ${REVIEW_NOTES:-no notes}" 2>/dev/null) || true
+    (cd "$PROJECT_DIR" && gh pr close "$PR_NUMBER" --comment "Rejected by review agent: ${REVIEW_NOTES:-no notes}" 2>/dev/null) || true
+    log_err "[run] task=$TASK_ID closed PR #$PR_NUMBER"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review rejected: ${REVIEW_NOTES:-hallucination or broken changes}"
     exit 0
   fi
 
@@ -843,7 +853,7 @@ if [ "$AGENT_STATUS" = "done" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ]; then
      (.tasks[] | select(.id == $TASK_ID) | .review_notes) = strenv(REVIEW_NOTES) | \
      (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
     "$TASKS_PATH"
-  append_history "$TASK_ID" "done" "review approved"
+  append_history "$TASK_ID" "done" "review approved by $REVIEW_AGENT"
 fi
 
 # Only allow delegations from plan/decompose tasks — agents should do the work, not create subtasks

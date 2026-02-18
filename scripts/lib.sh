@@ -315,6 +315,29 @@ available_agents() {
   echo "$agents"
 }
 
+opposite_agent() {
+  local task_agent="${1:-}"
+  local agents
+  agents=$(available_agents)
+  # Pick first available agent that differs from the task's agent
+  IFS=',' read -ra agent_list <<< "$agents"
+  for a in "${agent_list[@]}"; do
+    if [ "$a" != "$task_agent" ]; then
+      echo "$a"
+      return
+    fi
+  done
+  # Fallback to configured review_agent
+  local configured
+  configured=$(config_get '.workflow.review_agent // ""')
+  if [ -n "$configured" ] && [ "$configured" != "$task_agent" ]; then
+    echo "$configured"
+    return
+  fi
+  # Last resort: same agent
+  echo "$task_agent"
+}
+
 normalize_json_response() {
   local raw="$1"
   if command -v python3 >/dev/null 2>&1; then

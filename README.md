@@ -55,13 +55,13 @@ Source files:
 - `scripts/*.sh` — orchestration commands
 - `scripts/normalize_json.py` — JSON extraction + tool history + token usage
 - `scripts/cron_match.py` — lightweight cron expression matcher
-- `tests/orchestrator.bats` — 132 tests
+- `tests/orchestrator.bats` — 154 tests
 - `.orchestrator.example.yml` — template for per-project config override
 
 ## Task Model
 Each task includes:
 - `id`, `title`, `body`, `labels`
-- `status`: `new`, `routed`, `in_progress`, `done`, `blocked`
+- `status`: `new`, `routed`, `in_progress`, `done`, `in_review`, `blocked`, `needs_review`
 - `agent`: executor (`codex`, `claude`, or `opencode`)
 - `agent_model`: model chosen by the router
 - `agent_profile`: dynamically generated role/skills/tools/constraints
@@ -87,9 +87,10 @@ GitHub metadata fields (optional):
 2. **Route the task** with an LLM that chooses executor + builds a specialized profile and selects skills.
 3. **Run the task** with the chosen executor in agentic mode. The agent runs inside `$PROJECT_DIR` with full tool access (read files, edit code, run commands).
 4. **Output**: the agent writes its results to `.orchestrator/output-{task_id}.json` (with stdout fallback for backward compatibility).
-5. **Delegation**: if the agent returns `delegations`, child tasks are created and the parent is blocked until children finish.
-6. **Rejoin**: parent resumes when children are done.
-7. **Error handling**: if the agent fails or returns `blocked` with a `reason`, the task is blocked, the error is commented on the GitHub issue, and a `blocked` label is added.
+5. **Review**: if enabled and a PR is open, a different agent reviews the PR and posts a GitHub review.
+6. **Delegation**: if the agent returns `delegations`, child tasks are created and the parent is blocked until children finish.
+7. **Rejoin**: parent resumes when children are done.
+8. **Error handling**: if the agent fails or returns `blocked` with a `reason`, the task is blocked, the error is commented on the GitHub issue, and a `blocked` label is added.
 
 ## Routing: How the Orchestrator Picks an Agent
 
@@ -553,7 +554,7 @@ All runtime configuration lives in `config.yml`.
 | `workflow` | `auto_close` | Auto-close GitHub issues when tasks are `done`. | `true` |
 | `workflow` | `review_owner` | GitHub handle to tag when review is needed. | `@owner` |
 | `workflow` | `enable_review_agent` | Run a review agent after completion. | `false` |
-| `workflow` | `review_agent` | Executor for the review agent. | `claude` |
+| `workflow` | `review_agent` | Fallback reviewer when opposite agent unavailable. | `claude` |
 | `workflow` | `max_attempts` | Max attempts before marking task as blocked. | `10` |
 | `workflow` | `required_skills` | Skills always injected into agent prompts (marked `[REQUIRED]`). | `[]` |
 | `workflow` | `disallowed_tools` | Tool patterns blocked via `--disallowedTools`. | `["Bash(rm *)","Bash(rm -*)"]` |
@@ -641,13 +642,31 @@ The orchestrator will:
 - Stale locks are auto-cleared after `LOCK_STALE_SECONDS` (default 600).
 
 ## Review Agent (Optional)
-Enable a post-run review in config:
+
+Automatically review PRs using a different agent from the one that wrote the code.
+
 ```yaml
 workflow:
   enable_review_agent: true
-  review_agent: "claude"
 ```
-The review agent sees the task summary, files changed, and git diff.
+
+When enabled, after an agent completes a task and a PR is open:
+
+1. **Opposite agent selected** — if codex wrote the code, claude reviews (and vice versa). Falls back to `workflow.review_agent` config if only one agent is available.
+2. **PR diff fetched** — the actual PR diff via `gh pr diff` (first 500 lines).
+3. **Real GitHub review posted** — via `gh pr review`:
+   - `approve` → green checkmark review on the PR
+   - `request_changes` → red X review, task goes to `needs_review`
+   - `reject` → review + PR closed, task goes to `needs_review`
+
+The `review_agent` config key is now an optional fallback — `opposite_agent()` handles primary selection.
+
+Override the reviewer for a specific run:
+```bash
+REVIEW_AGENT=claude orch task run <id>
+```
+
+See [Review Agent docs](docs/content/review-agent.md) for full details.
 
 ## GitHub Sync (Optional)
 Sync tasks to GitHub Issues using `gh`.
@@ -814,7 +833,7 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 - **Global task database**: tasks are not per-project; each task has a `dir` field referencing its project
 
 #### Tests
-- 132 tests (up from 61), covering: duration_fmt, token extraction, tool summary, comment dedup, retry loop detection, brew routing, service commands, blocked label, skills catalog, ORCH_HOME paths, yq helpers, global status, bash jobs, tree, retry, set_agent, jobs_list, output helpers, unlock
+- 154 tests (up from 61), covering: duration_fmt, token extraction, tool summary, comment dedup, retry loop detection, brew routing, service commands, blocked label, skills catalog, ORCH_HOME paths, yq helpers, global status, bash jobs, tree, retry, set_agent, jobs_list, output helpers, unlock
 
 ### v0.1.0
 
@@ -892,7 +911,7 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 - Auto-release workflow: tags new versions every Friday using conventional commits, updates formula automatically.
 
 #### Tests
-- 28 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay, plan/decompose mode, per-project filtering, init, dir field on jobs. (Now 132 tests as of v0.9.0.)
+- 28 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay, plan/decompose mode, per-project filtering, init, dir field on jobs. (Now 154 tests as of v0.9.0.)
 
 ## Development
 
