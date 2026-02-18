@@ -154,9 +154,10 @@ LAST_GH_PULL=0
 # Sync skills on start
 "$SCRIPT_DIR/skills_sync.sh" >> "$LOG_FILE" 2>&1 || true
 
-_log "[serve] starting with interval=${INTERVAL}s" >> "$LOG_FILE"
+ORCH_VERSION="${ORCH_VERSION:-$(git describe --tags --always 2>/dev/null || echo unknown)}"
+_log "[serve] starting v${ORCH_VERSION} with interval=${INTERVAL}s" >> "$LOG_FILE"
 
-echo "Orchestrator started, listening to tasks and delegating agents." \
+echo "Orchestrator v${ORCH_VERSION} started, listening to tasks and delegating agents." \
   "(pid $(cat "$PID_FILE"), interval ${INTERVAL}s)"
 
 if [ "${TAIL_LOG:-0}" = "1" ]; then
