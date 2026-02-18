@@ -55,6 +55,9 @@ class Orchestrator < Formula
       cd "#{libexec}"
       exec just "$@"
     EOS
+
+    # Short alias
+    bin.install_symlink "orchestrator" => "orch"
   end
 
   service do
