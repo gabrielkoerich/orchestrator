@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source=scripts/lib.sh
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 source "$(dirname "$0")/output.sh"
