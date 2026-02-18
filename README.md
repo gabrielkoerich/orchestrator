@@ -893,3 +893,14 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 
 #### Tests
 - 28 tests (up from 13), covering: output file reading, stdout fallback, cron matching, job creation, dedup, disable, removal, project config overlay, plan/decompose mode, per-project filtering, init, dir field on jobs. (Now 132 tests as of v0.9.0.)
+
+## Development
+
+```bash
+git clone https://github.com/gabrielkoerich/orchestrator.git
+cd orchestrator
+bats tests          # run tests
+just                # list available commands
+```
+
+Requires: `yq`, `jq`, `just`, `python3`, `rg`, `fd`, `bats`.
