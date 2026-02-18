@@ -113,7 +113,7 @@ See the [Review Agent](@/review-agent.md) page for full details.
 
 `poll.sh` detects stuck tasks:
 
-1. **No agent assigned** — task stuck `in_progress` without an agent → set to `blocked`
+1. **No agent assigned** — task stuck `in_progress` without an agent → set to `needs_review`
 2. **Dead agent** — task has agent but no lock file and `updated_at` older than `stuck_timeout` (default 30min) → reset to `new`
 
 ## Max Attempts

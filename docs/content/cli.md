@@ -106,8 +106,8 @@ orch agents                 # list available agents and their status
 
 | Log | Location |
 |-----|----------|
-| Server log | `~/.orchestrator/.orchestrator/serve.log` |
-| Server archive | `~/.orchestrator/.orchestrator/serve.log.1` |
+| Server log | `~/.orchestrator/.orchestrator/orchestrator.log` |
+| Server archive | `~/.orchestrator/.orchestrator/orchestrator.archive.log` |
 | Per-task output | `~/.orchestrator/.orchestrator/output-{id}.json` |
 | Per-task tools | `~/.orchestrator/.orchestrator/tools-{id}.json` |
 | Per-task prompts | `~/.orchestrator/.orchestrator/prompt-{id}.md` |

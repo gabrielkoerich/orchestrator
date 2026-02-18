@@ -104,6 +104,17 @@ orch project info        # show current project field/option IDs
 orch project info --fix  # auto-fill into config
 ```
 
+## Owner Feedback
+
+When the repo owner (or `workflow.review_owner`) comments on a GitHub issue or PR linked to a completed task, the orchestrator detects the feedback and re-activates the task:
+
+1. During `gh pull`, tasks with status `done`, `in_review`, or `needs_review` are checked for new owner comments
+2. If new comments are found, the task is reset to `routed` (keeping its agent assignment)
+3. The feedback is appended to the task context so the agent sees it on re-run
+4. The `last_error` field is set to the feedback text for visibility
+
+This allows the owner to steer agents by commenting on GitHub — no manual task editing needed. The `gh_last_feedback_at` field prevents re-processing the same comment.
+
 ## Notes
 
 - The repo is resolved from `config.yml` or `gh repo view`

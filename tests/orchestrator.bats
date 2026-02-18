@@ -3149,3 +3149,220 @@ SH
   run grep "pr close" "$GH_LOG"
   [ "$status" -ne 0 ]
 }
+
+@test "fetch_owner_feedback filters to owner comments" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"*"comments"* ]]; then
+  cat <<'JSON'
+[
+  {"user":{"login":"owner1"},"created_at":"2026-01-01T00:00:01Z","body":"Fix this please"},
+  {"user":{"login":"contributor"},"created_at":"2026-01-01T00:00:02Z","body":"I disagree"},
+  {"user":{"login":"owner1"},"created_at":"2026-01-01T00:00:03Z","body":"This should be internal"}
+]
+JSON
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run bash -c "export PATH='${TMP_DIR}:${PATH}'; source '${REPO_DIR}/scripts/lib.sh'; fetch_owner_feedback 'org/repo' 42 'owner1' ''"
+  [ "$status" -eq 0 ]
+
+  count=$(printf '%s' "$output" | yq -r 'length')
+  [ "$count" -eq 2 ]
+
+  login0=$(printf '%s' "$output" | yq -r '.[0].login')
+  [ "$login0" = "owner1" ]
+
+  login1=$(printf '%s' "$output" | yq -r '.[1].login')
+  [ "$login1" = "owner1" ]
+}
+
+@test "fetch_owner_feedback excludes orchestrator bot comments" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"*"comments"* ]]; then
+  cat <<'JSON'
+[
+  {"user":{"login":"owner1"},"created_at":"2026-01-01T00:00:01Z","body":"Real feedback"},
+  {"user":{"login":"owner1"},"created_at":"2026-01-01T00:00:02Z","body":"Automated update via [Orchestrator]"}
+]
+JSON
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run bash -c "export PATH='${TMP_DIR}:${PATH}'; source '${REPO_DIR}/scripts/lib.sh'; fetch_owner_feedback 'org/repo' 42 'owner1' ''"
+  [ "$status" -eq 0 ]
+
+  count=$(printf '%s' "$output" | yq -r 'length')
+  [ "$count" -eq 1 ]
+
+  body=$(printf '%s' "$output" | yq -r '.[0].body')
+  [ "$body" = "Real feedback" ]
+}
+
+@test "process_owner_feedback resets task to routed" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Feedback Task" "Body" ""
+  [ "$status" -eq 0 ]
+
+  # Set task to done with an agent
+  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" | (.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  FEEDBACK='[{"login":"owner1","created_at":"2026-01-01T12:00:00Z","body":"This should be an internal doc"}]'
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; TASKS_PATH='$TASKS_PATH'; CONTEXTS_DIR='$ORCH_HOME/contexts'; process_owner_feedback 2 '$FEEDBACK'"
+  [ "$status" -eq 0 ]
+
+  # Status should be routed
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "routed" ]
+
+  # Agent should be preserved
+  run yq -r '.tasks[] | select(.id == 2) | .agent' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+
+  # last_error should contain feedback
+  run yq -r '.tasks[] | select(.id == 2) | .last_error' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"internal doc"* ]]
+
+  # gh_last_feedback_at should be set
+  run yq -r '.tasks[] | select(.id == 2) | .gh_last_feedback_at' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "2026-01-01T12:00:00Z" ]
+
+  # History should have owner feedback entry
+  run yq -r '.tasks[] | select(.id == 2) | .history[-1].note' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "owner feedback received" ]
+}
+
+@test "process_owner_feedback appends to task context" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Context Task" "Body" ""
+  [ "$status" -eq 0 ]
+
+  FEEDBACK='[{"login":"owner1","created_at":"2026-01-01T12:00:00Z","body":"Please use markdown format"}]'
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; TASKS_PATH='$TASKS_PATH'; CONTEXTS_DIR='$ORCH_HOME/contexts'; process_owner_feedback 2 '$FEEDBACK'"
+  [ "$status" -eq 0 ]
+
+  # Context file should exist and contain the feedback
+  CTX_FILE="$ORCH_HOME/contexts/task-2.md"
+  [ -f "$CTX_FILE" ]
+
+  run cat "$CTX_FILE"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Owner feedback from owner1"* ]]
+  [[ "$output" == *"Please use markdown format"* ]]
+}
+
+@test "gh_pull processes owner feedback on done tasks" {
+  # Create a task linked to a GitHub issue with status done
+  run "${REPO_DIR}/scripts/add_task.sh" "Done Task" "Body" ""
+  [ "$status" -eq 0 ]
+
+  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
+    (.tasks[] | select(.id == 2) | .agent) = "claude" |
+    (.tasks[] | select(.id == 2) | .gh_issue_number) = 99 |
+    (.tasks[] | select(.id == 2) | .gh_state) = "open" |
+    (.tasks[] | select(.id == 2) | .gh_url) = "https://github.com/org/repo/issues/99"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  # Set repo config
+  run yq -i '.gh.repo = "testowner/testrepo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  # Set review_owner
+  run yq -i '.workflow.review_owner = "testowner"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  # Mock gh
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"*"comments"* ]]; then
+  cat <<'JSON'
+[
+  {"user":{"login":"testowner"},"created_at":"2026-02-18T10:00:00Z","body":"This needs rework"}
+]
+JSON
+elif [[ "$*" == *"repo view"* ]]; then
+  echo "testowner/testrepo"
+elif [[ "$*" == *"graphql"* ]]; then
+  echo '{"data":{"repository":{}}}'
+elif [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
+  echo "[]"
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" GITHUB_REPO="testowner/testrepo" bash "${REPO_DIR}/scripts/gh_pull.sh"
+  [ "$status" -eq 0 ]
+
+  # Task should now be routed (not done)
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "routed" ]
+
+  # Agent should be preserved
+  run yq -r '.tasks[] | select(.id == 2) | .agent' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+}
+
+@test "gh_pull skips in_progress tasks for feedback" {
+  # Create a task linked to a GitHub issue with status in_progress
+  run "${REPO_DIR}/scripts/add_task.sh" "Running Task" "Body" ""
+  [ "$status" -eq 0 ]
+
+  run yq -i '(.tasks[] | select(.id == 2) | .status) = "in_progress" |
+    (.tasks[] | select(.id == 2) | .agent) = "claude" |
+    (.tasks[] | select(.id == 2) | .gh_issue_number) = 88 |
+    (.tasks[] | select(.id == 2) | .gh_state) = "open"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  run yq -i '.gh.repo = "testowner/testrepo" | .workflow.review_owner = "testowner"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"*"comments"* ]]; then
+  # Owner commented — but task is in_progress so should be skipped
+  cat <<'JSON'
+[
+  {"user":{"login":"testowner"},"created_at":"2026-02-18T10:00:00Z","body":"Looks wrong"}
+]
+JSON
+elif [[ "$*" == *"repo view"* ]]; then
+  echo "testowner/testrepo"
+elif [[ "$*" == *"graphql"* ]]; then
+  echo '{"data":{"repository":{}}}'
+elif [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
+  echo "[]"
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" GITHUB_REPO="testowner/testrepo" bash "${REPO_DIR}/scripts/gh_pull.sh"
+  [ "$status" -eq 0 ]
+
+  # Task should still be in_progress
+  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "in_progress" ]
+}

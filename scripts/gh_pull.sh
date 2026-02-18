@@ -91,13 +91,9 @@ acquire_lock
 trap 'release_lock' EXIT INT TERM
 
 COUNT=$(printf '%s' "$FILTERED" | yq -r 'length')
-if [ "$COUNT" -le 0 ]; then
-  release_lock
-  exit 0
-fi
 
 export LABELS_CSV=""
-for i in $(seq 0 $((COUNT - 1))); do
+for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
   NUM=$(printf '%s' "$FILTERED" | yq -r ".[$i].number")
   TITLE=$(printf '%s' "$FILTERED" | yq -r ".[$i].title")
   BODY=$(printf '%s' "$FILTERED" | yq -r ".[$i].body // \"\"")
@@ -155,11 +151,51 @@ for i in $(seq 0 $((COUNT - 1))); do
         "gh_url": strenv(URL),
         "gh_updated_at": strenv(UPDATED),
         "dir": strenv(PROJECT_DIR),
-        "gh_synced_at": null
+        "gh_synced_at": null,
+        "gh_last_feedback_at": null
       }]' \
       "$TASKS_PATH"
   fi
 
 done
+
+# --- Owner feedback check ---
+# For tasks linked to GitHub issues that are done/in_review/needs_review,
+# check if the repo owner has posted new comments (feedback).
+REVIEW_OWNER=$(config_get '.workflow.review_owner // ""' | sed 's/^@//')
+if [ -z "$REVIEW_OWNER" ] || [ "$REVIEW_OWNER" = "null" ]; then
+  REVIEW_OWNER=$(repo_owner "$REPO")
+fi
+
+if [ -n "$REVIEW_OWNER" ] && [ "$REVIEW_OWNER" != "null" ]; then
+  FEEDBACK_TASKS=$(yq -r \
+    ".tasks[] | select(.gh_issue_number != null and .gh_issue_number != \"\" and .dir == \"$PROJECT_DIR\" and (.status == \"done\" or .status == \"in_review\" or .status == \"needs_review\")) | [.id, .gh_issue_number, (.gh_last_feedback_at // .gh_synced_at // \"\")] | @tsv" \
+    "$TASKS_PATH" 2>/dev/null || true)
+
+  while IFS=$'\t' read -r _FB_ID _FB_ISSUE _FB_SINCE; do
+    [ -z "$_FB_ID" ] && continue
+
+    # Fetch issue comments from owner
+    local_feedback=$(fetch_owner_feedback "$REPO" "$_FB_ISSUE" "$REVIEW_OWNER" "$_FB_SINCE")
+
+    # Also check PR comments if task has a branch
+    _FB_BRANCH=$(yq -r ".tasks[] | select(.id == $_FB_ID) | .branch // \"\"" "$TASKS_PATH" 2>/dev/null || true)
+    if [ -n "$_FB_BRANCH" ] && [ "$_FB_BRANCH" != "null" ]; then
+      _FB_PR_NUM=$(gh_api -X GET "repos/${REPO}/pulls" -f head="${REPO%%/*}:${_FB_BRANCH}" -f state=all -q '.[0].number // ""' 2>/dev/null || true)
+      if [ -n "$_FB_PR_NUM" ] && [ "$_FB_PR_NUM" != "null" ]; then
+        pr_feedback=$(fetch_owner_feedback "$REPO" "$_FB_PR_NUM" "$REVIEW_OWNER" "$_FB_SINCE")
+        # Merge issue + PR feedback arrays
+        local_feedback=$(printf '%s\n%s' "$local_feedback" "$pr_feedback" | yq ea -p=json -o=json -I=0 '[.[]]' 2>/dev/null || echo "$local_feedback")
+      fi
+    fi
+
+    # Process if we got any feedback
+    fb_count=$(printf '%s' "$local_feedback" | yq -r 'length' 2>/dev/null || echo "0")
+    if [ "$fb_count" -gt 0 ]; then
+      log "[gh_pull] [$PROJECT_NAME] owner feedback on issue #$_FB_ISSUE for task $_FB_ID ($fb_count comments)"
+      process_owner_feedback "$_FB_ID" "$local_feedback"
+    fi
+  done <<< "$FEEDBACK_TASKS"
+fi
 
 release_lock

@@ -834,7 +834,8 @@ create_task_entry() {
       \"history\": [],
       \"dir\": strenv(PROJECT_DIR),
       \"created_at\": strenv(NOW),
-      \"updated_at\": strenv(NOW)
+      \"updated_at\": strenv(NOW),
+      \"gh_last_feedback_at\": null
     }]" \
     "$TASKS_PATH"
 }
@@ -931,6 +932,81 @@ fetch_issue_comments() {
   if [ -z "$repo" ] || [ "$repo" = "null" ]; then return 0; fi
   gh_api "repos/${repo}/issues/${issue_num}/comments" \
     -q ".[-${max}:] | .[] | \"### \" + .user.login + \" (\" + .created_at + \")\\n\" + .body + \"\\n---\"" 2>/dev/null || true
+}
+
+# Fetch issue/PR comments from the repo owner since a given timestamp.
+# Returns JSON array of {login, created_at, body} objects.
+# Usage: fetch_owner_feedback REPO ISSUE_NUM OWNER_LOGIN SINCE_TIMESTAMP
+fetch_owner_feedback() {
+  local repo="$1" issue_num="$2" owner_login="$3" since="${4:-}"
+  if [ -z "$issue_num" ] || [ "$issue_num" = "null" ] || [ "$issue_num" = "0" ]; then echo "[]"; return 0; fi
+  if [ -z "$repo" ] || [ "$repo" = "null" ]; then echo "[]"; return 0; fi
+  if [ -z "$owner_login" ] || [ "$owner_login" = "null" ]; then echo "[]"; return 0; fi
+
+  local api_url="repos/${repo}/issues/${issue_num}/comments"
+  local since_param=""
+  if [ -n "$since" ] && [ "$since" != "null" ]; then
+    since_param="-f since=${since}"
+  fi
+
+  local raw
+  # shellcheck disable=SC2086
+  raw=$(gh_api -X GET "$api_url" $since_param 2>/dev/null) || { echo "[]"; return 0; }
+
+  export _FOF_OWNER="$owner_login" _FOF_SINCE="${since:-}"
+  printf '%s' "$raw" | yq -o=json -I=0 -p=json \
+    '[.[] | select(.user.login == strenv(_FOF_OWNER) and (.body | test("via \[Orchestrator\]") | not) and (strenv(_FOF_SINCE) == "" or .created_at > strenv(_FOF_SINCE))) | {"login": .user.login, "created_at": .created_at, "body": .body}]' \
+    2>/dev/null || echo "[]"
+  unset _FOF_OWNER _FOF_SINCE
+}
+
+# Apply owner feedback to a task: append to context, reset status to routed.
+# Caller must hold the lock (or pass from an unlocked context).
+# Usage: process_owner_feedback TASK_ID FEEDBACK_JSON
+process_owner_feedback() {
+  local task_id="$1" feedback_json="$2"
+
+  local count
+  count=$(printf '%s' "$feedback_json" | yq -r 'length' 2>/dev/null || echo "0")
+  if [ "$count" -le 0 ]; then return 0; fi
+
+  # Build feedback text for context file
+  local feedback_text=""
+  local latest_ts=""
+  for i in $(seq 0 $((count - 1))); do
+    local login created_at body
+    login=$(printf '%s' "$feedback_json" | yq -r ".[$i].login")
+    created_at=$(printf '%s' "$feedback_json" | yq -r ".[$i].created_at")
+    body=$(printf '%s' "$feedback_json" | yq -r ".[$i].body")
+    feedback_text+="### Owner feedback from ${login} (${created_at})"$'\n'"${body}"$'\n---\n'
+    latest_ts="$created_at"
+  done
+
+  # Append feedback to task context file
+  append_task_context "$task_id" "$feedback_text"
+
+  # Truncate for last_error (first 200 chars of combined feedback bodies)
+  local combined_bodies
+  combined_bodies=$(printf '%s' "$feedback_json" | yq -r '.[].body' | head -c 200)
+
+  local now
+  now=$(now_iso)
+  export now combined_bodies latest_ts
+  yq -i \
+    "(.tasks[] | select(.id == $task_id) | .status) = \"routed\" |
+     (.tasks[] | select(.id == $task_id) | .last_error) = strenv(combined_bodies) |
+     (.tasks[] | select(.id == $task_id) | .needs_help) = false |
+     (.tasks[] | select(.id == $task_id) | .gh_last_feedback_at) = strenv(latest_ts) |
+     (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
+    "$TASKS_PATH"
+
+  local ts
+  ts=$(now_iso)
+  export ts
+  export status="routed" note="owner feedback received"
+  yq -i \
+    "(.tasks[] | select(.id == $task_id) | .history) += [{\"ts\": strenv(ts), \"status\": strenv(status), \"note\": strenv(note)}]" \
+    "$TASKS_PATH"
 }
 
 run_with_timeout() {
