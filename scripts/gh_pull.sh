@@ -4,7 +4,7 @@ source "$(dirname "$0")/lib.sh"
 require_yq
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
-PROJECT_NAME=$(basename "$PROJECT_DIR")
+PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 init_config_file
 load_project_config
 if [ "${DEBUG_GH:-0}" = "1" ]; then
@@ -25,6 +25,9 @@ REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
   if [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR/.git" ]; then
     REPO=$(cd "$PROJECT_DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+  elif [ -n "$PROJECT_DIR" ] && is_bare_repo "$PROJECT_DIR"; then
+    REPO=$(git -C "$PROJECT_DIR" config remote.origin.url 2>/dev/null \
+      | sed -E 's#^https?://github\.com/##; s#^git@github\.com:##; s#\.git$##' || true)
   fi
   if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
     log_err "[gh_pull] no repo configured. Run 'orchestrator init' first."

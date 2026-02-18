@@ -258,6 +258,11 @@ link_project_to_repo() {
   fi
 }
 
+is_bare_repo() {
+  local dir="${1:-$PROJECT_DIR}"
+  [ -d "$dir" ] && git -C "$dir" rev-parse --is-bare-repository 2>/dev/null | grep -q true
+}
+
 require_yq() {
   if ! command -v yq >/dev/null 2>&1; then
     echo "yq is required but not found in PATH." >&2

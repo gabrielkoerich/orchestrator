@@ -261,6 +261,10 @@ _project_create title="":
     @scripts/gh_project_create.sh "{{ title }}"
 
 [private]
+_project_add *args:
+    @scripts/project_add.sh "$@"
+
+[private]
 _project_list org="" user="":
     @scripts/gh_project_list.sh "{{ org }}" "{{ user }}"
 

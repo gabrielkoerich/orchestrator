@@ -151,7 +151,7 @@ fi
 # Reuse existing branch/worktree from task if already set (deterministic across retries)
 SAVED_BRANCH=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .branch // \"\"" "$TASKS_PATH")
 SAVED_WORKTREE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .worktree // \"\"" "$TASKS_PATH")
-PROJECT_NAME=$(basename "$PROJECT_DIR")
+PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 
 if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
   BRANCH_NAME="$SAVED_BRANCH"
@@ -185,12 +185,18 @@ else
 fi
 export BRANCH_NAME
 
+# Detect default branch (bare repos may use a different name)
+DEFAULT_BRANCH=$(git -C "$PROJECT_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "main")
+
 if [ ! -d "$WORKTREE_DIR" ]; then
   log_err "[run] task=$TASK_ID creating worktree at $WORKTREE_DIR"
-  if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-    cd "$PROJECT_DIR" && gh issue develop "$GH_ISSUE_NUMBER" --base main --name "$BRANCH_NAME" 2>/dev/null || true
+  # Bare repos: fetch latest before creating worktree; skip gh issue develop (requires working tree)
+  if is_bare_repo "$PROJECT_DIR"; then
+    git -C "$PROJECT_DIR" fetch --all --prune 2>/dev/null || true
+  elif [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
+    cd "$PROJECT_DIR" && gh issue develop "$GH_ISSUE_NUMBER" --base "$DEFAULT_BRANCH" --name "$BRANCH_NAME" 2>/dev/null || true
   fi
-  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
+  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" "$DEFAULT_BRANCH" 2>/dev/null || true
   mkdir -p "$(dirname "$WORKTREE_DIR")"
   cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
 fi
@@ -209,7 +215,7 @@ else
   log_err "[run] task=$TASK_ID worktree creation failed, retrying"
   cd "$PROJECT_DIR" && git worktree prune 2>/dev/null || true
   cd "$PROJECT_DIR" && git branch -D "$BRANCH_NAME" 2>/dev/null || true
-  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" main 2>/dev/null || true
+  cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" "$DEFAULT_BRANCH" 2>/dev/null || true
   cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
   if [ -d "$WORKTREE_DIR" ]; then
     PROJECT_DIR="$WORKTREE_DIR"

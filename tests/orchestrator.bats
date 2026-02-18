@@ -3366,3 +3366,240 @@ SH
   [ "$status" -eq 0 ]
   [ "$output" = "in_progress" ]
 }
+
+# ===== project_add.sh / bare repo support =====
+
+@test "is_bare_repo detects bare repositories" {
+  source "${REPO_DIR}/scripts/lib.sh"
+
+  # Regular repo should NOT be bare
+  run is_bare_repo "$PROJECT_DIR"
+  [ "$status" -ne 0 ]
+
+  # Create a bare repo
+  BARE="${TMP_DIR}/bare-test.git"
+  git clone --bare "$PROJECT_DIR" "$BARE" 2>/dev/null
+
+  run is_bare_repo "$BARE"
+  [ "$status" -eq 0 ]
+}
+
+@test "project_add.sh creates config for pre-existing bare repo" {
+  # Pre-clone a bare repo at the expected path (avoids stubbing git for SSH)
+  SRC="${TMP_DIR}/source-repo"
+  mkdir -p "$SRC"
+  git -C "$SRC" init -b main --quiet
+  git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
+
+  BARE_DIR="${ORCH_HOME}/repos/testowner/testrepo.git"
+  mkdir -p "$(dirname "$BARE_DIR")"
+  git clone --bare "$SRC" "$BARE_DIR" 2>/dev/null
+
+  # Stub gh (init.sh calls gh)
+  GH_STUB="${TMP_DIR}/bin/gh"
+  mkdir -p "${TMP_DIR}/bin"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "{}"
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}/bin:${PATH}" ORCH_HOME="$ORCH_HOME" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" STATE_DIR="$STATE_DIR" \
+    bash "${REPO_DIR}/scripts/project_add.sh" "testowner/testrepo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Already cloned"* ]]
+
+  # Config should have correct repo slug
+  run yq -r '.gh.repo' "${BARE_DIR}/.orchestrator.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "testowner/testrepo" ]
+}
+
+@test "project_add.sh fetches if already cloned" {
+  # Create a source repo and bare clone it manually
+  SRC="${TMP_DIR}/source-repo2"
+  mkdir -p "$SRC"
+  git -C "$SRC" init -b main --quiet
+  git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
+
+  BARE_DIR="${ORCH_HOME}/repos/fetchowner/fetchrepo.git"
+  mkdir -p "$(dirname "$BARE_DIR")"
+  git clone --bare "$SRC" "$BARE_DIR" 2>/dev/null
+
+  # Stub gh
+  GH_STUB="${TMP_DIR}/bin/gh"
+  mkdir -p "${TMP_DIR}/bin"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "{}"
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}/bin:${PATH}" ORCH_HOME="$ORCH_HOME" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" STATE_DIR="$STATE_DIR" \
+    bash "${REPO_DIR}/scripts/project_add.sh" "fetchowner/fetchrepo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Already cloned"* ]]
+}
+
+@test "project_add.sh normalizes GitHub URLs" {
+  # Pre-clone bare repos at the expected normalized paths
+  SRC="${TMP_DIR}/source-repo3"
+  mkdir -p "$SRC"
+  git -C "$SRC" init -b main --quiet
+  git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
+
+  # Pre-clone for HTTPS URL test
+  BARE_HTTPS="${ORCH_HOME}/repos/urlowner/urlrepo.git"
+  mkdir -p "$(dirname "$BARE_HTTPS")"
+  git clone --bare "$SRC" "$BARE_HTTPS" 2>/dev/null
+
+  # Pre-clone for SSH URL test
+  BARE_SSH="${ORCH_HOME}/repos/sshowner/sshrepo.git"
+  mkdir -p "$(dirname "$BARE_SSH")"
+  git clone --bare "$SRC" "$BARE_SSH" 2>/dev/null
+
+  GH_STUB="${TMP_DIR}/bin/gh"
+  mkdir -p "${TMP_DIR}/bin"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "{}"
+SH
+  chmod +x "$GH_STUB"
+
+  # Test HTTPS URL normalization
+  run env PATH="${TMP_DIR}/bin:${PATH}" ORCH_HOME="$ORCH_HOME" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" STATE_DIR="$STATE_DIR" \
+    bash "${REPO_DIR}/scripts/project_add.sh" "https://github.com/urlowner/urlrepo.git"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.gh.repo' "${BARE_HTTPS}/.orchestrator.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "urlowner/urlrepo" ]
+
+  # Test SSH URL normalization
+  run env PATH="${TMP_DIR}/bin:${PATH}" ORCH_HOME="$ORCH_HOME" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" STATE_DIR="$STATE_DIR" \
+    bash "${REPO_DIR}/scripts/project_add.sh" "git@github.com:sshowner/sshrepo.git"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.gh.repo' "${BARE_SSH}/.orchestrator.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sshowner/sshrepo" ]
+}
+
+@test "run_task.sh creates worktree from bare repo" {
+  # Create a bare repo with a commit
+  SRC="${TMP_DIR}/source-repo4"
+  mkdir -p "$SRC"
+  git -C "$SRC" init -b main --quiet
+  git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
+
+  BARE_DIR="${TMP_DIR}/bare-worktree-test.git"
+  git clone --bare "$SRC" "$BARE_DIR" 2>/dev/null
+
+  # Write .orchestrator.yml
+  cat > "${BARE_DIR}/.orchestrator.yml" <<YAML
+gh:
+  repo: "testowner/testrepo"
+  sync_label: ""
+YAML
+
+  # Point PROJECT_DIR to bare repo and add a task
+  PROJECT_DIR_OLD="$PROJECT_DIR"
+  export PROJECT_DIR="$BARE_DIR"
+  "${REPO_DIR}/scripts/add_task.sh" "Bare Repo Task" "Test body" "" >/dev/null
+
+  # Verify task dir
+  run yq -r '.tasks[1].dir' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$BARE_DIR" ]
+
+  # Stub the agent (claude)
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+# Write output file
+cat > "${OUTPUT_FILE}" <<'JSON'
+{"status":"done","summary":"did the thing","accomplished":["tested bare"],"remaining":[],"blockers":[],"files_changed":[],"needs_help":false,"reason":"all good"}
+JSON
+echo '{"type":"result","result":"done"}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "{}"
+SH
+  chmod +x "$GH_STUB"
+
+  # Route the task first
+  yq -i '(.tasks[] | select(.id == 2) | .agent) = "claude" | (.tasks[] | select(.id == 2) | .status) = "routed"' "$TASKS_PATH"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$BARE_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
+    AGENT_TIMEOUT_SECONDS=5 LOCK_PATH="${ORCH_HOME}/tasks.yml.lock" \
+    bash "${REPO_DIR}/scripts/run_task.sh" 2
+
+  # Task should have a worktree set
+  run yq -r '.tasks[] | select(.id == 2) | .worktree' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" != "null" ]
+  [ -n "$output" ]
+
+  # Worktree directory should exist
+  WT_DIR="$output"
+  [ -d "$WT_DIR" ]
+
+  # Clean up worktree
+  git -C "$BARE_DIR" worktree remove "$WT_DIR" 2>/dev/null || true
+
+  export PROJECT_DIR="$PROJECT_DIR_OLD"
+}
+
+@test "gh_pull.sh detects repo from bare clone remote URL" {
+  source "${REPO_DIR}/scripts/lib.sh"
+
+  # Create a bare repo with a remote origin
+  SRC="${TMP_DIR}/source-repo5"
+  mkdir -p "$SRC"
+  git -C "$SRC" init -b main --quiet
+  git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
+
+  BARE_DIR="${TMP_DIR}/bare-pull-test.git"
+  git clone --bare "$SRC" "$BARE_DIR" 2>/dev/null
+  # Set a GitHub-style remote URL
+  git -C "$BARE_DIR" remote set-url origin "git@github.com:bareowner/barerepo.git"
+
+  # Verify is_bare_repo
+  run is_bare_repo "$BARE_DIR"
+  [ "$status" -eq 0 ]
+
+  # Write config
+  cat > "${BARE_DIR}/.orchestrator.yml" <<YAML
+gh:
+  repo: ""
+  sync_label: ""
+YAML
+
+  # Stub gh
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
+  echo "[]"
+elif [[ "$*" == *"graphql"* ]]; then
+  echo '{"data":{"repository":{}}}'
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$BARE_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="" \
+    bash "${REPO_DIR}/scripts/gh_pull.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"bareowner/barerepo"* ]]
+}
