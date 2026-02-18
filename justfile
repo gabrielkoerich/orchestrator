@@ -279,6 +279,10 @@ _job_add *args:
     @scripts/jobs_add.sh "$@"
 
 [private]
+_job_info id:
+    @scripts/jobs_info.sh "{{ id }}"
+
+[private]
 _job_list:
     @scripts/jobs_list.sh
 
