@@ -1,4 +1,5 @@
 set shell := ["bash", "-c"]
+set positional-arguments := true
 
 _default:
     @just --list
@@ -11,7 +12,7 @@ version:
 # Initialize orchestrator for current project
 [group('config')]
 init *args="":
-    @scripts/init.sh {{ args }}
+    @scripts/init.sh "$@"
 
 # Interactive chat with the orchestrator
 [group('agents')]
@@ -57,7 +58,8 @@ log tail="50":
 # Manage skills registry (list, sync)
 [group('agents')]
 skills target *args:
-    @just _skills_{{ target }} {{ args }}
+    #!/usr/bin/env bash
+    just "_skills_$1" "${@:2}"
 
 [private]
 _skills_list:
@@ -79,11 +81,12 @@ agents:
 # Manage tasks (status, list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, watch, unlock)
 [group('tasks/jobs')]
 task target *args:
-    @just _task_{{ target }} {{ args }}
+    #!/usr/bin/env bash
+    just "_task_$1" "${@:2}"
 
 [private]
 _task_status *args:
-    @scripts/status.sh {{ args }}
+    @scripts/status.sh "$@"
 
 [private]
 _task_list:
@@ -94,8 +97,8 @@ _task_tree:
     @scripts/tree.sh
 
 [private]
-_task_add *args:
-    @scripts/add_task.sh {{ args }}
+_task_add title body="" labels="":
+    @scripts/add_task.sh "{{ title }}" "{{ body }}" "{{ labels }}"
 
 # Set PLAN_INTERACTIVE=0 to skip interactive planning and just add task with plan label
 [private]
@@ -153,7 +156,8 @@ _task_unlock:
 # Manage the orchestrator service (start, stop, restart, info, install, uninstall)
 [group('service')]
 service target *args:
-    @just _service_{{ target }} {{ args }}
+    #!/usr/bin/env bash
+    just "_service_$1" "${@:2}"
 
 [private]
 _service_start interval="10":
@@ -223,7 +227,8 @@ _service_uninstall:
 # GitHub sync (pull, push, sync)
 [group('github')]
 gh target *args:
-    @just _gh_{{ target }} {{ args }}
+    #!/usr/bin/env bash
+    just "_gh_$1" "${@:2}"
 
 [private]
 _gh_pull:
@@ -244,11 +249,12 @@ _gh_sync:
 # GitHub Projects V2 (info, create, list)
 [group('github')]
 project target *args:
-    @just _project_{{ target }} {{ args }}
+    #!/usr/bin/env bash
+    just "_project_$1" "${@:2}"
 
 [private]
 _project_info *args:
-    @scripts/gh_project_info.sh {{ args }}
+    @scripts/gh_project_info.sh "$@"
 
 [private]
 _project_create title="":
@@ -265,11 +271,12 @@ _project_list org="" user="":
 # Manage scheduled jobs (add, list, remove, enable, disable, tick)
 [group('tasks/jobs')]
 job target *args:
-    @just _job_{{ target }} {{ args }}
+    #!/usr/bin/env bash
+    just "_job_$1" "${@:2}"
 
 [private]
 _job_add *args:
-    @scripts/jobs_add.sh {{ args }}
+    @scripts/jobs_add.sh "$@"
 
 [private]
 _job_list:
