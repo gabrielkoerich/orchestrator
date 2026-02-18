@@ -152,7 +152,7 @@ gh_api() {
     return 0
   fi
 
-  if grep -qiE "secondary rate limit|rate limit|API rate limit|abuse detection|HTTP 403" "$err"; then
+  if rg -qi "secondary rate limit|rate limit|API rate limit|abuse detection|HTTP 403" "$err"; then
     local delay
     delay=$(gh_backoff_next_delay "$base" "$max")
     gh_backoff_set "$delay" "rate_limit"
@@ -268,6 +268,20 @@ require_yq() {
 require_jq() {
   if ! command -v jq >/dev/null 2>&1; then
     echo "jq is required but not found in PATH." >&2
+    exit 1
+  fi
+}
+
+require_rg() {
+  if ! command -v rg >/dev/null 2>&1; then
+    echo "rg (ripgrep) is required but not found in PATH." >&2
+    exit 1
+  fi
+}
+
+require_fd() {
+  if ! command -v fd >/dev/null 2>&1; then
+    echo "fd is required but not found in PATH." >&2
     exit 1
   fi
 }

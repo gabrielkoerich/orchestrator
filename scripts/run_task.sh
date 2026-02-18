@@ -4,6 +4,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 source "$SCRIPT_DIR/lib.sh"
 require_yq
 require_jq
+require_rg
 init_config_file
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
@@ -160,10 +161,10 @@ else
   WORKTREES_BASE="$HOME/.worktrees/${PROJECT_NAME}"
   if [ -d "$WORKTREES_BASE" ]; then
     if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-      EXISTING_WT=$(find "$WORKTREES_BASE" -maxdepth 1 -type d -name "gh-task-${GH_ISSUE_NUMBER}-*" 2>/dev/null | head -1)
+      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1)
     fi
     if [ -z "$EXISTING_WT" ]; then
-      EXISTING_WT=$(find "$WORKTREES_BASE" -maxdepth 1 -type d -name "task-${TASK_ID}-*" 2>/dev/null | head -1)
+      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1)
     fi
   fi
 
@@ -311,7 +312,7 @@ append_history "$TASK_ID" "in_progress" "started attempt $ATTEMPTS"
 # Detect decompose/plan mode
 DECOMPOSE=false
 LABELS_LOWER=$(printf '%s' "$TASK_LABELS" | tr '[:upper:]' '[:lower:]')
-if printf '%s' "$LABELS_LOWER" | grep -qE '(^|,)plan(,|$)'; then
+if printf '%s' "$LABELS_LOWER" | rg -q '(^|,)plan(,|$)'; then
   DECOMPOSE=true
 fi
 
@@ -372,7 +373,7 @@ MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
     [ -f "$STDERR_FILE" ] || continue
     STDERR_SIZE=$(wc -c < "$STDERR_FILE" 2>/dev/null || echo 0)
     if [ "$STDERR_SIZE" -gt 0 ]; then
-      if grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
+      if rg -qi 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
         error_log "[run] task=$TASK_ID WARNING: agent may be stuck waiting for interactive approval"
         error_log "[run] task=$TASK_ID stderr: $(tail -c 300 "$STDERR_FILE")"
       fi
@@ -505,7 +506,7 @@ if [ "$CMD_STATUS" -ne 0 ]; then
   if [ "$CMD_STATUS" -eq 124 ]; then
     # Check if timeout was caused by interactive approval prompt
     TIMEOUT_REASON="agent timed out (exit 124)"
-    if [ -f "$STDERR_FILE" ] && grep -qiE 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
+    if [ -f "$STDERR_FILE" ] && rg -qi 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
       TIMEOUT_REASON="agent stuck waiting for interactive approval (1Password/SSH/passphrase) — configure headless auth"
       error_log "[run] task=$TASK_ID TIMEOUT: stuck on interactive approval"
     else
@@ -516,7 +517,7 @@ if [ "$CMD_STATUS" -ne 0 ]; then
   fi
 
   # Detect auth/token/billing errors — try switching to another agent
-  if printf '%s' "$COMBINED_OUTPUT" | grep -qiE 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
+  if printf '%s' "$COMBINED_OUTPUT" | rg -qi 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
     error_log "[run] task=$TASK_ID AUTH/BILLING ERROR for agent=$TASK_AGENT"
     AVAILABLE=$(available_agents)
     NEXT_AGENT=""
@@ -674,12 +675,12 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
       HAS_UNPUSHED=false
       if (cd "$PROJECT_DIR" && git rev-parse "origin/${CURRENT_BRANCH}" >/dev/null 2>&1); then
         # Remote branch exists — check for new commits beyond it
-        if (cd "$PROJECT_DIR" && git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null | grep -q .); then
+        if (cd "$PROJECT_DIR" && git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null | rg -q .); then
           HAS_UNPUSHED=true
         fi
       else
         # Remote branch doesn't exist — check for any commits beyond main
-        if (cd "$PROJECT_DIR" && git log "main..HEAD" --oneline 2>/dev/null | grep -q .); then
+        if (cd "$PROJECT_DIR" && git log "main..HEAD" --oneline 2>/dev/null | rg -q .); then
           HAS_UNPUSHED=true
         fi
       fi

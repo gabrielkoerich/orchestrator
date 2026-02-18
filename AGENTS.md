@@ -75,6 +75,12 @@ See [specs.md](specs.md) for architecture overview, what's working, what's not, 
 - Only parent tasks waiting on children should be `blocked`
 - `poll.sh` auto-unblocks parent tasks when all children are done
 
+## Preferred tools
+
+- Use `rg` instead of `grep` — faster, installed as a brew dependency
+- Use `fd` instead of `find` — faster, installed as a brew dependency
+- Use `trash` instead of `rm` — recoverable, enforced in system prompt
+
 ## Agent sandbox
 
 Agents run in worktrees, NOT the main project directory. The orchestrator enforces this:

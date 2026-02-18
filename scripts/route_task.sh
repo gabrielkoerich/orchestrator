@@ -4,6 +4,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 source "$SCRIPT_DIR/lib.sh"
 require_yq
 require_jq
+require_rg
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
 init_config_file
@@ -219,13 +220,13 @@ LABELS_LOWER=$(printf '%s' "$TASK_LABELS" | tr '[:upper:]' '[:lower:]')
 SKILLS=$(printf '%s' "$PROFILE_JSON" | jq -r '.skills // [] | join(",")')
 SKILLS_LOWER=$(printf '%s' "$SKILLS" | tr '[:upper:]' '[:lower:]')
 
-if echo "$LABELS_LOWER" | grep -qE '(backend|api|database|db)'; then
+if printf '%s' "$LABELS_LOWER" | rg -q '(backend|api|database|db)'; then
   if [ "$ROUTED_AGENT" = "claude" ]; then
     ROUTE_WARNING="backend-labeled task routed to claude"
   fi
 fi
 
-if echo "$LABELS_LOWER" | grep -qE '(docs|documentation|writing)'; then
+if printf '%s' "$LABELS_LOWER" | rg -q '(docs|documentation|writing)'; then
   if [ "$ROUTED_AGENT" = "codex" ]; then
     ROUTE_WARNING="docs-labeled task routed to codex"
   fi
@@ -246,7 +247,7 @@ COMPLEXITY_LABEL="complexity:${COMPLEXITY}"
 
 # Decompose: manual "plan" label
 DECOMPOSE_LABEL=""
-if echo "$LABELS_LOWER" | grep -qE '(^|,)plan(,|$)'; then
+if printf '%s' "$LABELS_LOWER" | rg -q '(^|,)plan(,|$)'; then
   DECOMPOSE_LABEL="plan"
 fi
 

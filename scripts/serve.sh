@@ -125,20 +125,18 @@ clear_stale_task_lock() {
 
 snapshot_hash() {
   # Hash all repo files except runtime state
-  find "$ROOT_DIR" -type f \
-    -not -path "$ROOT_DIR/.git/*" \
-    -not -path "$ROOT_DIR/tasks.yml" \
-    -not -path "$ROOT_DIR/jobs.yml" \
-    -not -path "$ROOT_DIR/config.yml" \
-    -not -path "$STATE_DIR/orchestrator.log" \
-    -not -path "$STATE_DIR/orchestrator.archive.log" \
-    -not -path "$STATE_DIR/orchestrator.pid" \
-    -not -path "$STATE_DIR/*" \
-    -not -path "$ROOT_DIR/tasks.yml.lock" \
-    -not -path "$ROOT_DIR/tasks.yml.lock.task.*" \
-    -not -path "$ROOT_DIR/contexts/*" \
-    -not -path "$ROOT_DIR/skills/*" \
-    -print0 \
+  fd --type f --no-ignore --hidden \
+    --exclude '.git' \
+    --exclude 'tasks.yml' \
+    --exclude 'jobs.yml' \
+    --exclude 'config.yml' \
+    --exclude '.orchestrator' \
+    --exclude 'tasks.yml.lock' \
+    --exclude 'tasks.yml.lock.task.*' \
+    --exclude 'contexts' \
+    --exclude 'skills' \
+    -0 \
+    . "$ROOT_DIR" \
     | xargs -0 stat -f "%m %N" 2>/dev/null \
     | sort \
     | shasum | awk '{print $1}'

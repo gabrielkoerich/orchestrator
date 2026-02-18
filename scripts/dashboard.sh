@@ -88,7 +88,7 @@ fi
 section "Worktrees:"
 WORKTREE_BASE="${HOME}/.worktrees"
 if [ -d "$WORKTREE_BASE" ]; then
-  WORKTREES=$(find "$WORKTREE_BASE" -mindepth 2 -maxdepth 2 -type d 2>/dev/null || true)
+  WORKTREES=$(fd --min-depth 2 --max-depth 2 --type d . "$WORKTREE_BASE" 2>/dev/null || true)
   if [ -z "$WORKTREES" ]; then
     echo "  (none)"
   else

@@ -55,7 +55,7 @@ YAML
 
   # Add orchestrator runtime files to .gitignore
   if [ -f ".gitignore" ]; then
-    if ! grep -q '\.orchestrator/' .gitignore 2>/dev/null; then
+    if ! rg -q '\.orchestrator/' .gitignore 2>/dev/null; then
       printf '\n# orchestrator runtime\n.orchestrator/\n' >> .gitignore
     fi
   else
