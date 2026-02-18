@@ -1,5 +1,5 @@
 .env*
-.orchestrator*
+.orchestrator/
 config.yml
 orchestrator.log
 orchestrator.pid
@@ -9,6 +9,3 @@ tasks.yml.lock*
 contexts/
 __pycache__/
 jobs.yml
-
-# orchestrator runtime
-.orchestrator/

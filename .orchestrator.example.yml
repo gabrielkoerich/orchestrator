@@ -1,0 +1,27 @@
+# Per-project orchestrator config (.orchestrator.yml)
+# Place this file in your project root directory.
+# Values here override the global config (~/.orchestrator/config.yml).
+#
+# Only include the keys you want to override — everything else
+# falls through to the global config.
+
+# gh:
+#   repo: "myorg/myproject"
+#   project_id: "PVT_..."
+#   sync_label: ""
+#   project_status_field_id: ""
+#   project_status_map:
+#     backlog: ""
+#     in_progress: ""
+#     review: ""
+#     done: ""
+
+# workflow:
+#   auto_close: false
+#   review_owner: "@myhandle"
+#   enable_review_agent: true
+
+# router:
+#   agent: "claude"
+#   model: "haiku"
+#   fallback_executor: "codex"
