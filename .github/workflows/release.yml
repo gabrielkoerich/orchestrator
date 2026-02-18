@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+  pull_request:
   workflow_dispatch: {}
 
 permissions:
@@ -23,8 +24,47 @@ jobs:
       - name: Run tests
         run: bats tests
 
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck + ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck ripgrep
+
+      - name: Security audit (strict)
+        run: ./bin/security-audit --strict
+
+  semgrep-and-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install shellcheck + ripgrep + semgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck ripgrep
+          python3 -m pip install --upgrade pip
+          python3 -m pip install semgrep
+
+      - name: Security audit with semgrep
+        env:
+          SECURITY_AUDIT_REQUIRE_SEMGREP: "1"
+        run: ./bin/security-audit --strict
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: detect --source . --config .gitleaks.toml --no-banner --redact --exit-code=1
+
   release:
-    needs: test
+    needs: [test, shellcheck, semgrep-and-secrets]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -259,7 +299,7 @@ jobs:
           git -C tap-repo push origin main
 
   deploy:
-    needs: test
+    needs: [test, shellcheck, semgrep-and-secrets]
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read

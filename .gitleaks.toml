@@ -1,0 +1,11 @@
+title = "Orchestrator Gitleaks Config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignore test fixtures and prompt templates"
+paths = [
+  '''^tests/''',
+  '''^prompts/''',
+]
