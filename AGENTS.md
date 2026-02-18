@@ -67,6 +67,20 @@ See [specs.md](specs.md) for architecture overview, what's working, what's not, 
 
 **Do NOT manually edit the tap formula** — the CI pipeline handles it. The `Formula/orchestrator.rb` in this repo is a local reference copy, not the real tap.
 
+### Post-push workflow
+
+After pushing to main, always complete the full cycle:
+
+```bash
+git push                                    # 1. push
+gh run watch --exit-status                  # 2. watch CI (tests → release → deploy)
+brew update && brew upgrade orchestrator    # 3. pull new formula + install
+brew services restart orchestrator          # 4. restart service with new code
+orchestrator version                        # 5. verify
+```
+
+Do not skip steps — the service runs from the Homebrew cellar, not the repo.
+
 ## Task status semantics
 
 - **`blocked`** — waiting on a dependency (parent blocked on children, missing worktree/dir)
