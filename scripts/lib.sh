@@ -662,7 +662,11 @@ build_parent_context() {
 build_git_diff() {
   local dir="${1:-$PROJECT_DIR}"
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then return; fi
-  (cd "$dir" && git diff --stat HEAD 2>/dev/null | head -50) || true
+  {
+    (cd "$dir" && git diff --stat HEAD 2>/dev/null | head -50)
+    echo ""
+    (cd "$dir" && git diff HEAD 2>/dev/null | head -200)
+  } 2>/dev/null || true
 }
 
 load_task() {

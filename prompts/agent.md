@@ -42,7 +42,9 @@ Parent context:
 Project instructions:
 {{PROJECT_INSTRUCTIONS}}
 
+{{#if SKILLS_DOCS}}
 {{SKILLS_DOCS}}
+{{/if}}
 
 Repository structure:
 {{REPO_TREE}}
