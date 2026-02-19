@@ -175,6 +175,17 @@ sync_project_status() {
     -f project="$PROJECT_ID" -f item="$item_id" -f field="$PROJECT_STATUS_FIELD_ID" -f option="$option_id" >/dev/null
 }
 
+archive_project_item() {
+  local project_id="$1" item_id="$2"
+  gh_api graphql -f query='
+    mutation($projectId: ID!, $itemId: ID!) {
+      archiveProjectV2Item(input: { projectId: $projectId, itemId: $itemId }) {
+        item { id }
+      }
+    }
+  ' -f projectId="$project_id" -f itemId="$item_id" 2>/dev/null || true
+}
+
 # Content-hash dedup: hash comment body, compare with stored last_comment_hash.
 # Returns 0 (skip) if hash matches, 1 (post) if new. Stores hash after caller posts.
 should_skip_comment() {
@@ -247,6 +258,8 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   STATUS=$(printf '%s' "$TASK_JSON" | jq -r '.status')
   GH_NUM=$(printf '%s' "$TASK_JSON" | jq -r '.gh_issue_number // ""')
   GH_STATE=$(printf '%s' "$TASK_JSON" | jq -r '.gh_state // ""' | tr '[:upper:]' '[:lower:]')
+  GH_PROJECT_ITEM_ID=$(printf '%s' "$TASK_JSON" | jq -r '.gh_project_item_id // ""')
+  GH_ARCHIVED=$(printf '%s' "$TASK_JSON" | jq -r '.gh_archived // ""')
   SUMMARY=$(printf '%s' "$TASK_JSON" | jq -r '.summary // ""')
   REASON=$(printf '%s' "$TASK_JSON" | jq -r '.reason // ""')
   ACCOMPLISHED=$(printf '%s' "$TASK_JSON" | jq -r '.accomplished // [] | join(", ")')
@@ -290,6 +303,11 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
   # Skip done tasks that already have a closed GitHub issue — nothing to sync
   if [ "$STATUS" = "done" ] && [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$GH_STATE" = "closed" ]; then
+    if [ "${GH_ARCHIVED:-}" != "true" ] && [ -n "${GH_PROJECT_ITEM_ID:-}" ] && [ "$GH_PROJECT_ITEM_ID" != "null" ] && [ -n "${PROJECT_ID:-}" ]; then
+      archive_project_item "$PROJECT_ID" "$GH_PROJECT_ITEM_ID"
+      task_set "$ID" '.gh_archived' "true"
+      log "[gh_push] [$PROJECT_NAME] task=$ID archived project item $GH_PROJECT_ITEM_ID"
+    fi
     # Mark synced so we don't re-check next time
     if [ "$UPDATED_AT" != "$GH_SYNCED_AT" ] || [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
       export STATUS

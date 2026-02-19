@@ -1390,6 +1390,153 @@ YAML
   grep -q "add_to_project" "${STATE_DIR}/gh_calls"
 }
 
+@test "gh_push.sh archives done+closed project items" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+args="$*"
+
+if printf '%s' "$args" | grep -q "archiveProjectV2Item"; then
+  echo "archive_called" >> "${STATE_DIR}/gh_calls"
+  echo '{"data":{"archiveProjectV2Item":{"item":{"id":"PVTI_item1"}}}}'
+  exit 0
+fi
+
+echo '{}'
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  cat > "$CONFIG_PATH" <<'YAML'
+gh:
+  repo: "test/repo"
+  project_id: "PVT_proj123"
+YAML
+
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  yq -i \
+    "(.tasks[0].gh_issue_number) = 1 |
+     (.tasks[0].gh_state) = \"closed\" |
+     (.tasks[0].status) = \"done\" |
+     (.tasks[0].gh_project_item_id) = \"PVTI_item1\" |
+     (.tasks[0].gh_archived) = false |
+     (.tasks[0].updated_at) = \"$NOW\" |
+     (.tasks[0].gh_synced_at) = \"\"" \
+    "$TASKS_PATH"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_push.sh"
+  [ "$status" -eq 0 ]
+
+  [ -f "${STATE_DIR}/gh_calls" ]
+  grep -q "archive_called" "${STATE_DIR}/gh_calls"
+
+  run yq -r '.tasks[0].gh_archived' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+}
+
+@test "gh_push.sh skips archiving if already archived" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+args="$*"
+
+if printf '%s' "$args" | grep -q "archiveProjectV2Item"; then
+  echo "archive_called" >> "${STATE_DIR}/gh_calls"
+fi
+
+echo '{}'
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  cat > "$CONFIG_PATH" <<'YAML'
+gh:
+  repo: "test/repo"
+  project_id: "PVT_proj123"
+YAML
+
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  yq -i \
+    "(.tasks[0].gh_issue_number) = 1 |
+     (.tasks[0].gh_state) = \"closed\" |
+     (.tasks[0].status) = \"done\" |
+     (.tasks[0].gh_project_item_id) = \"PVTI_item1\" |
+     (.tasks[0].gh_archived) = true |
+     (.tasks[0].updated_at) = \"$NOW\" |
+     (.tasks[0].gh_synced_at) = \"\"" \
+    "$TASKS_PATH"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_push.sh"
+  [ "$status" -eq 0 ]
+
+  if [ -f "${STATE_DIR}/gh_calls" ]; then
+    run cat "${STATE_DIR}/gh_calls"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"archive_called"* ]]
+  fi
+}
+
+@test "gh_push.sh skips archiving for done tasks not yet closed" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+args="$*"
+
+if printf '%s' "$args" | grep -q "archiveProjectV2Item"; then
+  echo "archive_called" >> "${STATE_DIR}/gh_calls"
+fi
+
+echo '{}'
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  cat > "$CONFIG_PATH" <<'YAML'
+gh:
+  repo: "test/repo"
+  project_id: "PVT_proj123"
+YAML
+
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  yq -i \
+    "(.tasks[0].gh_issue_number) = 1 |
+     (.tasks[0].gh_state) = \"open\" |
+     (.tasks[0].status) = \"done\" |
+     (.tasks[0].gh_project_item_id) = \"PVTI_item1\" |
+     (.tasks[0].gh_archived) = false |
+     (.tasks[0].updated_at) = \"$NOW\" |
+     (.tasks[0].gh_synced_at) = \"$NOW\"" \
+    "$TASKS_PATH"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_push.sh"
+  [ "$status" -eq 0 ]
+
+  if [ -f "${STATE_DIR}/gh_calls" ]; then
+    run cat "${STATE_DIR}/gh_calls"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"archive_called"* ]]
+  fi
+}
+
 @test "plan_chat.sh cleans up history on exit" {
   CLAUDE_STUB="${TMP_DIR}/claude"
   cat > "$CLAUDE_STUB" <<'SH'
