@@ -2313,8 +2313,9 @@ JSON
 @test "tree.sh shows parent-child relationships" {
   "${REPO_DIR}/scripts/add_task.sh" "Parent" "" "" >/dev/null
   "${REPO_DIR}/scripts/add_task.sh" "Child" "" "" >/dev/null
-  # Set up parent-child relationship
+  # Set up parent-child relationship (both parent_id and task_children table)
   tdb "UPDATE tasks SET parent_id = 2 WHERE id = 3;"
+  tdb "INSERT INTO task_children (parent_id, child_id) VALUES (2, 3);"
 
   run "${REPO_DIR}/scripts/tree.sh"
   [ "$status" -eq 0 ]
