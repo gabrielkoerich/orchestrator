@@ -14,6 +14,7 @@ if [ "${1:-}" = "--force" ] || [ "${1:-}" = "-f" ]; then
   pkill -f 'orchestrator.*scripts/gh_pull\.sh' 2>/dev/null || true
   pkill -f 'orchestrator.*scripts/route_task\.sh' 2>/dev/null || true
   pkill -f 'orchestrator.*scripts/jobs_tick\.sh' 2>/dev/null || true
+  pkill -f 'orchestrator.*scripts/review_prs\.sh' 2>/dev/null || true
   rm -f "$PID_FILE"
   rm -rf "${STATE_DIR}/serve.lock"
   if [ -f "${STATE_DIR}/tail.pid" ]; then

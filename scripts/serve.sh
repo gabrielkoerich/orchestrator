@@ -226,6 +226,25 @@ while true; do
       fi
     fi
     LAST_GH_PULL=$NOW_EPOCH
+
+    # Review open PRs after sync (runs inside the same interval gate)
+    if ! $_stopping; then
+      if [ -f "$TASKS_FILE" ]; then
+        REVIEWED_DEFAULT=false
+        for dir in $DIRS; do
+          $_stopping && break
+          if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
+            PROJECT_DIR="$dir" "$SCRIPT_DIR/review_prs.sh" >> "$LOG_FILE" 2>&1 || true
+            REVIEWED_DEFAULT=true
+          fi
+        done
+        if [ "$REVIEWED_DEFAULT" = false ]; then
+          "$SCRIPT_DIR/review_prs.sh" >> "$LOG_FILE" 2>&1 || true
+        fi
+      else
+        "$SCRIPT_DIR/review_prs.sh" >> "$LOG_FILE" 2>&1 || true
+      fi
+    fi
   fi
   $_stopping && break
 

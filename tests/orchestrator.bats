@@ -3944,3 +3944,270 @@ SH
   count=$(grep -c '_stopping' "${REPO_DIR}/scripts/serve.sh")
   [ "$count" -ge 5 ]
 }
+
+# --- PR review agent tests ---
+
+@test "review_prs.sh exits early when review agent disabled" {
+  run yq -i '.workflow.enable_review_agent = false' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  # Mock gh to detect if it's called — it should NOT be called
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "ERROR: gh should not be called" >&2
+exit 1
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "review_prs.sh exits when no open PRs" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ]; then
+  echo "[]"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "review_prs.sh skips draft PRs by default" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [[ "$*" == *"repos/owner/repo/pulls"* ]]; then
+  echo '[{"number":1,"title":"Draft PR","body":"wip","user":{"login":"dev"},"head":{"sha":"abc123","ref":"feat/wip"},"draft":true}]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$*" == *"issues"* ]]; then
+  echo '[]'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  # Mock claude (should NOT be called for draft PRs)
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "ERROR: claude should not be called for drafts" >&2
+exit 1
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+  # State file should be empty (no reviews recorded)
+  [ ! -s "${STATE_DIR}/pr_reviews.tsv" ] || [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 0 ]
+}
+
+@test "review_prs.sh skips already-reviewed PRs at same SHA" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  # Pre-populate review state
+  mkdir -p "$STATE_DIR"
+  printf '1\tabc123\tapprove\t2026-01-01T00:00:00Z\tAlready reviewed PR\n' > "${STATE_DIR}/pr_reviews.tsv"
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [[ "$*" == *"repos/owner/repo/pulls"* ]]; then
+  echo '[{"number":1,"title":"Already reviewed PR","body":"test","user":{"login":"dev"},"head":{"sha":"abc123","ref":"feat/test"},"draft":false}]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$*" == *"issues"* ]]; then
+  echo '[]'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "ERROR: claude should not be called" >&2
+exit 1
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+  # Should still have only 1 line in state
+  [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 1 ]
+}
+
+@test "review_prs.sh reviews new PR and records state" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.workflow.review_agent = "claude"' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [[ "$*" == *"repos/owner/repo/pulls"* ]]; then
+  echo '[{"number":42,"title":"Add feature","body":"Implements X","user":{"login":"dev"},"head":{"sha":"def456","ref":"feat/add-feature"},"draft":false}]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$*" == *"issues"* ]]; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+  echo "+++ b/test.sh"
+  echo "+echo hello"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"decision":"approve","notes":"Looks good, clean implementation."}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" AGENT_TIMEOUT_SECONDS=10 "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+
+  # Should have recorded the review
+  run grep "42" "${STATE_DIR}/pr_reviews.tsv"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"def456"* ]]
+  [[ "$output" == *"approve"* ]]
+}
+
+@test "review_prs.sh re-reviews PR when SHA changes" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.workflow.review_agent = "claude"' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  # Pre-populate with old SHA
+  mkdir -p "$STATE_DIR"
+  printf '1\told_sha\tapprove\t2026-01-01T00:00:00Z\tOld review\n' > "${STATE_DIR}/pr_reviews.tsv"
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [[ "$*" == *"repos/owner/repo/pulls"* ]]; then
+  echo '[{"number":1,"title":"Updated PR","body":"new commits","user":{"login":"dev"},"head":{"sha":"new_sha","ref":"feat/test"},"draft":false}]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$*" == *"issues"* ]]; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+  echo "+new changes"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"decision":"request_changes","notes":"Missing tests."}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" AGENT_TIMEOUT_SECONDS=10 "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+
+  # Should have 2 lines in state now (old + new)
+  [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 2 ]
+  run grep "new_sha" "${STATE_DIR}/pr_reviews.tsv"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"request_changes"* ]]
+}
+
+@test "review_prs.sh handles merge command from owner" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.workflow.review_owner = "gabriel"' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  # Pre-populate as already reviewed (so it only checks merge commands)
+  mkdir -p "$STATE_DIR"
+  printf '10\tabc123\tapprove\t2026-01-01T00:00:00Z\tPR title\n' > "${STATE_DIR}/pr_reviews.tsv"
+
+  MERGED=false
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [[ "$*" == *"repos/owner/repo/pulls"* ]] && [[ "$*" != *"issues"* ]]; then
+  echo '[{"number":10,"title":"Ready PR","body":"","user":{"login":"dev"},"head":{"sha":"abc123","ref":"feat/ready"},"draft":false}]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$*" == *"issues/10/comments"* ]]; then
+  echo '[{"user":{"login":"gabriel"},"body":"merge","created_at":"2026-02-19T12:00:00Z"}]'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then
+  echo "merged"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+
+  # Should have recorded the merge
+  run grep "^merge" "${STATE_DIR}/pr_reviews.tsv"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"10"* ]]
+}
+
+@test "review_prs.sh prompt template exists and has required placeholders" {
+  [ -f "${REPO_DIR}/prompts/pr_review.md" ]
+  run grep "PR_NUMBER" "${REPO_DIR}/prompts/pr_review.md"
+  [ "$status" -eq 0 ]
+  run grep "GIT_DIFF" "${REPO_DIR}/prompts/pr_review.md"
+  [ "$status" -eq 0 ]
+  run grep "PR_TITLE" "${REPO_DIR}/prompts/pr_review.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "serve.sh calls review_prs.sh after gh_sync" {
+  run grep "review_prs.sh" "${REPO_DIR}/scripts/serve.sh"
+  [ "$status" -eq 0 ]
+}

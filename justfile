@@ -75,10 +75,10 @@ agents:
     @scripts/agents.sh
 
 ########################################################################################################
-# Namespace: task (list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, rejoin, watch, unlock)
+# Namespace: task (list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, rejoin, watch, unlock, review)
 ########################################################################################################
 
-# Manage tasks (status, list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, watch, unlock)
+# Manage tasks (status, list, tree, add, plan, route, run, next, poll, retry, unblock, agent, stream, watch, unlock, review)
 [group('tasks/jobs')]
 task target *args:
     #!/usr/bin/env bash
@@ -148,6 +148,10 @@ _task_watch *args:
 [private]
 _task_unlock:
     @scripts/unlock.sh
+
+[private]
+_task_review:
+    @scripts/review_prs.sh
 
 #####################################################################
 # Namespace: service (start, stop, restart, info, install, uninstall)
