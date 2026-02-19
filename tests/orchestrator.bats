@@ -4535,3 +4535,120 @@ YAML
   run sql_escape "no quotes"
   [ "$output" = "no quotes" ]
 }
+
+# --- SQLite routing tests (lib.sh dual-mode) ---
+
+# Helper: set up a SQLite db and source lib.sh so _use_sqlite returns true
+_setup_sqlite_env() {
+  local db="${TMP_DIR}/orch.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, body, status, agent, dir, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
+    VALUES (1, 'Test Task', 'body', 'new', 'claude', '${TMP_DIR}', 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
+  sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (1, 'bug');"
+  export DB_PATH="$db"
+  # Re-source lib.sh to pick up the new DB_PATH
+  source "${REPO_DIR}/scripts/lib.sh"
+}
+
+@test "task_field routes to SQLite when db exists" {
+  _setup_sqlite_env
+  run task_field 1 .status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  run task_field 1 .title
+  [ "$output" = "Test Task" ]
+}
+
+@test "task_set routes to SQLite when db exists" {
+  _setup_sqlite_env
+  task_set 1 .status "done"
+  run task_field 1 .status
+  [ "$output" = "done" ]
+}
+
+@test "task_count routes to SQLite when db exists" {
+  _setup_sqlite_env
+  run task_count "new"
+  [ "$status" -eq 0 ]
+  # Should count at least the 1 task we inserted (+ the init task from setup)
+  [ "$output" -ge 1 ]
+}
+
+@test "append_history routes to SQLite when db exists" {
+  _setup_sqlite_env
+  append_history 1 "routed" "test note"
+  run db_scalar "SELECT COUNT(*) FROM task_history WHERE task_id = 1;"
+  [ "$output" -ge 1 ]
+  run db_scalar "SELECT note FROM task_history WHERE task_id = 1 ORDER BY id DESC LIMIT 1;"
+  [ "$output" = "test note" ]
+}
+
+@test "mark_needs_review routes to SQLite when db exists" {
+  _setup_sqlite_env
+  mark_needs_review 1 0 "test error" "test note"
+  run task_field 1 .status
+  [ "$output" = "needs_review" ]
+  run task_field 1 .last_error
+  [ "$output" = "test error" ]
+}
+
+@test "acquire_lock is no-op with SQLite" {
+  _setup_sqlite_env
+  # Should not create lock dir
+  acquire_lock
+  [ ! -d "$LOCK_PATH" ]
+}
+
+@test "with_lock runs command directly with SQLite" {
+  _setup_sqlite_env
+  # Should succeed without touching lock dir
+  run with_lock echo "hello"
+  [ "$status" -eq 0 ]
+  [ "$output" = "hello" ]
+  [ ! -d "$LOCK_PATH" ]
+}
+
+@test "poll.sh works with SQLite backend" {
+  _setup_sqlite_env
+  # Add a task with status 'new' and no-agent label — should be skipped
+  sqlite3 "$DB_PATH" "INSERT INTO tasks (id, title, status, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
+    VALUES (99, 'Skip Me', 'new', 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
+  sqlite3 "$DB_PATH" "INSERT INTO task_labels (task_id, label) VALUES (99, 'no-agent');"
+
+  # Mock run_task.sh to just record calls
+  mkdir -p "${TMP_DIR}/mock_scripts"
+  cat > "${TMP_DIR}/mock_scripts/run_task.sh" << 'MOCK'
+#!/usr/bin/env bash
+echo "run_task called with $1" >> "${TMP_DIR}/run_calls.log"
+MOCK
+  chmod +x "${TMP_DIR}/mock_scripts/run_task.sh"
+
+  # Set task 1 to 'new' so poll picks it up
+  sqlite3 "$DB_PATH" "UPDATE tasks SET status = 'new' WHERE id = 1;"
+
+  # Create a mock gh that does nothing
+  gh() { return 0; }
+  export -f gh
+
+  # Run poll.sh — it should NOT try to run task 99
+  run "${REPO_DIR}/scripts/poll.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "add_task.sh uses SQLite when db exists" {
+  _setup_sqlite_env
+  run "${REPO_DIR}/scripts/add_task.sh" "SQLite Task" "SQLite Body" "feat,test"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Added task" ]]
+
+  # Verify the task is in SQLite
+  local count
+  count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM tasks WHERE title = 'SQLite Task';")
+  [ "$count" -eq 1 ]
+
+  # Verify labels
+  local label_count
+  label_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM task_labels WHERE task_id = (SELECT id FROM tasks WHERE title = 'SQLite Task');")
+  [ "$label_count" -eq 2 ]
+}

@@ -11,6 +11,18 @@ CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
 JOBS_PATH=${JOBS_PATH:-"${ORCH_HOME}/jobs.yml"}
 STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
+DB_PATH=${DB_PATH:-"${ORCH_HOME}/orchestrator.db"}
+
+# Source SQLite wrapper if available
+_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [ -f "${_LIB_DIR}/db.sh" ]; then
+  source "${_LIB_DIR}/db.sh"
+fi
+
+# Check if SQLite backend is active (database exists and has tasks table)
+_use_sqlite() {
+  [ -f "$DB_PATH" ] && command -v sqlite3 >/dev/null 2>&1 && sqlite3 "$DB_PATH" "SELECT 1 FROM tasks LIMIT 0" 2>/dev/null
+}
 
 now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -464,6 +476,9 @@ repo_owner() {
 }
 
 acquire_lock() {
+  # SQLite WAL mode handles concurrency — no external lock needed
+  if _use_sqlite; then return 0; fi
+
   local wait_seconds=${LOCK_WAIT_SECONDS:-20}
   local start
   start=$(date +%s)
@@ -485,6 +500,7 @@ acquire_lock() {
 }
 
 release_lock() {
+  if _use_sqlite; then return 0; fi
   rmdir "$LOCK_PATH" 2>/dev/null || true
 }
 
@@ -512,6 +528,11 @@ lock_is_stale() {
 }
 
 with_lock() {
+  if _use_sqlite; then
+    # SQLite WAL mode handles concurrency — run command directly
+    "$@"
+    return $?
+  fi
   acquire_lock
   local _wl_rc=0
   "$@" || _wl_rc=$?
@@ -521,15 +542,19 @@ with_lock() {
 
 append_history() {
   local task_id="$1"
-  local status="$2"
+  local _hist_status="$2"
   local note="$3"
-  local ts
-  ts=$(now_iso)
-  export ts status note
-
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .history) += [{\"ts\": strenv(ts), \"status\": strenv(status), \"note\": strenv(note)}]" \
-    "$TASKS_PATH"
+  if _use_sqlite; then
+    db_append_history "$task_id" "$_hist_status" "$note"
+  else
+    local ts
+    ts=$(now_iso)
+    export ts note
+    export status="$_hist_status"
+    with_lock yq -i \
+      "(.tasks[] | select(.id == $task_id) | .history) += [{\"ts\": strenv(ts), \"status\": strenv(status), \"note\": strenv(note)}]" \
+      "$TASKS_PATH"
+  fi
 }
 
 load_task_context() {
@@ -730,24 +755,37 @@ load_task() {
   export ROLE
 }
 
-# --- YQ helpers ---
+# --- Task helpers (SQLite with YAML fallback) ---
 # Read a single field from a task by ID
 # Usage: task_field <id> <field>
 # Example: task_field 3 .status  →  "done"
+#   YAML field format: .status, .agent, .gh_issue_number
+#   SQLite strips the leading dot automatically.
 task_field() {
   local id="$1" field="$2"
-  yq -r ".tasks[] | select(.id == $id) | $field" "$TASKS_PATH"
+  if _use_sqlite; then
+    # Strip leading dot from yq-style field name: .status → status
+    local col="${field#.}"
+    db_task_field "$id" "$col"
+  else
+    yq -r ".tasks[] | select(.id == $id) | $field" "$TASKS_PATH"
+  fi
 }
 
-# Update task fields atomically (with lock)
+# Update task fields atomically (with lock for YAML, native for SQLite)
 # Usage: task_set <id> <field> <value>
 # Example: task_set 3 .status "done"
 # Example: task_set 3 .agent "claude"
 task_set() {
   local id="$1" field="$2" value="$3"
-  export _TS_VALUE="$value"
-  with_lock yq -i "(.tasks[] | select(.id == $id) | $field) = strenv(_TS_VALUE)" "$TASKS_PATH"
-  unset _TS_VALUE
+  if _use_sqlite; then
+    local col="${field#.}"
+    db_task_set "$id" "$col" "$value"
+  else
+    export _TS_VALUE="$value"
+    with_lock yq -i "(.tasks[] | select(.id == $id) | $field) = strenv(_TS_VALUE)" "$TASKS_PATH"
+    unset _TS_VALUE
+  fi
 }
 
 # Count tasks matching a filter (uses dir_filter by default)
@@ -756,12 +794,22 @@ task_set() {
 #          task_count          →  12 (all)
 task_count() {
   local status="${1:-}"
-  local filter
-  filter=$(dir_filter)
-  if [ -n "$status" ]; then
-    yq -r "[${filter} | select(.status == \"$status\")] | length" "$TASKS_PATH"
+  if _use_sqlite; then
+    local project_dir="${PROJECT_DIR:-}"
+    local orch_home="${ORCH_HOME:-$HOME/.orchestrator}"
+    local dir_arg=""
+    if [ -n "$project_dir" ] && [ "$project_dir" != "$orch_home" ]; then
+      dir_arg="$project_dir"
+    fi
+    db_task_count "$status" "$dir_arg"
   else
-    yq -r "[${filter}] | length" "$TASKS_PATH"
+    local filter
+    filter=$(dir_filter)
+    if [ -n "$status" ]; then
+      yq -r "[${filter} | select(.status == \"$status\")] | length" "$TASKS_PATH"
+    else
+      yq -r "[${filter}] | length" "$TASKS_PATH"
+    fi
   fi
 }
 
@@ -769,6 +817,8 @@ task_count() {
 # Usage: task_tsv <yq_fields_expr> [filter_expr]
 # Example: task_tsv '[.id, .status, .title] | @tsv'
 #          task_tsv '[.id, .title] | @tsv' 'select(.status == "new")'
+# Note: SQLite mode uses db_task_list directly; callers doing complex formatting
+# should check _use_sqlite and use db_task_list for better performance.
 task_tsv() {
   local fields="$1" extra_filter="${2:-}"
   local filter
@@ -815,12 +865,25 @@ max_attempts() {
 }
 
 # Shared task creation — used by add_task.sh and run_task.sh delegations.
-# Caller must hold the lock if calling inside a locked section.
+# For YAML: caller must hold the lock if calling inside a locked section.
 # Args: id title body labels_csv [parent_id] [suggested_agent]
 # Expects PROJECT_DIR and NOW in environment.
 create_task_entry() {
   local id="$1" title="$2" body="$3" labels_csv="$4"
   local parent_id="${5:-}" suggested_agent="${6:-}"
+
+  if _use_sqlite; then
+    # In SQLite mode, db_create_task handles ID auto-generation, but callers
+    # may pass a specific ID. For now we use the db_create_task approach which
+    # returns the actual ID. Callers that need the specific ID should use
+    # db_create_task directly.
+    local new_id
+    new_id=$(db_create_task "$title" "$body" "${PROJECT_DIR:-}" "$labels_csv" "$parent_id" "$suggested_agent")
+    # If the caller expected a specific ID and it differs, that's OK — SQLite
+    # auto-increments. The caller gets the real ID from RETURNING.
+    echo "$new_id"
+    return 0
+  fi
 
   export id title body labels_csv parent_id suggested_agent
   local parent_expr="null"
@@ -942,14 +1005,18 @@ label_issue() {
 # Usage: mark_needs_review TASK_ID ATTEMPTS "error message" ["history note"]
 mark_needs_review() {
   local task_id="$1" attempts="$2" error="$3" note="${4:-$3}"
-  local now
-  now=$(now_iso)
-  export now
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .status) = \"needs_review\" | \
-     (.tasks[] | select(.id == $task_id) | .last_error) = \"$error\" | \
-     (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
-    "$TASKS_PATH"
+  if _use_sqlite; then
+    db_task_update "$task_id" status=needs_review "last_error=$error"
+  else
+    local now
+    now=$(now_iso)
+    export now
+    with_lock yq -i \
+      "(.tasks[] | select(.id == $task_id) | .status) = \"needs_review\" | \
+       (.tasks[] | select(.id == $task_id) | .last_error) = \"$error\" | \
+       (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
+      "$TASKS_PATH"
+  fi
   append_history "$task_id" "needs_review" "$note"
 }
 

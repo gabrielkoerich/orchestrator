@@ -75,12 +75,16 @@ fi
 NOW=$(now_iso)
 export NOW PROJECT_DIR
 
-# Compute ID inside lock to prevent race conditions
-acquire_lock
-trap 'release_lock' EXIT
-NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
-create_task_entry "$NEXT_ID" "$TITLE" "$BODY" "$LABELS"
-release_lock
-trap - EXIT
+if _use_sqlite; then
+  NEXT_ID=$(db_create_task "$TITLE" "$BODY" "${PROJECT_DIR:-}" "$LABELS" "" "")
+else
+  # Compute ID inside lock to prevent race conditions
+  acquire_lock
+  trap 'release_lock' EXIT
+  NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
+  create_task_entry "$NEXT_ID" "$TITLE" "$BODY" "$LABELS"
+  release_lock
+  trap - EXIT
+fi
 
 echo "Added task $NEXT_ID: $TITLE"
