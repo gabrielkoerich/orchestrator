@@ -612,6 +612,17 @@ db_all_task_ids() {
   db_scalar "SELECT id FROM tasks ORDER BY id;"
 }
 
+# Get task IDs that need GitHub sync (dirty content OR stale project-board status).
+# Replaces db_all_task_ids in gh_push to avoid iterating every task on each tick.
+db_syncable_task_ids() {
+  db_scalar "SELECT id FROM tasks
+    WHERE (gh_synced_at IS NULL OR gh_synced_at != updated_at
+           OR gh_issue_number IS NULL
+           OR gh_synced_status IS NULL OR gh_synced_status != status)
+      AND NOT (status = 'done' AND gh_synced_at = updated_at AND (gh_synced_status = 'done' OR gh_synced_status IS NULL))
+    ORDER BY id;"
+}
+
 # Get task count.
 db_total_task_count() {
   db_scalar "SELECT COUNT(*) FROM tasks;"

@@ -212,14 +212,8 @@ if [ "$TASK_COUNT" -le 0 ]; then
   exit 0
 fi
 
-DIRTY_COUNT=$(db_dirty_task_count)
-# Always run the loop if project board is configured (status may need syncing)
-if [ "$DIRTY_COUNT" -le 0 ] && [ -z "$PROJECT_ID" ]; then
-  exit 0
-fi
-
-ALL_IDS=$(db_all_task_ids)
-[ -z "$ALL_IDS" ] && exit 0
+SYNC_IDS=$(db_syncable_task_ids)
+[ -z "$SYNC_IDS" ] && exit 0
 
 while IFS= read -r ID; do
   [ -n "$ID" ] || continue
@@ -592,7 +586,7 @@ ${PROMPT_CONTENT}
     db_task_update "$ID" "gh_synced_status=$STATUS"
   fi
 
-done <<< "$ALL_IDS"
+done <<< "$SYNC_IDS"
 
 # --- Catch-all: create PRs for pushed branches that don't have one ---
 while IFS=$'\x1f' read -r _ID _BRANCH _STATUS _TITLE _SUMMARY _WORKTREE _AGENT _GH_NUM; do
