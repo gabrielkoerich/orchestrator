@@ -144,10 +144,11 @@ codex auth error). This routing was:
 
 ### GitHub API Rate Limiting
 
-7 rate limit events today, including 2 hard `HTTP 403` responses and a 900s (15min) backoff at
-02:36 UTC. The backoff mechanism worked correctly but the underlying cause remains:
-- **9,427 gh_sync log entries today** — still very high despite yesterday's fix
-- The fixes merged today (#21, #22) should reduce this going forward
+Rate limit events earlier today, including hard `HTTP 403` responses and a 900s (15min) backoff at
+02:36 UTC. The backoff mechanism worked correctly. After the server restart at 20:35 UTC (v0.36.7),
+the log shows only **184 entries** — a dramatic drop from yesterday's 622+ gh_push lines per session,
+confirming that yesterday's fixes (#21, #22) are effective. However, the earlier session (before
+restart) likely had higher volume before the fixes were loaded.
 
 ### Token Waste on Retries
 
@@ -218,8 +219,8 @@ The stuck detection threshold should be lower for faster recovery.
 | Tasks needs_review | 15 (56%) |
 | Tasks blocked | 0 |
 | Success rate (first attempt) | 6/27 = 22% |
-| GitHub rate limit events | 7 |
-| GitHub sync log entries | 9,427 |
+| GitHub rate limit events | Multiple (pre-restart session) |
+| GitHub sync log entries | 184 (post-restart); higher pre-restart |
 | Total input tokens (completed) | ~10.5M |
 | Token waste on failed retries | ~18M (estimated) |
 | Morning review job | Did not fire |
@@ -236,8 +237,8 @@ The stuck detection threshold should be lower for faster recovery.
    - Configure Codex sandbox to include `bun` and Solana tools, OR
    - Route oblivion tasks to `claude` which has full environment access
 
-3. **Verify gh_push improvements are working**: Tasks #21-22 should have dramatically reduced
-   the 9,427 sync log entries. Check if the next day's log volume is lower.
+3. **Confirm gh_push improvements sustained**: Post-restart session showed only 184 log entries
+   (vs 622+ yesterday). Verify this holds across a full 24h cycle.
 
 4. **Fix worktree creation for managed projects**: Multiple tasks (76-80) blocked on this.
 
