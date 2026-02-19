@@ -12,6 +12,7 @@ class Orchestrator < Formula
   depends_on "python@3"
   depends_on "ripgrep"
   depends_on "fd"
+  depends_on "sqlite"
 
   def install
     libexec.install "scripts", "prompts", "justfile"
@@ -47,6 +48,7 @@ class Orchestrator < Formula
       export STATE_DIR="${STATE_DIR:-$ORCH_HOME/.orchestrator}"
       export CONTEXTS_DIR="${CONTEXTS_DIR:-$ORCH_HOME/contexts}"
       export LOCK_PATH="${LOCK_PATH:-$TASKS_PATH.lock}"
+      export DB_PATH="${DB_PATH:-$ORCH_HOME/orchestrator.db}"
 
       # Ensure Homebrew binaries are in PATH (LaunchAgents use minimal PATH)
       export PATH="#{HOMEBREW_PREFIX}/bin:$PATH"
