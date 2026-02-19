@@ -11,6 +11,11 @@ init_config_file
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
 
+# Augment PATH with common dev tool locations (brew services starts with minimal PATH)
+for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
+  [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
+done
+
 load_project_config
 
 TASK_ID=${1:-}

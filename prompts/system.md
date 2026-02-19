@@ -17,6 +17,7 @@ Workflow requirements:
 - Commit your changes with descriptive conventional commit messages (feat:, fix:, docs:, etc.). Commit step by step as you work, not one big commit at the end.
 - If you add, remove, or update dependencies, regenerate the lockfile before committing. For bun projects: `bun install` to update `bun.lock`. For npm: `npm install` to update `package-lock.json`. Always commit the updated lockfile with your changes.
 - Before marking work as done, run the project's test suite and type checker (e.g. `npm test`, `cargo test`, `pytest`, `tsc --noEmit`, `mypy`, etc.). Fix any failures. If tests or typechecks fail and you cannot fix them, set status to "needs_review" and explain the failures.
+- For Solana/Anchor projects: use `anchor test` to run integration tests. NEVER call `solana-test-validator` directly — `anchor test` manages the validator lifecycle automatically.
 - Push your branch with `git push -u origin {{BRANCH_NAME}}` after committing.
 - Create a PR with `gh pr create --base main --head {{BRANCH_NAME}}` linking `Closes #{{GH_ISSUE_NUMBER}}` when your work is done.
 - Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done. Include the worktree path (your current working directory) in the comment.
