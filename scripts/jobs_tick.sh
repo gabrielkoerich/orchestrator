@@ -23,8 +23,14 @@ fi
 NOW_MINUTE=$(date -u +"%Y-%m-%dT%H:%MZ")
 CREATED=0
 
-while IFS=$'\x1f' read -r JOB_ID SCHEDULE JOB_TYPE JOB_CMD JOB_TITLE JOB_BODY JOB_LABELS JOB_AGENT JOB_DIR ACTIVE_TASK_ID LAST_RUN; do
+JOB_IDS=$(db_enabled_job_ids)
+for JOB_ID in $JOB_IDS; do
   [ -n "$JOB_ID" ] || continue
+  db_load_job "$JOB_ID" || continue
+
+  SCHEDULE="$JOB_SCHEDULE"
+  ACTIVE_TASK_ID="$JOB_ACTIVE_TASK_ID"
+  LAST_RUN="$JOB_LAST_RUN"
 
   # Check if active task is still in-flight
   if [ -n "$ACTIVE_TASK_ID" ] && [ "$ACTIVE_TASK_ID" != "null" ]; then
@@ -117,7 +123,7 @@ while IFS=$'\x1f' read -r JOB_ID SCHEDULE JOB_TYPE JOB_CMD JOB_TITLE JOB_BODY JO
 
   job_log "[jobs] job=$JOB_ID created task $NEW_TASK_ID"
   CREATED=$((CREATED + 1))
-done < <(db_enabled_jobs)
+done
 
 if [ "$CREATED" -gt 0 ]; then
   job_log "[jobs] created $CREATED task(s)"

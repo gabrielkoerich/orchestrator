@@ -708,6 +708,26 @@ db_enabled_jobs() {
     FROM jobs WHERE enabled = 1 ORDER BY id;"
 }
 
+# List enabled job IDs (one per line).
+db_enabled_job_ids() {
+  db_scalar "SELECT id FROM jobs WHERE enabled = 1 ORDER BY id;"
+}
+
+# Load a single job into shell variables (handles multiline body/command).
+# Usage: db_load_job <id>
+db_load_job() {
+  local jid="$1"
+  local row
+  row=$(db_row "SELECT id, schedule, type, COALESCE(command,''), title,
+    COALESCE(body,''), COALESCE(labels,''), COALESCE(agent,''),
+    COALESCE(dir,''), COALESCE(active_task_id,''), COALESCE(last_run,'')
+    FROM jobs WHERE id = '$(sql_escape "$jid")' AND enabled = 1;")
+  [ -z "$row" ] && return 1
+  IFS=$'\x1f' read -r -d '' JOB_ID JOB_SCHEDULE JOB_TYPE JOB_CMD JOB_TITLE \
+    JOB_BODY JOB_LABELS JOB_AGENT JOB_DIR JOB_ACTIVE_TASK_ID JOB_LAST_RUN \
+    <<< "$row" || true
+}
+
 # ============================================================
 # Schema migration helpers
 # ============================================================
