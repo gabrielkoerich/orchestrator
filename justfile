@@ -210,6 +210,21 @@ _service_info:
       fi
     fi
 
+[private]
+_service_killall:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Killing all orchestrator processes..."
+    for pattern in 'scripts/serve\.sh' 'scripts/poll\.sh' 'scripts/run_task\.sh' 'scripts/gh_sync\.sh' 'scripts/gh_push\.sh' 'scripts/gh_pull\.sh'; do
+      pkill -f "$pattern" 2>/dev/null && echo "  killed $pattern" || true
+    done
+    # Clean up stale PID/lock files
+    ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
+    STATE="${ORCH_HOME}/.orchestrator"
+    rm -f "$STATE/orchestrator.pid"
+    rm -rf "$STATE/serve.lock"
+    echo "Done."
+
 # DEPRECATED
 [private]
 _service_install:
@@ -309,6 +324,11 @@ _job_tick:
 ############################
 #  Brew services commands
 #############################
+
+# Kill all orchestrator processes (including orphans from crashed/upgraded instances)
+[group('service')]
+killall:
+    @scripts/stop.sh --force
 
 # Stop orchestrator service (via brew)
 [group('service')]
