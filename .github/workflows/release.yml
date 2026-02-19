@@ -162,20 +162,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           LAST_TAG="${{ steps.check.outputs.last_tag }}"
 
-          # Try GitHub's auto-generated notes first
-          if [ -n "$LAST_TAG" ]; then
-            gh release create "$VERSION" \
-              --title "$VERSION" \
-              --generate-notes \
-              --notes-start-tag "$LAST_TAG" 2>/dev/null && { echo "Created release $VERSION"; exit 0; }
-          else
-            gh release create "$VERSION" \
-              --title "$VERSION" \
-              --generate-notes 2>/dev/null && { echo "Created release $VERSION"; exit 0; }
-          fi
-
-          # Fallback: generate changelog from commit subjects
-          echo "GitHub generate-notes failed, building changelog from commits"
+          # Build changelog from commit subjects (works for both PRs and direct pushes)
           if [ -n "$LAST_TAG" ]; then
             RAW=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s (%h)")
           else
@@ -191,21 +178,27 @@ jobs:
               FEATURES+="- ${line}"$'\n'
             elif echo "$line" | grep -qE '^fix(\(.*\))?:'; then
               FIXES+="- ${line}"$'\n'
+            elif echo "$line" | grep -qE '^chore(\(.*\))?:'; then
+              continue
             else
               OTHER+="- ${line}"$'\n'
             fi
           done <<< "$RAW"
 
-          BODY=""
+          BODY="## ${VERSION}"$'\n\n'
           [ -n "$FEATURES" ] && BODY+="### Features"$'\n'"${FEATURES}"$'\n'
           [ -n "$FIXES" ] && BODY+="### Bug Fixes"$'\n'"${FIXES}"$'\n'
           [ -n "$OTHER" ] && BODY+="### Other"$'\n'"${OTHER}"$'\n'
+
+          if [ -n "$LAST_TAG" ]; then
+            BODY+="**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${VERSION}"
+          fi
 
           gh release create "$VERSION" \
             --title "$VERSION" \
             --notes "$BODY"
 
-          echo "Created release $VERSION (fallback changelog)"
+          echo "Created release $VERSION"
 
       - name: Update Homebrew formula
         if: steps.check.outputs.skip == 'false'
