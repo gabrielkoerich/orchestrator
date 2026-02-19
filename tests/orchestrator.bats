@@ -4789,3 +4789,40 @@ _setup_sqlite_env() {
     false
   fi
 }
+
+# ============================================================
+# Retrospective recommendation tests
+# ============================================================
+
+@test "system.md has no duplicate 'NEVER commit to main' rules" {
+  run grep -c 'NEVER commit.*main' "${REPO_DIR}/prompts/system.md"
+  [ "$status" -eq 0 ]
+  # Should appear exactly once (consolidated)
+  [ "$output" -eq 1 ]
+}
+
+@test "system.md has no duplicate 'main project directory' rules" {
+  run grep -c 'main project directory\|~/Projects' "${REPO_DIR}/prompts/system.md"
+  [ "$status" -eq 0 ]
+  # Should appear exactly once (consolidated)
+  [ "$output" -eq 1 ]
+}
+
+@test "system.md includes missing tooling guidance" {
+  run grep -c 'missing.*report.*blocked\|blocked.*immediately' "${REPO_DIR}/prompts/system.md"
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "agent.md wraps SKILLS_DOCS in conditional" {
+  run grep -c '{{#if SKILLS_DOCS}}' "${REPO_DIR}/prompts/agent.md"
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "build_git_diff includes actual diff content not just stat" {
+  # build_git_diff should call both git diff --stat and git diff (full content)
+  run grep -c 'git diff.*--stat\|git diff HEAD' "${REPO_DIR}/scripts/lib.sh"
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 2 ]
+}
