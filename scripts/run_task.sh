@@ -512,7 +512,7 @@ if [ "$CMD_STATUS" -ne 0 ]; then
     exit 0
   fi
 
-  if printf '%s' "$COMBINED_OUTPUT" | rg -qi 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
+  if printf '%s' "$COMBINED_OUTPUT" | rg -qi 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required|hit.*usage.limit|usage.limit|credit.balance.*too.low|overloaded_error'; then
     error_log "[run] task=$TASK_ID AUTH/BILLING ERROR for agent=$TASK_AGENT"
     AVAILABLE=$(available_agents)
     NEXT_AGENT=""
