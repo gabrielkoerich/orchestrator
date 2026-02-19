@@ -264,6 +264,175 @@ SH
   [[ "$output" == *"GitHub sync disabled."* ]]
 }
 
+@test "cleanup_worktrees.sh removes worktree for merged PR task" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Cleanup merged" "Body" ""
+  [ "$status" -eq 0 ]
+
+  WT_DIR="${TMP_DIR}/wt-merged"
+  mkdir -p "$WT_DIR"
+
+  run yq -i '(.gh.repo) = "testowner/testrepo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
+    (.tasks[] | select(.id == 2) | .gh_issue_number) = 47 |
+    (.tasks[] | select(.id == 2) | .branch) = "gh-task-47-cleanup" |
+    (.tasks[] | select(.id == 2) | .worktree) = "'"$WT_DIR"'"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  echo '[{"number":123}]'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  GIT_STUB="${TMP_DIR}/git"
+  cat > "$GIT_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${TMP_DIR}/git_calls"
+if [[ "$*" == *"show-ref --verify --quiet refs/heads/"* ]]; then
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GIT_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TMP_DIR="$TMP_DIR" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
+    ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
+    "${REPO_DIR}/scripts/cleanup_worktrees.sh"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .worktree_cleaned // false' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+
+  run bash -c "cat '${TMP_DIR}/git_calls'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"worktree remove ${WT_DIR} --force"* ]]
+  [[ "$output" == *"branch -d gh-task-47-cleanup"* ]]
+}
+
+@test "cleanup_worktrees.sh skips tasks without merged PR" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Cleanup unmerged" "Body" ""
+  [ "$status" -eq 0 ]
+
+  WT_DIR="${TMP_DIR}/wt-unmerged"
+  mkdir -p "$WT_DIR"
+
+  run yq -i '(.gh.repo) = "testowner/testrepo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
+    (.tasks[] | select(.id == 2) | .gh_issue_number) = 48 |
+    (.tasks[] | select(.id == 2) | .branch) = "gh-task-48-cleanup" |
+    (.tasks[] | select(.id == 2) | .worktree) = "'"$WT_DIR"'"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  run yq -r '.tasks[] | select(.id == 2) | .worktree' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$WT_DIR" ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  echo ''
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  GIT_STUB="${TMP_DIR}/git"
+  cat > "$GIT_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${TMP_DIR}/git_calls_skip"
+exit 0
+SH
+  chmod +x "$GIT_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TMP_DIR="$TMP_DIR" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
+    ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
+    "${REPO_DIR}/scripts/cleanup_worktrees.sh"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .worktree_cleaned // false' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "false" ]
+
+  [ ! -f "${TMP_DIR}/git_calls_skip" ]
+}
+
+@test "cleanup_worktrees.sh marks worktree_cleaned after removal" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Cleanup local done" "Body" ""
+  [ "$status" -eq 0 ]
+
+  WT_DIR="${TMP_DIR}/wt-local"
+  mkdir -p "$WT_DIR"
+
+  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
+    (.tasks[] | select(.id == 2) | .branch) = "task-2-local" |
+    (.tasks[] | select(.id == 2) | .worktree) = "'"$WT_DIR"'"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  GIT_STUB="${TMP_DIR}/git"
+  cat > "$GIT_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"show-ref --verify --quiet refs/heads/"* ]]; then
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GIT_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
+    ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
+    "${REPO_DIR}/scripts/cleanup_worktrees.sh"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .worktree_cleaned // false' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+}
+
+@test "cleanup_worktrees.sh handles missing worktree directory gracefully" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Cleanup missing dir" "Body" ""
+  [ "$status" -eq 0 ]
+
+  WT_DIR="${TMP_DIR}/wt-missing"
+  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
+    (.tasks[] | select(.id == 2) | .worktree) = "'"$WT_DIR"'"' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  run yq -r '.tasks[] | select(.id == 2) | .worktree' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$WT_DIR" ]
+
+  GIT_STUB="${TMP_DIR}/git"
+  cat > "$GIT_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${TMP_DIR}/git_calls_missing"
+exit 0
+SH
+  chmod +x "$GIT_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" TMP_DIR="$TMP_DIR" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
+    ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
+    "${REPO_DIR}/scripts/cleanup_worktrees.sh"
+  [ "$status" -eq 0 ]
+
+  run yq -r '.tasks[] | select(.id == 2) | .worktree_cleaned // false' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+
+  [ ! -f "${TMP_DIR}/git_calls_missing" ]
+}
+
 @test "gh_api wait mode sleeps and retries" {
   GH_STUB="${TMP_DIR}/gh"
   SLEEP_STUB="${TMP_DIR}/sleep"
