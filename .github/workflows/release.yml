@@ -143,50 +143,6 @@ jobs:
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $NEW_VERSION (${BUMP} bump)"
 
-      - name: Generate changelog
-        if: steps.check.outputs.skip == 'false'
-        id: changelog
-        run: |
-          LAST_TAG="${{ steps.check.outputs.last_tag }}"
-          VERSION="${{ steps.version.outputs.version }}"
-
-          if [ -n "$LAST_TAG" ]; then
-            RAW=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s|%h")
-          else
-            RAW=$(git log --pretty=format:"%s|%h")
-          fi
-
-          BREAKING=""
-          FEATURES=""
-          FIXES=""
-          OTHER=""
-
-          while IFS='|' read -r msg hash; do
-            [ -n "$msg" ] || continue
-            entry="- ${msg} (${hash})"
-            if echo "$msg" | grep -qE '^breaking(\(.*\))?:'; then
-              BREAKING+="${entry}"$'\n'
-            elif echo "$msg" | grep -qE '^feat(\(.*\))?:'; then
-              FEATURES+="${entry}"$'\n'
-            elif echo "$msg" | grep -qE '^fix(\(.*\))?:'; then
-              FIXES+="${entry}"$'\n'
-            else
-              OTHER+="${entry}"$'\n'
-            fi
-          done <<< "$RAW"
-
-          CHANGELOG="## ${VERSION}"$'\n\n'
-          [ -n "$BREAKING" ] && CHANGELOG+="### Breaking Changes"$'\n'"${BREAKING}"$'\n'
-          [ -n "$FEATURES" ] && CHANGELOG+="### Features"$'\n'"${FEATURES}"$'\n'
-          [ -n "$FIXES" ] && CHANGELOG+="### Bug Fixes"$'\n'"${FIXES}"$'\n'
-          [ -n "$OTHER" ] && CHANGELOG+="### Other Changes"$'\n'"${OTHER}"$'\n'
-
-          {
-            echo "body<<CHANGELOG_EOF"
-            echo "$CHANGELOG"
-            echo "CHANGELOG_EOF"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Create tag
         if: steps.check.outputs.skip == 'false'
         env:
@@ -198,9 +154,8 @@ jobs:
           git tag -a "$VERSION" -m "$VERSION"
           git push origin "$VERSION"
 
-      - name: Generate GitHub release notes
+      - name: Create release
         if: steps.check.outputs.skip == 'false'
-        id: gh_notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -208,41 +163,15 @@ jobs:
           LAST_TAG="${{ steps.check.outputs.last_tag }}"
 
           if [ -n "$LAST_TAG" ]; then
-            GH_BODY=$(gh api \
-              --method POST \
-              -H "Accept: application/vnd.github+json" \
-              /repos/${{ github.repository }}/releases/generate-notes \
-              -f tag_name="$VERSION" \
-              -f previous_tag_name="$LAST_TAG" \
-              --jq '.body' 2>/dev/null || echo "")
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --generate-notes \
+              --notes-start-tag "$LAST_TAG"
           else
-            GH_BODY=""
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --generate-notes
           fi
-
-          {
-            echo "body<<GH_NOTES_EOF"
-            echo "$GH_BODY"
-            echo "GH_NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create release
-        if: steps.check.outputs.skip == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CHANGELOG: ${{ steps.changelog.outputs.body }}
-          GH_NOTES: ${{ steps.gh_notes.outputs.body }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # Combine: our changelog first, then GitHub's PR-based notes
-          BODY="${CHANGELOG}"
-          if [ -n "$GH_NOTES" ]; then
-            BODY="${BODY}"$'\n---\n\n'"${GH_NOTES}"
-          fi
-
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --notes "$BODY"
 
           echo "Created release $VERSION"
 
