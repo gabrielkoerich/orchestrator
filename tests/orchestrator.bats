@@ -951,6 +951,39 @@ YAML
   [[ "$output" == *"template not found"* ]]
 }
 
+@test "render_template omits if block when value is empty or whitespace" {
+  TEMPLATE_PATH="${TMP_DIR}/tmpl-if-empty.md"
+  cat > "$TEMPLATE_PATH" <<'EOF'
+start
+{{#if OPTIONAL}}
+optional section
+{{OPTIONAL}}
+{{/if}}
+end
+EOF
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; OPTIONAL='   ' render_template '$TEMPLATE_PATH'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"start"* ]]
+  [[ "$output" == *"end"* ]]
+  [[ "$output" != *"optional section"* ]]
+}
+
+@test "render_template keeps if block when value is non-empty" {
+  TEMPLATE_PATH="${TMP_DIR}/tmpl-if-filled.md"
+  cat > "$TEMPLATE_PATH" <<'EOF'
+{{#if OPTIONAL}}
+optional section
+{{OPTIONAL}}
+{{/if}}
+EOF
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; OPTIONAL='value present' render_template '$TEMPLATE_PATH'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"optional section"* ]]
+  [[ "$output" == *"value present"* ]]
+}
+
 @test "create_task_entry creates task via shared helper" {
   NOW="2026-01-01T00:00:00Z"
   export NOW PROJECT_DIR="$TMP_DIR"
