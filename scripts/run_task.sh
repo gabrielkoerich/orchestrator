@@ -479,6 +479,23 @@ printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
 RESPONSE_LEN=${#RESPONSE}
 log_err "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)"
 
+# Extract permission denials from claude response
+if [ "$TASK_AGENT" = "claude" ]; then
+  DENIALS=$(printf '%s' "$RESPONSE" | jq -r '.permission_denials[]? | "\(.tool_name)(\(.tool_input.command // .tool_input | tostring | .[0:80]))"' 2>/dev/null || true)
+  if [ -n "$DENIALS" ]; then
+    DENIAL_COUNT=$(printf '%s\n' "$DENIALS" | wc -l | tr -d ' ')
+    log_err "[run] task=$TASK_ID permission_denials ($DENIAL_COUNT):"
+    printf '%s\n' "$DENIALS" | while IFS= read -r _d; do
+      log_err "[run]   denied: $_d"
+    done
+    # Append to persistent denial log for review
+    DENIAL_LOG="${STATE_DIR}/permission-denials.log"
+    printf '%s\n' "$DENIALS" | while IFS= read -r _d; do
+      printf '%s task=%s agent=%s %s\n' "$(now_iso)" "$TASK_ID" "$TASK_AGENT" "$_d" >> "$DENIAL_LOG"
+    done
+  fi
+fi
+
 # Extract tool history from agent response
 TOOL_SUMMARY=$(RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-summary 2>/dev/null || true)
 TOOL_COUNT=0
