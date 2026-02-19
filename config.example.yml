@@ -39,6 +39,7 @@ model_map:
   review:
     claude: sonnet
     codex: gpt-5.2
+# required_tools: []  # Tools that must be in PATH before agents run (e.g. [bun, anchor, solana-test-validator])
 llm:
   input_format: ""
   output_format: "json"

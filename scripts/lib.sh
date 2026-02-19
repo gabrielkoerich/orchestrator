@@ -332,6 +332,39 @@ require_agent() {
   fi
 }
 
+# Validate that all required_tools from config are available in PATH.
+# Returns 0 if all tools are present (or none are configured).
+# On failure, sets MISSING_TOOLS to a newline-separated list.
+validate_required_tools() {
+  MISSING_TOOLS=""
+  local tools_json
+  tools_json=$(config_get '.required_tools // []')
+  if [ -z "$tools_json" ] || [ "$tools_json" = "null" ] || [ "$tools_json" = "[]" ]; then
+    return 0
+  fi
+  local tools_list
+  tools_list=$(printf '%s' "$tools_json" | yq -r '.[]' 2>/dev/null || true)
+  if [ -z "$tools_list" ]; then
+    return 0
+  fi
+  local missing=""
+  while IFS= read -r tool; do
+    [ -z "$tool" ] && continue
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      if [ -n "$missing" ]; then
+        missing="${missing}, ${tool}"
+      else
+        missing="$tool"
+      fi
+    fi
+  done <<< "$tools_list"
+  if [ -n "$missing" ]; then
+    MISSING_TOOLS="$missing"
+    return 1
+  fi
+  return 0
+}
+
 available_agents() {
   local agents=""
   local disabled=""

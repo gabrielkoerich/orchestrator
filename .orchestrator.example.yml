@@ -25,3 +25,8 @@
 #   agent: "claude"
 #   model: "haiku"
 #   fallback_executor: "codex"
+
+# required_tools:
+#   - bun
+#   - anchor
+#   - solana-test-validator

@@ -302,6 +302,15 @@ if [ "$ATTEMPTS" -gt "$MAX" ]; then
   exit 0
 fi
 
+# Validate required tools before launching agent
+if ! validate_required_tools; then
+  BLOCK_MSG="missing required tools: ${MISSING_TOOLS}. Install them or remove from required_tools in .orchestrator.yml"
+  log_err "[run] task=$TASK_ID $BLOCK_MSG"
+  db_task_update "$TASK_ID" "status=blocked" "last_error=$BLOCK_MSG"
+  append_history "$TASK_ID" "blocked" "$BLOCK_MSG"
+  exit 0
+fi
+
 db_task_update "$TASK_ID" "status=in_progress" "attempts=$ATTEMPTS"
 append_history "$TASK_ID" "in_progress" "started attempt $ATTEMPTS"
 
