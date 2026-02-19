@@ -63,7 +63,7 @@ for f in "${files[@]}"; do
 
   # Files to run pattern scans on
   case "$f" in
-    *.md|*.txt|*.png|*.jpg|*.jpeg|*.gif|*.pdf|*.yml|*.yaml|*.toml|*.json|*.py|*.rb) ;;
+    *.md|*.txt|*.png|*.jpg|*.jpeg|*.gif|*.pdf|*.yml|*.yaml|*.toml|*.json|*.py|*.rb|*.sql) ;;
     *) scan_files+=("$f") ;;
   esac
 
@@ -77,7 +77,7 @@ for f in "${files[@]}"; do
   case "$f" in
     scripts/*)
       # Exclude non-shell files in scripts/
-      [[ "$f" =~ \.(md|txt|json|toml|yaml|yml|py|rb)$ ]] && continue
+      [[ "$f" =~ \.(md|txt|json|toml|yaml|yml|py|rb|sql)$ ]] && continue
       shell_files+=("$f")
       shellcheck_files+=("$f")
       ;;

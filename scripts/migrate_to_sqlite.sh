@@ -21,7 +21,7 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
 fi
 
 echo "==> Creating database at $DB_PATH"
-sqlite3 "$DB_PATH" < "$SCHEMA_PATH"
+sqlite3 "$DB_PATH" < "$SCHEMA_PATH" >/dev/null
 
 # ============================================================
 # Migrate tasks

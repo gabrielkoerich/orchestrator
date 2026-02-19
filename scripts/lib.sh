@@ -703,13 +703,22 @@ build_skills_docs() {
 build_parent_context() {
   local task_id="$1"
   local parent_id
-  parent_id=$(yq -r ".tasks[] | select(.id == $task_id) | .parent_id // \"\"" "$TASKS_PATH")
+  if _use_sqlite; then
+    parent_id=$(db_task_field "$task_id" "parent_id")
+  else
+    parent_id=$(yq -r ".tasks[] | select(.id == $task_id) | .parent_id // \"\"" "$TASKS_PATH")
+  fi
   if [ -z "$parent_id" ] || [ "$parent_id" = "null" ]; then return; fi
 
   local out=""
   local parent_title parent_summary
-  parent_title=$(yq -r ".tasks[] | select(.id == $parent_id) | .title // \"\"" "$TASKS_PATH")
-  parent_summary=$(yq -r ".tasks[] | select(.id == $parent_id) | .summary // \"\"" "$TASKS_PATH")
+  if _use_sqlite; then
+    parent_title=$(db_task_field "$parent_id" "title")
+    parent_summary=$(db_task_field "$parent_id" "summary")
+  else
+    parent_title=$(yq -r ".tasks[] | select(.id == $parent_id) | .title // \"\"" "$TASKS_PATH")
+    parent_summary=$(yq -r ".tasks[] | select(.id == $parent_id) | .summary // \"\"" "$TASKS_PATH")
+  fi
 
   if [ -n "$parent_title" ] && [ "$parent_title" != "null" ]; then
     out+="Parent task #${parent_id}: ${parent_title}\n"
@@ -717,9 +726,12 @@ build_parent_context() {
       out+="Parent summary: ${parent_summary}\n"
     fi
 
-    # Sibling summaries
     local siblings
-    siblings=$(yq -r ".tasks[] | select(.parent_id == $parent_id and .id != $task_id) | \"\(.id): \(.title) [\(.status)]\"" "$TASKS_PATH" 2>/dev/null || true)
+    if _use_sqlite; then
+      siblings=$(db "SELECT id || ': ' || title || ' [' || status || ']' FROM tasks WHERE parent_id = $parent_id AND id != $task_id;")
+    else
+      siblings=$(yq -r ".tasks[] | select(.parent_id == $parent_id and .id != $task_id) | \"\(.id): \(.title) [\(.status)]\"" "$TASKS_PATH" 2>/dev/null || true)
+    fi
     if [ -n "$siblings" ]; then
       out+="\nSibling tasks:\n${siblings}\n"
     fi
@@ -735,24 +747,28 @@ build_git_diff() {
 
 load_task() {
   local task_id="$1"
-  local json
-  json=$(yq -o=json -I=0 '.' "$TASKS_PATH")
-  eval "$(printf '%s' "$json" | jq -r --argjson id "$task_id" '
-    .tasks[] | select(.id == $id) |
-    "export TASK_TITLE=" + (.title | @sh) +
-    "\nexport TASK_BODY=" + (.body | @sh) +
-    "\nexport TASK_LABELS=" + ((.labels // []) | join(",") | @sh) +
-    "\nexport TASK_AGENT=" + (.agent // "" | @sh) +
-    "\nexport AGENT_MODEL=" + (.agent_model // "" | @sh) +
-    "\nexport TASK_COMPLEXITY=" + (.complexity // "medium" | @sh) +
-    "\nexport AGENT_PROFILE_JSON=" + (.agent_profile // {} | tojson | @sh) +
-    "\nexport ATTEMPTS=" + (.attempts // 0 | tostring | @sh) +
-    "\nexport SELECTED_SKILLS=" + ((.selected_skills // []) | join(",") | @sh) +
-    "\nexport TASK_PARENT_ID=" + (.parent_id // "" | tostring | @sh) +
-    "\nexport GH_ISSUE_NUMBER=" + (.gh_issue_number // "" | tostring | @sh)
-  ')"
-  ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | jq -r '.role // "general"')
-  export ROLE
+  if _use_sqlite; then
+    db_load_task "$task_id"
+  else
+    local json
+    json=$(yq -o=json -I=0 '.' "$TASKS_PATH")
+    eval "$(printf '%s' "$json" | jq -r --argjson id "$task_id" '
+      .tasks[] | select(.id == $id) |
+      "export TASK_TITLE=" + (.title | @sh) +
+      "\nexport TASK_BODY=" + (.body | @sh) +
+      "\nexport TASK_LABELS=" + ((.labels // []) | join(",") | @sh) +
+      "\nexport TASK_AGENT=" + (.agent // "" | @sh) +
+      "\nexport AGENT_MODEL=" + (.agent_model // "" | @sh) +
+      "\nexport TASK_COMPLEXITY=" + (.complexity // "medium" | @sh) +
+      "\nexport AGENT_PROFILE_JSON=" + (.agent_profile // {} | tojson | @sh) +
+      "\nexport ATTEMPTS=" + (.attempts // 0 | tostring | @sh) +
+      "\nexport SELECTED_SKILLS=" + ((.selected_skills // []) | join(",") | @sh) +
+      "\nexport TASK_PARENT_ID=" + (.parent_id // "" | tostring | @sh) +
+      "\nexport GH_ISSUE_NUMBER=" + (.gh_issue_number // "" | tostring | @sh)
+    ')"
+    ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | jq -r '.role // "general"')
+    export ROLE
+  fi
 }
 
 # --- Task helpers (SQLite with YAML fallback) ---

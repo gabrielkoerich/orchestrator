@@ -4242,7 +4242,7 @@ SH
 
 @test "db_task_field reads a single field" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
 
   export DB_PATH="$db"
@@ -4259,7 +4259,7 @@ SH
 
 @test "db_task_set updates field and bumps updated_at" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
 
   export DB_PATH="$db"
@@ -4276,7 +4276,7 @@ SH
 
 @test "db_task_claim is atomic — rejects wrong from_status" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'done', '2026-01-01', '2026-01-01');"
 
   export DB_PATH="$db"
@@ -4293,7 +4293,7 @@ SH
 
 @test "db_task_claim succeeds with correct from_status" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
 
   export DB_PATH="$db"
@@ -4308,7 +4308,7 @@ SH
 
 @test "db_task_count counts by status" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'A', 'new', '2026-01-01', '2026-01-01');"
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (2, 'B', 'done', '2026-01-01', '2026-01-01');"
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (3, 'C', 'done', '2026-01-01', '2026-01-01');"
@@ -4328,7 +4328,7 @@ SH
 
 @test "db_create_task creates task with labels" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
 
   export DB_PATH="$db" PROJECT_DIR="$TMP_DIR"
   source "${REPO_DIR}/scripts/db.sh"
@@ -4348,7 +4348,7 @@ SH
 
 @test "db_append_history adds entries" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
 
   export DB_PATH="$db"
@@ -4366,7 +4366,7 @@ SH
 
 @test "db_set_labels replaces existing labels" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
   sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (1, 'old-label');"
 
@@ -4384,7 +4384,7 @@ SH
 
 @test "db_task_update updates multiple fields at once" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
 
   export DB_PATH="$db"
@@ -4401,7 +4401,7 @@ SH
 
 @test "db_task_ids_by_status excludes tasks with label" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'A', 'new', '2026-01-01', '2026-01-01');"
   sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (2, 'B', 'new', '2026-01-01', '2026-01-01');"
   sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (2, 'no-agent');"
@@ -4511,7 +4511,7 @@ YAML
 
 @test "db_job_field and db_job_set work correctly" {
   local db="${TMP_DIR}/test.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO jobs (id, title, schedule, type, enabled, created_at) VALUES ('j1', 'Job', '0 9 * * *', 'task', 1, '2026-01-01');"
 
   export DB_PATH="$db"
@@ -4541,7 +4541,7 @@ YAML
 # Helper: set up a SQLite db and source lib.sh so _use_sqlite returns true
 _setup_sqlite_env() {
   local db="${TMP_DIR}/orch.db"
-  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
   sqlite3 "$db" "INSERT INTO tasks (id, title, body, status, agent, dir, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
     VALUES (1, 'Test Task', 'body', 'new', 'claude', '${TMP_DIR}', 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
   sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (1, 'bug');"
@@ -4616,22 +4616,18 @@ _setup_sqlite_env() {
     VALUES (99, 'Skip Me', 'new', 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
   sqlite3 "$DB_PATH" "INSERT INTO task_labels (task_id, label) VALUES (99, 'no-agent');"
 
-  # Mock run_task.sh to just record calls
-  mkdir -p "${TMP_DIR}/mock_scripts"
-  cat > "${TMP_DIR}/mock_scripts/run_task.sh" << 'MOCK'
-#!/usr/bin/env bash
-echo "run_task called with $1" >> "${TMP_DIR}/run_calls.log"
-MOCK
-  chmod +x "${TMP_DIR}/mock_scripts/run_task.sh"
+  # Set task 1 to 'done' so poll doesn't try to run it
+  sqlite3 "$DB_PATH" "UPDATE tasks SET status = 'done' WHERE id = 1;"
 
-  # Set task 1 to 'new' so poll picks it up
-  sqlite3 "$DB_PATH" "UPDATE tasks SET status = 'new' WHERE id = 1;"
+  # Add a parent with in_progress child that's already done → should unblock
+  sqlite3 "$DB_PATH" "INSERT INTO tasks (id, title, status, parent_id, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
+    VALUES (100, 'Child Done', 'done', 99, 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
 
   # Create a mock gh that does nothing
   gh() { return 0; }
   export -f gh
 
-  # Run poll.sh — it should NOT try to run task 99
+  # Run poll.sh — should succeed (no tasks to run, no-agent skipped)
   run "${REPO_DIR}/scripts/poll.sh"
   [ "$status" -eq 0 ]
 }
