@@ -19,6 +19,13 @@ if [ "$STATUS" = "new" ] || [ "$STATUS" = "routed" ] || [ "$STATUS" = "in_progre
   exit 0
 fi
 
+# Warn about environment failures — retrying won't help without manual fix
+LAST_ERROR=$(db_task_field "$TASK_ID" "last_error")
+if is_env_failure_error "$LAST_ERROR"; then
+  log_err "[retry] task=$TASK_ID WARNING: last failure was an environment error: $LAST_ERROR"
+  log_err "[retry] task=$TASK_ID retrying anyway — ensure the tool is installed first"
+fi
+
 db_task_update "$TASK_ID" "status=new" "agent=NULL"
 append_history "$TASK_ID" "new" "retried from $STATUS"
 log "[retry] task=$TASK_ID reset from $STATUS to new"

@@ -277,6 +277,13 @@ export NOW ATTEMPTS
 # Check max attempts before starting
 MAX=$(max_attempts)
 
+# Block retries of environment/tooling failures — these won't resolve without manual intervention
+if [ "$ATTEMPTS" -ge 2 ] && is_env_failure_error "$TASK_LAST_ERROR"; then
+  error_log "[run] task=$TASK_ID env failure detected in last_error, blocking retry"
+  mark_needs_review "$TASK_ID" "$ATTEMPTS" "$TASK_LAST_ERROR" "env failure retry blocked: $TASK_LAST_ERROR"
+  exit 0
+fi
+
 # Detect retry loops: if 4+ attempts and last 3 blocked entries have identical notes, stop
 if [ "$ATTEMPTS" -ge 4 ]; then
   BLOCKED_NOTES=$(db_scalar "SELECT COUNT(DISTINCT note) FROM (
@@ -545,6 +552,14 @@ ${STDERR_SNIPPET}
     exit 0
   fi
 
+  # Detect environment/tooling failures (command not found, missing tools)
+  if detect_env_failure "$COMBINED_OUTPUT"; then
+    error_log "[run] task=$TASK_ID ENV FAILURE: missing tool '$ENV_FAILURE_TOOL'"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" \
+      "[env] ${ENV_FAILURE_TOOL}: command not found — install ${ENV_FAILURE_TOOL} before retrying"
+    exit 0
+  fi
+
   error_log "[run] task=$TASK_ID agent command failed exit=$CMD_STATUS"
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent command failed (exit $CMD_STATUS)"
   exit 0
@@ -604,6 +619,16 @@ DELEGATIONS_JSON=$(printf '%s' "$RESPONSE_JSON" | jq -c '.delegations // []')
 if [ -z "$AGENT_STATUS" ] || [ "$AGENT_STATUS" = "null" ]; then
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response missing status"
   exit 0
+fi
+
+# Detect environment failures reported by the agent in reason/blockers/stderr
+ENV_CHECK_TEXT="${REASON}${BLOCKERS_STR}${AGENT_STDERR}"
+if [ "$AGENT_STATUS" = "blocked" ] || [ "$AGENT_STATUS" = "needs_review" ]; then
+  if detect_env_failure "$ENV_CHECK_TEXT"; then
+    error_log "[run] task=$TASK_ID agent reported ENV FAILURE: missing tool '$ENV_FAILURE_TOOL'"
+    AGENT_STATUS="needs_review"
+    REASON="[env] ${ENV_FAILURE_TOOL}: command not found — install ${ENV_FAILURE_TOOL} before retrying"
+  fi
 fi
 
 NOW=$(now_iso)

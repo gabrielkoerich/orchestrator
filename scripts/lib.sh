@@ -812,6 +812,64 @@ mark_needs_review() {
   append_history "$task_id" "needs_review" "$note"
 }
 
+# Detect environment/tooling failures that won't resolve without manual intervention.
+# Scans text for patterns like "command not found", "No such file or directory" for tools.
+# Returns 0 (success) if an env failure is detected, 1 otherwise.
+# Sets ENV_FAILURE_TOOL to the detected missing tool name (or "unknown").
+# Usage: detect_env_failure "combined stderr+stdout text"
+ENV_FAILURE_TOOL=""
+detect_env_failure() {
+  local text="$1"
+  ENV_FAILURE_TOOL=""
+
+  # Pattern: "<tool>: command not found"
+  local tool
+  tool=$(printf '%s' "$text" | rg -oP '(\S+):\s+command not found' --replace '$1' 2>/dev/null | head -1)
+  if [ -n "$tool" ]; then
+    ENV_FAILURE_TOOL="$tool"
+    return 0
+  fi
+
+  # Pattern: "command not found: <tool>"
+  tool=$(printf '%s' "$text" | rg -oP 'command not found:\s*(\S+)' --replace '$1' 2>/dev/null | head -1)
+  if [ -n "$tool" ]; then
+    ENV_FAILURE_TOOL="$tool"
+    return 0
+  fi
+
+  # Pattern: "No such file or directory" with a recognizable tool path
+  # e.g., "/usr/local/bin/bun: No such file or directory" or "env: node: No such file or directory"
+  tool=$(printf '%s' "$text" | rg -oP '(?:^|[\s/])(\w+):\s+No such file or directory' --replace '$1' 2>/dev/null | head -1)
+  if [ -n "$tool" ]; then
+    ENV_FAILURE_TOOL="$tool"
+    return 0
+  fi
+
+  # Pattern: "env: <tool>: No such file or directory"
+  tool=$(printf '%s' "$text" | rg -oP 'env:\s+(\S+):\s+No such file or directory' --replace '$1' 2>/dev/null | head -1)
+  if [ -n "$tool" ]; then
+    ENV_FAILURE_TOOL="$tool"
+    return 0
+  fi
+
+  # Pattern: "<tool> is required but not found in PATH"
+  tool=$(printf '%s' "$text" | rg -oP '(\S+)\s+is required but not found in PATH' --replace '$1' 2>/dev/null | head -1)
+  if [ -n "$tool" ]; then
+    ENV_FAILURE_TOOL="$tool"
+    return 0
+  fi
+
+  return 1
+}
+
+# Check if a last_error string indicates an environment failure.
+# Returns 0 if it's an env failure, 1 otherwise.
+# Usage: is_env_failure_error "last_error string"
+is_env_failure_error() {
+  local error="$1"
+  [[ "$error" == *"[env]"* ]]
+}
+
 fetch_issue_comments() {
   local repo="$1" issue_num="$2" max="${3:-10}"
   if [ -z "$issue_num" ] || [ "$issue_num" = "null" ] || [ "$issue_num" = "0" ]; then return 0; fi
