@@ -402,7 +402,20 @@ case "$TASK_AGENT" in
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --permission-mode acceptEdits \
-      --allowedTools "Write" "Edit" "Bash(*)" \
+      --allowedTools "Write" "Edit" \
+        "Bash(git add*)" "Bash(git commit*)" "Bash(git push*)" \
+        "Bash(git checkout*)" "Bash(git branch*)" "Bash(git diff*)" \
+        "Bash(git log*)" "Bash(git status*)" "Bash(git stash*)" \
+        "Bash(gh pr *)" "Bash(gh issue *)" "Bash(gh api *)" \
+        "Bash(cargo*)" "Bash(npm*)" "Bash(bun*)" "Bash(pnpm*)" \
+        "Bash(python*)" "Bash(pip*)" "Bash(uv*)" \
+        "Bash(just*)" "Bash(make*)" \
+        "Bash(ls*)" "Bash(mkdir*)" "Bash(cp*)" "Bash(mv*)" \
+        "Bash(anchor*)" "Bash(solana*)" \
+        "Bash(rg*)" "Bash(jq*)" "Bash(curl*)" "Bash(sqlite3*)" \
+        "Bash(bats*)" "Bash(shellcheck*)" "Bash(wc*)" "Bash(sort*)" \
+        "Bash(cat*)" "Bash(head*)" "Bash(tail*)" "Bash(grep*)" \
+        "Bash(chmod*)" "Bash(touch*)" "Bash(date*)" "Bash(which*)" \
       "${DISALLOW_ARGS[@]}" \
       --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
