@@ -228,7 +228,7 @@ fi
 
 DIRTY_COUNT=$(yq -r '
   [.tasks[] | select(
-    (.status != "done" or .gh_state != "closed") and (
+    ((.status == "done") and (.updated_at == .gh_synced_at) | not) and (
       (.gh_issue_number == null or .gh_issue_number == "") or
       (.updated_at != .gh_synced_at)
     )
@@ -246,7 +246,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   LABELS_JSON=$(printf '%s' "$TASK_JSON" | jq -c '.labels // []')
   STATUS=$(printf '%s' "$TASK_JSON" | jq -r '.status')
   GH_NUM=$(printf '%s' "$TASK_JSON" | jq -r '.gh_issue_number // ""')
-  GH_STATE=$(printf '%s' "$TASK_JSON" | jq -r '.gh_state // ""')
+  GH_STATE=$(printf '%s' "$TASK_JSON" | jq -r '.gh_state // ""' | tr '[:upper:]' '[:lower:]')
   SUMMARY=$(printf '%s' "$TASK_JSON" | jq -r '.summary // ""')
   REASON=$(printf '%s' "$TASK_JSON" | jq -r '.reason // ""')
   ACCOMPLISHED=$(printf '%s' "$TASK_JSON" | jq -r '.accomplished // [] | join(", ")')
@@ -270,6 +270,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   STDERR_SNIPPET=$(printf '%s' "$TASK_JSON" | jq -r '.stderr_snippet // ""')
   UPDATED_AT=$(printf '%s' "$TASK_JSON" | jq -r '.updated_at // ""')
   GH_SYNCED_AT=$(printf '%s' "$TASK_JSON" | jq -r '.gh_synced_at // ""')
+  GH_SYNCED_STATUS=$(printf '%s' "$TASK_JSON" | jq -r '.gh_synced_status // ""')
 
   # Reload project config if task belongs to a different project
   if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ] && [ "$TASK_DIR" != "$PROJECT_DIR" ]; then
@@ -290,9 +291,11 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   # Skip done tasks that already have a closed GitHub issue — nothing to sync
   if [ "$STATUS" = "done" ] && [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$GH_STATE" = "closed" ]; then
     # Mark synced so we don't re-check next time
-    if [ "$UPDATED_AT" != "$GH_SYNCED_AT" ]; then
+    if [ "$UPDATED_AT" != "$GH_SYNCED_AT" ] || [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
+      export STATUS
       with_lock yq -i \
-        "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at" \
+        "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at |
+         (.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
         "$TASKS_PATH"
     fi
     continue
@@ -312,8 +315,12 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
     if ! printf '%s' "$LABELS_JSON" | yq -e "any_c(. == \"$SYNC_LABEL\")" >/dev/null 2>&1; then
       # Still sync board status even if task doesn't have sync label
-      if [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ]; then
+      if [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
         sync_project_status "$GH_NUM" "$STATUS"
+        export STATUS
+        with_lock yq -i \
+          "(.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
+          "$TASKS_PATH"
       fi
       continue
     fi
@@ -355,11 +362,13 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     NOW=$(now_iso)
 
     export NUM URL STATE
+    export STATUS
     with_lock yq -i \
       "(.tasks[] | select(.id == $ID) | .gh_issue_number) = (env(NUM) | tonumber) | \
        (.tasks[] | select(.id == $ID) | .gh_url) = strenv(URL) | \
        (.tasks[] | select(.id == $ID) | .gh_state) = strenv(STATE) | \
-       (.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at" \
+       (.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at | \
+       (.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
       "$TASKS_PATH"
 
     log "[gh_push] [$PROJECT_NAME] task=$ID created issue #$NUM"
@@ -386,15 +395,25 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
       fi
     fi
 
-    sync_project_status "$NUM" "$STATUS"
+    if [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
+      sync_project_status "$NUM" "$STATUS"
+      export STATUS
+      with_lock yq -i \
+        "(.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
+        "$TASKS_PATH"
+    fi
     continue
   fi
 
   # Ensure issue labels reflect status only when task changed
   if [ "$UPDATED_AT" = "$GH_SYNCED_AT" ]; then
-    # Always sync project board status (may have been missed when config was broken)
-    if [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ]; then
+    # Skip redundant project sync when status has not changed since last sync
+    if [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
       sync_project_status "$GH_NUM" "$STATUS"
+      export STATUS
+      with_lock yq -i \
+        "(.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
+        "$TASKS_PATH"
     fi
     continue
   fi
@@ -610,16 +629,23 @@ ${PROMPT_CONTENT}
     fi
   fi
 
+  export STATUS
   # Mark synced atomically — copy the task's own updated_at so we never use a stale shell var
   with_lock yq -i \
-    "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at" \
+    "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at |
+     (.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
     "$TASKS_PATH"
   log "[gh_push] [$PROJECT_NAME] task=$ID synced"
 
   # Don't auto-close issues — GitHub handles this via "Closes #N" in the PR body.
   # When the PR merges, GitHub closes the issue, gh_pull.sh detects it, and marks the task "done".
 
-  sync_project_status "$GH_NUM" "$STATUS"
+  if [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
+    sync_project_status "$GH_NUM" "$STATUS"
+    with_lock yq -i \
+      "(.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
+      "$TASKS_PATH"
+  fi
 
 done
 
