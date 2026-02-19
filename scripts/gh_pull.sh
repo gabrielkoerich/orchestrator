@@ -104,17 +104,18 @@ for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
   LABELS_CSV=${LABELS_CSV:-""}
   export LABELS_CSV
   STATE=$(printf '%s' "$FILTERED" | yq -r ".[$i].state")
+  STATE_LOWER=$(printf '%s' "$STATE" | tr '[:upper:]' '[:lower:]')
   URL=$(printf '%s' "$FILTERED" | yq -r ".[$i].html_url")
   UPDATED=$(printf '%s' "$FILTERED" | yq -r ".[$i].updated_at")
 
   EXISTS=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .id" "$TASKS_PATH")
   if [ -n "$EXISTS" ] && [ "$EXISTS" != "null" ]; then
-    export TITLE BODY LABELS_CSV STATE URL UPDATED
+    export TITLE BODY LABELS_CSV STATE_LOWER URL UPDATED
     yq -i \
       "(.tasks[] | select(.gh_issue_number == $NUM) | .title) = strenv(TITLE) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .body) = strenv(BODY) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .labels) = (strenv(LABELS_CSV) | split(\",\") | map(select(length > 0))) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_state) = strenv(STATE) | \
+       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_state) = strenv(STATE_LOWER) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_url) = strenv(URL) | \
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_updated_at) = strenv(UPDATED)" \
       "$TASKS_PATH"
@@ -151,7 +152,7 @@ for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
     NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
     NOW=$(now_iso)
     STATUS="new"
-    export NEXT_ID TITLE BODY LABELS_CSV STATUS NOW STATE URL UPDATED NUM
+    export NEXT_ID TITLE BODY LABELS_CSV STATUS NOW STATE_LOWER URL UPDATED NUM
 
     yq -i \
       '.tasks += [{
@@ -178,7 +179,7 @@ for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
         "created_at": strenv(NOW),
         "updated_at": strenv(NOW),
         "gh_issue_number": (env(NUM) | tonumber),
-        "gh_state": strenv(STATE),
+        "gh_state": strenv(STATE_LOWER),
         "gh_url": strenv(URL),
         "gh_updated_at": strenv(UPDATED),
         "dir": strenv(PROJECT_DIR),
