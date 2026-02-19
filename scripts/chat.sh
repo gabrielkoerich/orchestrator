@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 source "${SCRIPT_DIR}/lib.sh"
-require_yq
 require_jq
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
@@ -56,7 +55,7 @@ dispatch() {
       local id
       id=$(printf '%s' "$params" | jq -r '.id // ""')
       if [ "$id" = "all" ]; then
-        yq -r '.tasks[] | select(.status == "blocked") | .id' "$TASKS_PATH" | xargs -n1 "${SCRIPT_DIR}/retry_task.sh"
+        db_task_ids_by_status "blocked" | xargs -n1 "${SCRIPT_DIR}/retry_task.sh"
       else
         "${SCRIPT_DIR}/retry_task.sh" "$id"
       fi
@@ -108,13 +107,13 @@ dispatch() {
     enable_job)
       local id
       id=$(printf '%s' "$params" | jq -r '.id // ""')
-      yq -i "(.jobs[] | select(.id == \"$id\") | .enabled) = true" "$JOBS_PATH"
+      db_job_set "$id" "enabled" "1"
       echo "Enabled job '$id'"
       ;;
     disable_job)
       local id
       id=$(printf '%s' "$params" | jq -r '.id // ""')
-      yq -i "(.jobs[] | select(.id == \"$id\") | .enabled) = false" "$JOBS_PATH"
+      db_job_set "$id" "enabled" "0"
       echo "Disabled job '$id'"
       ;;
     gh_sync)

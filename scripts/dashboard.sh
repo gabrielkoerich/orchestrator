@@ -3,29 +3,20 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 source "$(dirname "$0")/output.sh"
-require_yq
-init_tasks_file
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
 
-FILTER=$(dir_filter)
-
-TOTAL=$(yq -r "[${FILTER}] | length" "$TASKS_PATH")
+TOTAL=$(db_total_filtered_count)
 
 # Show status summary
-count_status() {
-  yq -r "[${FILTER} | select(.status == \"$1\")] | length" "$TASKS_PATH"
-}
-
-NEW=$(count_status "new")
-ROUTED=$(count_status "routed")
-INPROG=$(count_status "in_progress")
-BLOCKED=$(count_status "blocked")
-IN_REVIEW=$(count_status "in_review")
-DONE=$(count_status "done")
-NEEDS_REVIEW=$(count_status "needs_review")
-TOTAL=$(yq -r "[${FILTER}] | length" "$TASKS_PATH")
+NEW=$(db_status_count "new")
+ROUTED=$(db_status_count "routed")
+INPROG=$(db_status_count "in_progress")
+BLOCKED=$(db_status_count "blocked")
+IN_REVIEW=$(db_status_count "in_review")
+DONE=$(db_status_count "done")
+NEEDS_REVIEW=$(db_status_count "needs_review")
 
 if [ "$TOTAL" -eq 0 ]; then
   echo "No tasks."
@@ -34,17 +25,15 @@ else
     "$TOTAL" "$NEW" "$ROUTED" "$INPROG" "$IN_REVIEW" "$BLOCKED" "$DONE" "$NEEDS_REVIEW"
 
   # Show active tasks (non-done)
-  ACTIVE=$(yq -r "[${FILTER} | select(.status != \"done\")] | length" "$TASKS_PATH")
-  if [ "$ACTIVE" -gt 0 ]; then
+  ACTIVE_TSV=$(db_task_display_tsv "status != 'done'" "status ASC, id ASC")
+  if [ -n "$ACTIVE_TSV" ]; then
     section "Active tasks:"
-    yq -r "[${FILTER} | select(.status != \"done\")] | sort_by(.status) | .[] | [${YQ_TASK_COLS}] | @tsv" "$TASKS_PATH" \
-      | table_with_header "$TASK_HEADER"
+    printf '%s\n' "$ACTIVE_TSV" | table_with_header "$TASK_HEADER"
   fi
 fi
 
 # Token usage and cost summary
-# Extract per-task data: input_tokens, output_tokens, duration, model — compute totals with awk
-USAGE_TSV=$(yq -r "[${FILTER} | select(.input_tokens != null and .input_tokens > 0)] | .[] | [.input_tokens, .output_tokens // 0, .duration // 0, .agent_model // \"sonnet\"] | @tsv" "$TASKS_PATH" 2>/dev/null || true)
+USAGE_TSV=$(db_task_usage_tsv)
 if [ -n "$USAGE_TSV" ]; then
   section "Usage:"
   # Pricing per 1M tokens (USD) — approximate
@@ -75,12 +64,13 @@ fi
 
 # Show active projects
 section "Projects:"
-PROJECTS=$(yq -r '[.tasks[].dir // ""] | unique | map(select(length > 0)) | .[]' "$TASKS_PATH" 2>/dev/null || true)
+PROJECTS=$(db_task_projects)
 if [ -z "$PROJECTS" ]; then
   echo "  (none)"
 else
   while IFS= read -r dir; do
-    count=$(yq -r "[.tasks[] | select(.dir == \"$dir\" and .status != \"done\")] | length" "$TASKS_PATH")
+    [ -n "$dir" ] || continue
+    count=$(db_task_active_count_for_dir "$dir")
     printf '  %s (%s active)\n' "$dir" "$count"
   done <<< "$PROJECTS"
 fi

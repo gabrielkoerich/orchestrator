@@ -2,8 +2,6 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 source "$(dirname "$0")/output.sh"
-require_yq
-init_tasks_file
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
@@ -18,46 +16,35 @@ for arg in "$@"; do
   esac
 done
 
-# Global mode: show all tasks across projects
+# Determine dir filter
 if [ "$IS_GLOBAL" = true ]; then
-  FILTER=".tasks[]"
+  DIR_WHERE="1=1"
 else
-  FILTER=$(dir_filter)
+  DIR_WHERE=$(db_dir_where)
 fi
 
 if [ "$IS_JSON" = true ]; then
-  yq -o=json -I=2 "{
-    \"total\": ([${FILTER}] | length),
-    \"counts\": {
-      \"new\": ([${FILTER} | select(.status == \"new\")] | length),
-      \"routed\": ([${FILTER} | select(.status == \"routed\")] | length),
-      \"in_progress\": ([${FILTER} | select(.status == \"in_progress\")] | length),
-      \"blocked\": ([${FILTER} | select(.status == \"blocked\")] | length),
-      \"done\": ([${FILTER} | select(.status == \"done\")] | length),
-      \"needs_review\": ([${FILTER} | select(.status == \"needs_review\")] | length)
-    },
-    \"recent\": ([${FILTER}] | sort_by(.updated_at) | reverse | .[0:10])
-  }" "$TASKS_PATH"
+  db_status_json "$DIR_WHERE"
   exit 0
 fi
 
-TOTAL=$(yq -r "[${FILTER}] | length" "$TASKS_PATH")
+TOTAL=$(db_scalar "SELECT COUNT(*) FROM tasks WHERE $DIR_WHERE;")
 
 if [ "$TOTAL" -eq 0 ]; then
   echo "No tasks. Add one with: orchestrator task add \"title\""
   exit 0
 fi
 
-count_status() {
-  yq -r "[${FILTER} | select(.status == \"$1\")] | length" "$TASKS_PATH"
+_count() {
+  db_scalar "SELECT COUNT(*) FROM tasks WHERE $DIR_WHERE AND status = '$1';"
 }
 
-NEW=$(count_status "new")
-ROUTED=$(count_status "routed")
-INPROG=$(count_status "in_progress")
-BLOCKED=$(count_status "blocked")
-DONE=$(count_status "done")
-NEEDS_REVIEW=$(count_status "needs_review")
+NEW=$(_count "new")
+ROUTED=$(_count "routed")
+INPROG=$(_count "in_progress")
+BLOCKED=$(_count "blocked")
+DONE=$(_count "done")
+NEEDS_REVIEW=$(_count "needs_review")
 
 {
   printf 'STATUS\tQTY\n'
@@ -73,9 +60,9 @@ NEEDS_REVIEW=$(count_status "needs_review")
 
 section "Recent tasks:"
 if [ "$IS_GLOBAL" = true ]; then
-  yq -r "[${FILTER}] | sort_by(.updated_at) | reverse | .[0:10] | .[] | [${YQ_TASK_COLS_GLOBAL}] | @tsv" "$TASKS_PATH" \
+  db_task_display_tsv_global "1=1" "updated_at DESC" "10" \
     | table_with_header "$TASK_HEADER_GLOBAL"
 else
-  yq -r "[${FILTER}] | sort_by(.updated_at) | reverse | .[0:10] | .[] | [${YQ_TASK_COLS}] | @tsv" "$TASKS_PATH" \
+  db_task_display_tsv "1=1" "updated_at DESC" "10" \
     | table_with_header "$TASK_HEADER"
 fi

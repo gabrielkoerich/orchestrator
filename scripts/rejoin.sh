@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-require_yq
 
 JOBS=${POLL_JOBS:-4}
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 READY_IDS=()
-BLOCKED_IDS=$(yq -r '.tasks[] | select(.status == "blocked") | .id' "$TASKS_PATH")
+BLOCKED_IDS=$(db_task_ids_by_status "blocked")
 if [ -n "$BLOCKED_IDS" ]; then
   while IFS= read -r id; do
     [ -n "$id" ] || continue
 
-    CHILD_IDS=$(yq -r ".tasks[] | select(.id == $id) | .children[]?" "$TASKS_PATH")
+    CHILD_IDS=$(db_task_children "$id")
     if [ -z "$CHILD_IDS" ]; then
       continue
     fi
@@ -20,7 +19,7 @@ if [ -n "$BLOCKED_IDS" ]; then
     ALL_DONE=true
     while IFS= read -r cid; do
       [ -n "$cid" ] || continue
-      STATUS=$(yq -r ".tasks[] | select(.id == $cid) | .status" "$TASKS_PATH")
+      STATUS=$(db_task_field "$cid" "status")
       if [ "$STATUS" != "done" ]; then
         ALL_DONE=false
         break

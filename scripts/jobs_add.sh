@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-require_yq
-init_jobs_file
 
 # Parse named args: --type bash --command "cmd" or positional for task type
 JOB_TYPE="task"
@@ -74,34 +72,15 @@ fi
 JOB_ID=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
 
 # Check for duplicate ID
-EXISTING=$(yq -r ".jobs[] | select(.id == \"$JOB_ID\") | .id" "$JOBS_PATH" 2>/dev/null || true)
+EXISTING=$(db_job_field "$JOB_ID" "id" 2>/dev/null || true)
 if [ -n "$EXISTING" ]; then
   echo "Job '$JOB_ID' already exists. Choose a different title." >&2
   exit 1
 fi
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
-export JOB_ID SCHEDULE TITLE BODY LABELS AGENT PROJECT_DIR JOB_TYPE COMMAND
 
-yq -i \
-  '.jobs += [{
-    "id": strenv(JOB_ID),
-    "type": strenv(JOB_TYPE),
-    "schedule": strenv(SCHEDULE),
-    "task": {
-      "title": strenv(TITLE),
-      "body": strenv(BODY),
-      "labels": (strenv(LABELS) | split(",") | map(select(length > 0))),
-      "agent": (strenv(AGENT) | select(length > 0) // null)
-    },
-    "command": (strenv(COMMAND) | select(length > 0) // null),
-    "dir": strenv(PROJECT_DIR),
-    "enabled": true,
-    "last_run": null,
-    "last_task_status": null,
-    "active_task_id": null
-  }]' \
-  "$JOBS_PATH"
+db_create_job "$JOB_ID" "$TITLE" "$SCHEDULE" "$JOB_TYPE" "$BODY" "$LABELS" "$AGENT" "$PROJECT_DIR" "$COMMAND"
 
 if [ "$JOB_TYPE" = "bash" ]; then
   echo "Added bash job '$JOB_ID' (schedule: $SCHEDULE, command: $COMMAND)"

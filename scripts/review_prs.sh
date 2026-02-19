@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-require_yq
+require_jq
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
@@ -156,17 +156,11 @@ _update_linked_task() {
   [ -z "$pr_branch" ] && return 0
 
   local task_id
-  task_id=$(yq -r ".tasks[] | select(.branch == \"$pr_branch\" and .dir == \"$PROJECT_DIR\") | .id" "$TASKS_PATH" 2>/dev/null || true)
+  task_id=$(db_task_id_by_branch "$pr_branch" "$PROJECT_DIR")
   [ -z "$task_id" ] || [ "$task_id" = "null" ] && return 0
 
-  local NOW
-  NOW=$(now_iso)
-  export NOW
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .status) = \"$new_status\" |
-     (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(NOW)" \
-    "$TASKS_PATH"
-  append_history "$task_id" "$new_status" "$note"
+  db_task_update "$task_id" "status=$new_status"
+  db_append_history "$task_id" "$new_status" "$note"
 }
 
 # --- Review a single PR ---
@@ -262,24 +256,19 @@ EOF
 
   # Update linked task
   local task_id
-  task_id=$(yq -r ".tasks[] | select(.branch == \"$pr_branch\" and .dir == \"$PROJECT_DIR\") | .id" "$TASKS_PATH" 2>/dev/null || true)
+  task_id=$(db_task_id_by_branch "$pr_branch" "$PROJECT_DIR")
   if [ -n "$task_id" ] && [ "$task_id" != "null" ]; then
-    local NOW
-    NOW=$(now_iso)
-    export NOW NOTES
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $task_id) | .review_decision) = \"$DECISION\" |
-       (.tasks[] | select(.id == $task_id) | .review_notes) = strenv(NOTES) |
-       (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(NOW)" \
-      "$TASKS_PATH"
-
     local task_status
     if [ "$DECISION" = "approve" ]; then
       task_status="done"
     else
       task_status="needs_review"
     fi
-    append_history "$task_id" "$task_status" "pr review: $DECISION by $REVIEW_AGENT"
+    db_task_update "$task_id" \
+      "review_decision=$DECISION" \
+      "review_notes=$NOTES" \
+      "status=$task_status"
+    db_append_history "$task_id" "$task_status" "pr review: $DECISION by $REVIEW_AGENT"
   fi
 }
 

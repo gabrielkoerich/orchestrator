@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-require_yq
+require_jq
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
 PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
@@ -19,7 +19,6 @@ require_gh() {
 }
 
 require_gh
-init_tasks_file
 
 REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
@@ -46,16 +45,16 @@ log "[gh_pull] [$PROJECT_NAME] repo=$REPO"
 # Fetch open issues only — we don't import closed issues as new tasks
 ISSUES_JSON=$(gh_api -X GET "repos/$REPO/issues" --paginate -f state=open -f per_page=100)
 # gh api --paginate may return one JSON array per page; merge into one
-ISSUES_JSON=$(printf '%s' "$ISSUES_JSON" | yq ea -p=json -o=json -I=0 '[.[]]')
-FILTERED=$(printf '%s' "$ISSUES_JSON" | yq -o=json -I=0 'map(select(.pull_request == null))')
+ISSUES_JSON=$(printf '%s' "$ISSUES_JSON" | jq -s 'flatten')
+FILTERED=$(printf '%s' "$ISSUES_JSON" | jq -c 'map(select(.pull_request == null))')
 if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
-  FILTERED=$(printf '%s' "$FILTERED" | yq -o=json -I=0 "map(select(.labels | map(.name) | any_c(. == \"$SYNC_LABEL\")))")
+  FILTERED=$(printf '%s' "$FILTERED" | jq -c --arg label "$SYNC_LABEL" 'map(select(.labels | map(.name) | any(. == $label)))')
 fi
 
 # Check local tasks linked to GitHub issues — mark done if issue was closed
-# Uses a single GraphQL batch query instead of N+1 REST calls
-OPEN_NUMS=$(printf '%s' "$FILTERED" | yq -r '.[].number')
-LOCAL_GH_TASKS=$(yq -r '.tasks[] | select(.gh_issue_number != null and .gh_issue_number != "" and .status != "done") | .gh_issue_number' "$TASKS_PATH" 2>/dev/null || true)
+OPEN_NUMS=$(printf '%s' "$FILTERED" | jq -r '.[].number')
+LOCAL_GH_TASKS=$(db_scalar "SELECT gh_issue_number FROM tasks
+  WHERE gh_issue_number IS NOT NULL AND gh_issue_number != '' AND status != 'done';" 2>/dev/null || true)
 MISSING_NUMS=()
 for _GH_NUM in $LOCAL_GH_TASKS; do
   if ! printf '%s\n' "$OPEN_NUMS" | grep -qx "$_GH_NUM"; then
@@ -64,7 +63,6 @@ for _GH_NUM in $LOCAL_GH_TASKS; do
 done
 
 if [ ${#MISSING_NUMS[@]} -gt 0 ]; then
-  # Build a single GraphQL query to check all missing issues at once
   OWNER=$(printf '%s' "$REPO" | cut -d/ -f1)
   REPO_NAME=$(printf '%s' "$REPO" | cut -d/ -f2)
   GQL_FIELDS=""
@@ -77,51 +75,50 @@ if [ ${#MISSING_NUMS[@]} -gt 0 ]; then
   for _num in "${MISSING_NUMS[@]}"; do
     _STATE=$(printf '%s' "$BATCH_RESULT" | jq -r ".data.repository.issue_${_num}.state // \"\"" 2>/dev/null || true)
     if [ "$_STATE" = "CLOSED" ]; then
-      NOW=$(now_iso)
-      export NOW
-      yq -i \
-        "(.tasks[] | select(.gh_issue_number == $_num) | .status) = \"done\" |
-         (.tasks[] | select(.gh_issue_number == $_num) | .gh_state) = \"closed\" |
-         (.tasks[] | select(.gh_issue_number == $_num) | .updated_at) = strenv(NOW)" \
-        "$TASKS_PATH"
-      log "[gh_pull] [$PROJECT_NAME] issue #$_num closed on GitHub — marked task done"
+      _TASK_ID=$(db_task_id_by_gh_issue "$_num")
+      if [ -n "$_TASK_ID" ]; then
+        db_task_update "$_TASK_ID" "status=done" "gh_state=closed"
+        log "[gh_pull] [$PROJECT_NAME] issue #$_num closed on GitHub — marked task done"
+      fi
     fi
   done
 fi
 
-acquire_lock
+COUNT=$(printf '%s' "$FILTERED" | jq -r 'length')
 
-trap 'release_lock' EXIT INT TERM
-
-COUNT=$(printf '%s' "$FILTERED" | yq -r 'length')
-
-export LABELS_CSV=""
 for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
-  NUM=$(printf '%s' "$FILTERED" | yq -r ".[$i].number")
-  TITLE=$(printf '%s' "$FILTERED" | yq -r ".[$i].title")
-  BODY=$(printf '%s' "$FILTERED" | yq -r ".[$i].body // \"\"")
-  LABELS_CSV=$(printf '%s' "$FILTERED" | yq -r ".[$i].labels | map(.name) | join(\",\")")
+  NUM=$(printf '%s' "$FILTERED" | jq -r ".[$i].number")
+  TITLE=$(printf '%s' "$FILTERED" | jq -r ".[$i].title")
+  BODY=$(printf '%s' "$FILTERED" | jq -r ".[$i].body // \"\"")
+  LABELS_CSV=$(printf '%s' "$FILTERED" | jq -r ".[$i].labels | map(.name) | join(\",\")")
   LABELS_CSV=${LABELS_CSV:-""}
-  export LABELS_CSV
-  STATE=$(printf '%s' "$FILTERED" | yq -r ".[$i].state")
+  STATE=$(printf '%s' "$FILTERED" | jq -r ".[$i].state")
   STATE_LOWER=$(printf '%s' "$STATE" | tr '[:upper:]' '[:lower:]')
-  URL=$(printf '%s' "$FILTERED" | yq -r ".[$i].html_url")
-  UPDATED=$(printf '%s' "$FILTERED" | yq -r ".[$i].updated_at")
+  URL=$(printf '%s' "$FILTERED" | jq -r ".[$i].html_url")
+  UPDATED=$(printf '%s' "$FILTERED" | jq -r ".[$i].updated_at")
 
-  EXISTS=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .id" "$TASKS_PATH")
+  EXISTS=$(db_task_id_by_gh_issue "$NUM")
   if [ -n "$EXISTS" ] && [ "$EXISTS" != "null" ]; then
-    export TITLE BODY LABELS_CSV STATE_LOWER URL UPDATED
-    yq -i \
-      "(.tasks[] | select(.gh_issue_number == $NUM) | .title) = strenv(TITLE) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .body) = strenv(BODY) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .labels) = (strenv(LABELS_CSV) | split(\",\") | map(select(length > 0))) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_state) = strenv(STATE_LOWER) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_url) = strenv(URL) | \
-       (.tasks[] | select(.gh_issue_number == $NUM) | .gh_updated_at) = strenv(UPDATED)" \
-      "$TASKS_PATH"
+    # Skip updating tasks that are already done with closed issues
+    EXISTING_STATUS=$(db_task_field "$EXISTS" "status")
+    if [ "$EXISTING_STATUS" = "done" ] && [ "$STATE_LOWER" = "closed" ]; then
+      continue
+    fi
+
+    # Save local updated_at BEFORE db_task_update bumps it
+    LOCAL_UPDATED=$(db_task_field "$EXISTS" "updated_at")
+
+    # Update existing task
+    db_task_update "$EXISTS" \
+      "title=$TITLE" \
+      "body=$BODY" \
+      "gh_state=$STATE_LOWER" \
+      "gh_url=$URL" \
+      "gh_updated_at=$UPDATED"
+    # Update labels
+    db_set_labels "$EXISTS" "$LABELS_CSV"
 
     # 2-way status sync: if GH was updated after local, derive status from labels
-    LOCAL_UPDATED=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .updated_at // \"\"" "$TASKS_PATH")
     if [ -n "$UPDATED" ] && [ -n "$LOCAL_UPDATED" ] && [[ "$UPDATED" > "$LOCAL_UPDATED" ]]; then
       GH_STATUS=""
       for _label in $(printf '%s' "$LABELS_CSV" | tr ',' '\n'); do
@@ -135,99 +132,54 @@ for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
         esac
       done
       if [ -n "$GH_STATUS" ]; then
-        LOCAL_STATUS=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .status" "$TASKS_PATH")
+        LOCAL_STATUS=$(db_task_field "$EXISTS" "status")
         if [ "$GH_STATUS" != "$LOCAL_STATUS" ]; then
-          NOW=$(now_iso)
-          export NOW GH_STATUS
-          yq -i \
-            "(.tasks[] | select(.gh_issue_number == $NUM) | .status) = strenv(GH_STATUS) | \
-             (.tasks[] | select(.gh_issue_number == $NUM) | .updated_at) = strenv(NOW)" \
-            "$TASKS_PATH"
+          db_task_update "$EXISTS" "status=$GH_STATUS"
           log "[gh_pull] [$PROJECT_NAME] issue #$NUM status synced from GH: $LOCAL_STATUS → $GH_STATUS"
         fi
       fi
     fi
 
   else
-    NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
-    NOW=$(now_iso)
-    STATUS="new"
-    export NEXT_ID TITLE BODY LABELS_CSV STATUS NOW STATE_LOWER URL UPDATED NUM
-
-    yq -i \
-      '.tasks += [{
-        "id": (env(NEXT_ID) | tonumber),
-        "title": strenv(TITLE),
-        "body": strenv(BODY),
-        "labels": (strenv(LABELS_CSV) | split(",") | map(select(length > 0))),
-        "status": strenv(STATUS),
-        "agent": null,
-        "agent_profile": null,
-        "parent_id": null,
-        "children": [],
-        "route_reason": null,
-        "route_warning": null,
-        "summary": null,
-        "files_changed": [],
-        "needs_help": false,
-        "attempts": 0,
-        "last_error": null,
-        "retry_at": null,
-        "review_decision": null,
-        "review_notes": null,
-        "history": [],
-        "created_at": strenv(NOW),
-        "updated_at": strenv(NOW),
-        "gh_issue_number": (env(NUM) | tonumber),
-        "gh_state": strenv(STATE_LOWER),
-        "gh_url": strenv(URL),
-        "gh_updated_at": strenv(UPDATED),
-        "dir": strenv(PROJECT_DIR),
-        "gh_synced_at": null,
-        "gh_last_feedback_at": null
-      }]' \
-      "$TASKS_PATH"
+    # Create new task from GitHub issue
+    NEW_ID=$(db_create_task_from_gh "$TITLE" "$BODY" "$LABELS_CSV" "$NUM" "$STATE_LOWER" "$URL" "$UPDATED" "$PROJECT_DIR")
+    log "[gh_pull] [$PROJECT_NAME] created task $NEW_ID from issue #$NUM"
   fi
 
 done
 
 # --- Owner feedback check ---
-# For tasks linked to GitHub issues that are done/in_review/needs_review,
-# check if the repo owner has posted new comments (feedback).
 REVIEW_OWNER=$(config_get '.workflow.review_owner // ""' | sed 's/^@//')
 if [ -z "$REVIEW_OWNER" ] || [ "$REVIEW_OWNER" = "null" ]; then
   REVIEW_OWNER=$(repo_owner "$REPO")
 fi
 
 if [ -n "$REVIEW_OWNER" ] && [ "$REVIEW_OWNER" != "null" ]; then
-  FEEDBACK_TASKS=$(yq -r \
-    ".tasks[] | select(.gh_issue_number != null and .gh_issue_number != \"\" and .dir == \"$PROJECT_DIR\" and (.status == \"done\" or .status == \"in_review\" or .status == \"needs_review\")) | [.id, .gh_issue_number, (.gh_last_feedback_at // .gh_synced_at // \"\")] | @tsv" \
-    "$TASKS_PATH" 2>/dev/null || true)
+  FEEDBACK_TASKS=$(db_row "SELECT id, gh_issue_number, COALESCE(gh_last_feedback_at, gh_synced_at, '') FROM tasks
+    WHERE gh_issue_number IS NOT NULL AND gh_issue_number != ''
+      AND dir = '$(sql_escape "$PROJECT_DIR")'
+      AND status IN ('done', 'in_review', 'needs_review')
+    ORDER BY id;" 2>/dev/null || true)
 
-  while IFS=$'\t' read -r _FB_ID _FB_ISSUE _FB_SINCE; do
+  while IFS=$'\x1f' read -r _FB_ID _FB_ISSUE _FB_SINCE; do
     [ -z "$_FB_ID" ] && continue
 
-    # Fetch issue comments from owner
     local_feedback=$(fetch_owner_feedback "$REPO" "$_FB_ISSUE" "$REVIEW_OWNER" "$_FB_SINCE")
 
     # Also check PR comments if task has a branch
-    _FB_BRANCH=$(yq -r ".tasks[] | select(.id == $_FB_ID) | .branch // \"\"" "$TASKS_PATH" 2>/dev/null || true)
+    _FB_BRANCH=$(db_task_field "$_FB_ID" "branch")
     if [ -n "$_FB_BRANCH" ] && [ "$_FB_BRANCH" != "null" ]; then
       _FB_PR_NUM=$(gh_api -X GET "repos/${REPO}/pulls" -f head="${REPO%%/*}:${_FB_BRANCH}" -f state=all -q '.[0].number // ""' 2>/dev/null || true)
       if [ -n "$_FB_PR_NUM" ] && [ "$_FB_PR_NUM" != "null" ]; then
         pr_feedback=$(fetch_owner_feedback "$REPO" "$_FB_PR_NUM" "$REVIEW_OWNER" "$_FB_SINCE")
-        # Merge issue + PR feedback arrays
-        local_feedback=$(printf '%s\n%s' "$local_feedback" "$pr_feedback" | yq ea -p=json -o=json -I=0 '[.[]]' 2>/dev/null || echo "$local_feedback")
+        local_feedback=$(printf '%s\n%s' "$local_feedback" "$pr_feedback" | jq -s 'flatten' 2>/dev/null || echo "$local_feedback")
       fi
     fi
 
-    # Process if we got any feedback
-    fb_count=$(printf '%s' "$local_feedback" | yq -r 'length' 2>/dev/null || echo "0")
+    fb_count=$(printf '%s' "$local_feedback" | jq -r 'length' 2>/dev/null || echo "0")
     if [ "$fb_count" -gt 0 ]; then
       log "[gh_pull] [$PROJECT_NAME] owner feedback on issue #$_FB_ISSUE for task $_FB_ID ($fb_count comments)"
       process_owner_feedback "$_FB_ID" "$local_feedback"
     fi
   done <<< "$FEEDBACK_TASKS"
 fi
-
-release_lock

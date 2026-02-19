@@ -22,19 +22,27 @@ db_init() {
   fi
 }
 
+# busy_timeout must be set per-connection (not persisted in WAL mode).
+_DB_PRAGMA=".timeout 5000"
+
 # Run a query, tab-separated output (default)
 db() {
-  sqlite3 -separator $'\t' "$DB_PATH" "$@"
+  sqlite3 -separator $'\t' "$DB_PATH" "$_DB_PRAGMA" "$@"
+}
+
+# Run a query with unit separator (safe for bash read with empty fields)
+db_row() {
+  sqlite3 -separator $'\x1f' "$DB_PATH" "$_DB_PRAGMA" "$@"
 }
 
 # Run a query, JSON output
 db_json() {
-  sqlite3 -json "$DB_PATH" "$@"
+  sqlite3 -json "$DB_PATH" "$_DB_PRAGMA" "$@"
 }
 
 # Run a query expecting a single scalar value
 db_scalar() {
-  sqlite3 "$DB_PATH" "$@"
+  sqlite3 "$DB_PATH" "$_DB_PRAGMA" "$@"
 }
 
 # Escape a string for SQL single quotes (double up single quotes)
@@ -412,7 +420,7 @@ db_job_delete() {
 db_load_task() {
   local id="$1"
   local row
-  row=$(db "SELECT title, body, status, agent, agent_model, complexity,
+  row=$(db_row "SELECT title, body, status, agent, agent_model, complexity,
     COALESCE(agent_profile, '{}'), COALESCE(attempts, 0), parent_id,
     COALESCE(gh_issue_number, ''), COALESCE(dir, ''), COALESCE(branch, ''),
     COALESCE(worktree, ''), COALESCE(summary, ''), COALESCE(reason, ''),
@@ -424,16 +432,21 @@ db_load_task() {
     COALESCE(review_decision, ''), COALESCE(review_notes, ''),
     COALESCE(retry_at, ''), COALESCE(created_at, ''),
     COALESCE(worktree_cleaned, 0), COALESCE(route_reason, ''),
-    COALESCE(route_warning, '')
+    COALESCE(route_warning, ''),
+    COALESCE(duration, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
+    COALESCE(stderr_snippet, ''), COALESCE(gh_synced_status, ''),
+    COALESCE(decompose, 0)
     FROM tasks WHERE id = $id;")
   [ -z "$row" ] && return 1
-  IFS=$'\t' read -r _t_title _t_body _t_status _t_agent _t_agent_model _t_complexity \
+  IFS=$'\x1f' read -r _t_title _t_body _t_status _t_agent _t_agent_model _t_complexity \
     _t_agent_profile _t_attempts _t_parent_id _t_gh_issue _t_dir _t_branch \
     _t_worktree _t_summary _t_reason _t_last_error _t_prompt_hash _t_updated_at \
     _t_gh_synced_at _t_gh_state _t_gh_url _t_gh_updated_at _t_gh_last_feedback_at \
     _t_gh_project_item_id _t_gh_archived _t_needs_help _t_last_comment_hash \
     _t_review_decision _t_review_notes _t_retry_at _t_created_at \
-    _t_worktree_cleaned _t_route_reason _t_route_warning <<< "$row"
+    _t_worktree_cleaned _t_route_reason _t_route_warning \
+    _t_duration _t_input_tokens _t_output_tokens \
+    _t_stderr_snippet _t_gh_synced_status _t_decompose <<< "$row"
 
   export TASK_TITLE="$_t_title"
   export TASK_BODY="$_t_body"
@@ -469,6 +482,12 @@ db_load_task() {
   export TASK_WORKTREE_CLEANED="$_t_worktree_cleaned"
   export TASK_ROUTE_REASON="$_t_route_reason"
   export TASK_ROUTE_WARNING="$_t_route_warning"
+  export TASK_DURATION="${_t_duration:-0}"
+  export TASK_INPUT_TOKENS="${_t_input_tokens:-0}"
+  export TASK_OUTPUT_TOKENS="${_t_output_tokens:-0}"
+  export TASK_STDERR_SNIPPET="$_t_stderr_snippet"
+  export TASK_GH_SYNCED_STATUS="$_t_gh_synced_status"
+  export TASK_DECOMPOSE="${_t_decompose:-0}"
 
   # Labels and skills as CSV
   export TASK_LABELS
@@ -680,9 +699,9 @@ db_enabled_job_count() {
   db_scalar "SELECT COUNT(*) FROM jobs WHERE enabled = 1;"
 }
 
-# Iterate enabled jobs as TSV.
+# Iterate enabled jobs with unit separator (safe for bash read with empty fields).
 db_enabled_jobs() {
-  db "SELECT id, schedule, type, command, title, body, labels, agent, dir, active_task_id, last_run
+  db_row "SELECT id, schedule, type, COALESCE(command,''), title, COALESCE(body,''), COALESCE(labels,''), COALESCE(agent,''), COALESCE(dir,''), COALESCE(active_task_id,''), COALESCE(last_run,'')
     FROM jobs WHERE enabled = 1 ORDER BY id;"
 }
 
@@ -703,6 +722,178 @@ db_ensure_columns() {
     local col="${col_def%% *}"
     db "ALTER TABLE tasks ADD COLUMN $col_def;" 2>/dev/null || true
   done
+}
+
+# Get task labels as JSON array. E.g.: ["bug","feat"]
+db_task_labels_json() {
+  local task_id="$1"
+  db_scalar "SELECT COALESCE(json_group_array(label), '[]') FROM task_labels WHERE task_id = $task_id;"
+}
+
+# Get accomplished items formatted as markdown bullet list.
+db_task_accomplished_list() {
+  local id="$1"
+  db_scalar "SELECT '- ' || item FROM task_accomplished WHERE task_id = $id;"
+}
+
+# Get remaining items formatted as markdown bullet list.
+db_task_remaining_list() {
+  local id="$1"
+  db_scalar "SELECT '- ' || item FROM task_remaining WHERE task_id = $id;"
+}
+
+# Get blockers formatted as markdown bullet list.
+db_task_blockers_list() {
+  local id="$1"
+  db_scalar "SELECT '- ' || item FROM task_blockers WHERE task_id = $id;"
+}
+
+# Get files changed formatted as markdown bullet list with backticks.
+db_task_files_list() {
+  local id="$1"
+  db_scalar "SELECT '- \`' || file_path || '\`' FROM task_files WHERE task_id = $id;"
+}
+
+# Get task IDs that have a branch and are in specified statuses (for catch-all PR creation).
+db_tasks_with_branches() {
+  db_row "SELECT id, branch, status, COALESCE(title,''), COALESCE(summary,''), COALESCE(worktree,''), COALESCE(agent,''), COALESCE(gh_issue_number,'')
+    FROM tasks
+    WHERE branch IS NOT NULL AND branch != '' AND branch != 'main' AND branch != 'master'
+      AND status IN ('done', 'in_review', 'in_progress', 'blocked')
+    ORDER BY id;"
+}
+
+# Get dirty task count (tasks needing GitHub sync).
+db_dirty_task_count() {
+  db_scalar "SELECT COUNT(*) FROM tasks
+    WHERE (gh_synced_at IS NULL OR gh_synced_at != updated_at OR gh_issue_number IS NULL)
+      AND NOT (status = 'done' AND gh_synced_at = updated_at);"
+}
+
+# ============================================================
+# Display helpers (for dashboard, status, list, tree)
+# ============================================================
+
+# Build WHERE clause for dir filtering (SQLite equivalent of dir_filter).
+# Usage: local where; where=$(db_dir_where)
+# Returns: e.g. "(dir = '/path' OR dir IS NULL OR dir = '')" or "1=1"
+db_dir_where() {
+  local project_dir="${PROJECT_DIR:-}"
+  local orch_home="${ORCH_HOME:-$HOME/.orchestrator}"
+  if [ -z "$project_dir" ] || [ "$project_dir" = "$orch_home" ]; then
+    echo "1=1"
+  else
+    echo "(dir = '$(sql_escape "$project_dir")' OR dir IS NULL OR dir = '')"
+  fi
+}
+
+# Global dir where: always 1=1 (no filtering).
+db_dir_where_global() {
+  echo "1=1"
+}
+
+# Count tasks by status within current dir filter.
+# Usage: db_status_count <status>
+db_status_count() {
+  local status="$1"
+  local where
+  where=$(db_dir_where)
+  db_scalar "SELECT COUNT(*) FROM tasks WHERE $where AND status = '$(sql_escape "$status")';"
+}
+
+# Total task count within current dir filter.
+db_total_filtered_count() {
+  local where
+  where=$(db_dir_where)
+  db_scalar "SELECT COUNT(*) FROM tasks WHERE $where;"
+}
+
+# List tasks as TSV for table display: ID STATUS AGENT ISSUE TITLE
+# Usage: db_task_display_tsv [extra_where] [order] [limit]
+db_task_display_tsv() {
+  local extra_where="${1:-1=1}" order="${2:-id ASC}" limit="${3:-}"
+  local where
+  where=$(db_dir_where)
+  local limit_clause=""
+  [ -n "$limit" ] && limit_clause="LIMIT $limit"
+  db "SELECT id,
+    status,
+    COALESCE(agent, '-'),
+    CASE WHEN gh_issue_number IS NOT NULL AND gh_issue_number > 0
+      THEN '#' || gh_issue_number ELSE '-' END,
+    title
+    FROM tasks WHERE $where AND $extra_where
+    ORDER BY $order $limit_clause;"
+}
+
+# List tasks as TSV with project column: ID STATUS AGENT ISSUE PROJECT TITLE
+db_task_display_tsv_global() {
+  local extra_where="${1:-1=1}" order="${2:-updated_at DESC}" limit="${3:-10}"
+  db "SELECT id,
+    status,
+    COALESCE(agent, '-'),
+    CASE WHEN gh_issue_number IS NOT NULL AND gh_issue_number > 0
+      THEN '#' || gh_issue_number ELSE '-' END,
+    CASE WHEN dir IS NOT NULL AND dir != '' THEN
+      SUBSTR(dir, INSTR(dir || '/', '/') + 1)
+    ELSE '-' END,
+    title
+    FROM tasks WHERE $extra_where
+    ORDER BY $order LIMIT $limit;"
+}
+
+# Token usage TSV: input_tokens, output_tokens, duration, agent_model
+db_task_usage_tsv() {
+  local where
+  where=$(db_dir_where)
+  db "SELECT input_tokens, COALESCE(output_tokens, 0), COALESCE(duration, 0),
+    COALESCE(agent_model, 'sonnet')
+    FROM tasks WHERE $where AND input_tokens IS NOT NULL AND input_tokens > 0;"
+}
+
+# Unique project dirs.
+db_task_projects() {
+  db_scalar "SELECT DISTINCT dir FROM tasks WHERE dir IS NOT NULL AND dir != '' ORDER BY dir;"
+}
+
+# Active task count for a specific dir.
+db_task_active_count_for_dir() {
+  local dir="$1"
+  db_scalar "SELECT COUNT(*) FROM tasks WHERE dir = '$(sql_escape "$dir")' AND status != 'done';"
+}
+
+# Root task IDs (no parent) within current dir filter.
+db_task_roots() {
+  local where
+  where=$(db_dir_where)
+  db_scalar "SELECT id FROM tasks WHERE $where AND parent_id IS NULL ORDER BY id;"
+}
+
+# Find task ID by branch + dir (for review_prs.sh).
+db_task_id_by_branch() {
+  local branch="$1" dir="$2"
+  db_scalar "SELECT id FROM tasks WHERE branch = '$(sql_escape "$branch")' AND dir = '$(sql_escape "$dir")' LIMIT 1;"
+}
+
+# Status JSON output (for status.sh --json).
+db_status_json() {
+  local where="$1"
+  db_scalar "SELECT json_object(
+    'total', (SELECT COUNT(*) FROM tasks WHERE $where),
+    'counts', json_object(
+      'new', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'new'),
+      'routed', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'routed'),
+      'in_progress', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'in_progress'),
+      'blocked', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'blocked'),
+      'done', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'done'),
+      'needs_review', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'needs_review')
+    ),
+    'recent', (SELECT json_group_array(json_object(
+      'id', id, 'title', title, 'status', status,
+      'agent', agent, 'gh_issue_number', gh_issue_number,
+      'updated_at', updated_at
+    )) FROM (SELECT * FROM tasks WHERE $where ORDER BY updated_at DESC LIMIT 10))
+  );"
 }
 
 # ============================================================

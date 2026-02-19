@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 source "${SCRIPT_DIR}/lib.sh"
-require_yq
 require_jq
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
@@ -109,9 +108,6 @@ create_planned_tasks() {
   NOW=$(now_iso)
   export NOW PROJECT_DIR
 
-  acquire_lock
-  trap 'release_lock' EXIT
-
   local i=0
   while [ "$i" -lt "$count" ]; do
     local title body labels suggested_agent
@@ -130,15 +126,10 @@ create_planned_tasks() {
       fi
     fi
 
-    local next_id
-    next_id=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
-    create_task_entry "$next_id" "$title" "$body" "$all_labels" "" "$suggested_agent"
+    db_create_task "$title" "$body" "$PROJECT_DIR" "$all_labels" "" "$suggested_agent"
 
     i=$((i + 1))
   done
-
-  release_lock
-  trap - EXIT
 
   echo ""
   echo "Created $count task(s)."
