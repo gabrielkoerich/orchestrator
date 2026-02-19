@@ -72,7 +72,7 @@ if [ ${#MISSING_NUMS[@]} -gt 0 ]; then
     GQL_FIELDS="${GQL_FIELDS} issue_${_num}: issue(number: ${_num}) { number state }"
   done
   GQL_QUERY="query { repository(owner: \"${OWNER}\", name: \"${REPO_NAME}\") { ${GQL_FIELDS} } }"
-  BATCH_RESULT=$(gh api graphql -f query="$GQL_QUERY" 2>/dev/null || true)
+  BATCH_RESULT=$(gh_api graphql -f query="$GQL_QUERY" 2>/dev/null || true)
 
   for _num in "${MISSING_NUMS[@]}"; do
     _STATE=$(printf '%s' "$BATCH_RESULT" | jq -r ".data.repository.issue_${_num}.state // \"\"" 2>/dev/null || true)
