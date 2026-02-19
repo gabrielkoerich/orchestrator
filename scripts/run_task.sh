@@ -391,7 +391,7 @@ fi
 CMD_STATUS=0
 case "$TASK_AGENT" in
   claude)
-    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --output-format json --append-system-prompt <prompt> <message>"
+    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
     DISALLOW_ARGS=()
     if [ -n "$DISALLOWED_TOOLS" ]; then
       IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
@@ -399,9 +399,18 @@ case "$TASK_AGENT" in
         DISALLOW_ARGS+=(--disallowedTools "$_t")
       done
     fi
+    ALLOW_ARGS=()
+    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // [] | join(",")' 2>/dev/null || true)
+    if [ -n "$ALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
+      for _t in "${_atools[@]}"; do
+        ALLOW_ARGS+=(--allowedTools "$_t")
+      done
+    fi
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
       ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
       --permission-mode bypassPermissions \
+      "${ALLOW_ARGS[@]}" \
       "${DISALLOW_ARGS[@]}" \
       --output-format json \
       --append-system-prompt "$SYSTEM_PROMPT" \
