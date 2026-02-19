@@ -9,7 +9,22 @@
 #   repo: "myorg/myproject"
 #   project_id: "PVT_..."
 #   sync_label: ""
+#   project:
+#     status_map:
+#       new: "Backlog"
+#       in_progress: "In Progress"
+#       needs_review: "Review"
+#       done: "Done"
+#       blocked: "Blocked"   # optional
 #   project_status_field_id: ""
+#   project_status_options:
+#     new: ""
+#     routed: ""
+#     in_progress: ""
+#     blocked: ""
+#     needs_review: ""
+#     in_review: ""
+#     done: ""
 #   project_status_map:
 #     backlog: ""
 #     in_progress: ""

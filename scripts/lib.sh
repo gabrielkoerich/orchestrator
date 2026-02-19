@@ -398,6 +398,14 @@ gh:
   sync_label: ""
   project_id: ""
   project_status_field_id: ""
+  project_status_options:
+    new: ""
+    routed: ""
+    in_progress: ""
+    blocked: ""
+    needs_review: ""
+    in_review: ""
+    done: ""
   project_status_map:
     backlog: ""
     in_progress: ""

@@ -34,6 +34,8 @@ All runtime configuration lives in `~/.orchestrator/config.yml`.
 | `gh` | `sync_label` | Only sync tasks/issues with this label (empty = all) | `"sync"` |
 | `gh` | `project_id` | GitHub Project v2 ID | `""` |
 | `gh` | `project_status_field_id` | Status field ID in Project v2 | `""` |
+| `gh.project` | `status_map` | Optional map from orchestrator statuses to project option names (`new/in_progress/needs_review/done`, `blocked` optional) | `{}` |
+| `gh` | `project_status_options` | Resolved Project option IDs by task status (`new`, `in_progress`, `needs_review`, etc.) | `{}` |
 | `gh` | `project_status_map` | Mapping for `backlog/in_progress/review/done` option IDs | `{}` |
 | `gh.backoff` | `mode` | Rate-limit behavior: `wait` or `skip` | `"wait"` |
 | `gh.backoff` | `base_seconds` | Initial backoff duration in seconds | `30` |

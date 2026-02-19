@@ -121,14 +121,194 @@ link_project_to_repo() {
   fi
 }
 
+fetch_project_status_json() {
+  local project_id="$1"
+  gh api graphql \
+    -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:100){ nodes{ ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }' \
+    -f project="$project_id" 2>/dev/null || true
+}
+
+status_option_id_by_name() {
+  local status_json="$1" option_name="$2"
+  local escaped_name
+  escaped_name=$(printf '%s' "$option_name" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g')
+  printf '%s' "$status_json" \
+    | yq -r ".data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"(?i)^${escaped_name}$\")) | .id" 2>/dev/null \
+    | head -n1
+}
+
+save_resolved_status_ids() {
+  local config_file="$1" status_field_id="$2" new_id="$3" inprog_id="$4" needs_review_id="$5" done_id="$6" blocked_id="${7:-}"
+  export status_field_id new_id inprog_id needs_review_id done_id blocked_id
+
+  if [ -n "$status_field_id" ] && [ "$status_field_id" != "null" ]; then
+    yq -i '.gh.project_status_field_id = strenv(status_field_id)' "$config_file"
+  fi
+
+  [ -n "$new_id" ] && [ "$new_id" != "null" ] && yq -i '.gh.project_status_options.new = strenv(new_id) | .gh.project_status_options.routed = strenv(new_id)' "$config_file"
+  [ -n "$inprog_id" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_options.in_progress = strenv(inprog_id)' "$config_file"
+  [ -n "$needs_review_id" ] && [ "$needs_review_id" != "null" ] && yq -i '.gh.project_status_options.needs_review = strenv(needs_review_id) | .gh.project_status_options.in_review = strenv(needs_review_id)' "$config_file"
+  [ -n "$done_id" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_options.done = strenv(done_id)' "$config_file"
+  [ -n "$blocked_id" ] && [ "$blocked_id" != "null" ] && yq -i '.gh.project_status_options.blocked = strenv(blocked_id)' "$config_file"
+
+  # Backward-compatible map used by older configs/commands.
+  [ -n "$new_id" ] && [ "$new_id" != "null" ] && yq -i '.gh.project_status_map.backlog = strenv(new_id)' "$config_file"
+  [ -n "$inprog_id" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = strenv(inprog_id)' "$config_file"
+  [ -n "$needs_review_id" ] && [ "$needs_review_id" != "null" ] && yq -i '.gh.project_status_map.review = strenv(needs_review_id)' "$config_file"
+  [ -n "$done_id" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = strenv(done_id)' "$config_file"
+}
+
+apply_configured_status_map() {
+  local config_file="$1" status_json="$2" status_field_id="$3"
+  local configured_json
+  configured_json=$(yq -o=json -I=0 '.gh.project.status_map // {}' "$config_file" 2>/dev/null || echo '{}')
+  [ "$configured_json" != "{}" ] || return 2
+
+  local key configured_name resolved_id
+  local new_id="" inprog_id="" needs_review_id="" done_id="" blocked_id=""
+  local missing=0
+  local required=(new in_progress needs_review done)
+  local allowed=(new in_progress needs_review done blocked)
+
+  for key in "${required[@]}"; do
+    configured_name=$(printf '%s' "$configured_json" | yq -r ".\"$key\" // \"\"")
+    if [ -z "$configured_name" ] || [ "$configured_name" = "null" ]; then
+      echo "Configured gh.project.status_map is missing required key: $key" >&2
+      missing=1
+    fi
+  done
+
+  for key in "${allowed[@]}"; do
+    configured_name=$(printf '%s' "$configured_json" | yq -r ".\"$key\" // \"\"")
+    [ -n "$configured_name" ] && [ "$configured_name" != "null" ] || continue
+    resolved_id=$(status_option_id_by_name "$status_json" "$configured_name")
+    if [ -z "$resolved_id" ] || [ "$resolved_id" = "null" ]; then
+      echo "Configured gh.project.status_map.$key=\"$configured_name\" does not exist in GitHub project Status options." >&2
+      missing=1
+      continue
+    fi
+    case "$key" in
+      new) new_id="$resolved_id" ;;
+      in_progress) inprog_id="$resolved_id" ;;
+      needs_review) needs_review_id="$resolved_id" ;;
+      done) done_id="$resolved_id" ;;
+      blocked) blocked_id="$resolved_id" ;;
+    esac
+  done
+
+  [ "$missing" -eq 0 ] || return 1
+
+  save_resolved_status_ids "$config_file" "$status_field_id" "$new_id" "$inprog_id" "$needs_review_id" "$done_id" "$blocked_id"
+  echo "Using configured status map from .orchestrator.yml:"
+  echo "  new -> $new_id"
+  echo "  in_progress -> $inprog_id"
+  echo "  needs_review -> $needs_review_id"
+  echo "  done -> $done_id"
+  [ -n "$blocked_id" ] && echo "  blocked -> $blocked_id" || echo "  blocked -> (not configured)"
+  return 0
+}
+
+prompt_status_mapping() {
+  local config_file="$1" status_json="$2" status_field_id="$3"
+  local options_tsv
+  options_tsv=$(printf '%s' "$status_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .options[] | [.id, .name] | @tsv' 2>/dev/null || true)
+  [ -n "$options_tsv" ] || return 1
+
+  local -a option_ids=()
+  local -a option_names=()
+  while IFS=$'\t' read -r option_id option_name; do
+    [ -n "${option_id:-}" ] || continue
+    option_ids+=("$option_id")
+    option_names+=("$option_name")
+  done <<< "$options_tsv"
+  [ "${#option_ids[@]}" -gt 0 ] || return 1
+
+  echo "Could not auto-detect status columns. Available options:"
+  local i
+  for ((i = 0; i < ${#option_names[@]}; i++)); do
+    echo "  [$((i + 1))] ${option_names[$i]}"
+  done
+
+  pick_option_index() {
+    local label="$1" default_value="$2" optional="${3:-false}" selection
+    while true; do
+      if [ "$optional" = "true" ]; then
+        read -r -p "Map \"$label\" status to [skip]: " selection
+        if [ -z "$selection" ] || [ "$selection" = "skip" ] || [ "$selection" = "s" ]; then
+          echo ""
+          return
+        fi
+      else
+        read -r -p "Map \"$label\" status to [$default_value]: " selection
+        selection="${selection:-$default_value}"
+      fi
+
+      if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le "${#option_ids[@]}" ]; then
+        echo "$selection"
+        return
+      fi
+      echo "Please enter a valid number between 1 and ${#option_ids[@]}." >&2
+    done
+  }
+
+  local max_idx=${#option_ids[@]}
+  local idx_new idx_inprog idx_review idx_done idx_blocked
+  idx_new=$(pick_option_index "new" 1)
+  idx_inprog=$(pick_option_index "in_progress" $(( max_idx >= 2 ? 2 : 1 )))
+  idx_review=$(pick_option_index "needs_review" $(( max_idx >= 3 ? 3 : 1 )))
+  idx_done=$(pick_option_index "done" $(( max_idx >= 4 ? 4 : max_idx )))
+  idx_blocked=$(pick_option_index "blocked" "" true)
+
+  local new_name inprog_name review_name done_name blocked_name=""
+  local new_id inprog_id review_id done_id blocked_id=""
+  new_name="${option_names[$((idx_new - 1))]}"
+  inprog_name="${option_names[$((idx_inprog - 1))]}"
+  review_name="${option_names[$((idx_review - 1))]}"
+  done_name="${option_names[$((idx_done - 1))]}"
+  new_id="${option_ids[$((idx_new - 1))]}"
+  inprog_id="${option_ids[$((idx_inprog - 1))]}"
+  review_id="${option_ids[$((idx_review - 1))]}"
+  done_id="${option_ids[$((idx_done - 1))]}"
+
+  if [ -n "$idx_blocked" ]; then
+    blocked_name="${option_names[$((idx_blocked - 1))]}"
+    blocked_id="${option_ids[$((idx_blocked - 1))]}"
+  fi
+
+  export new_name inprog_name review_name done_name blocked_name
+  yq -i '.gh.project.status_map.new = strenv(new_name)' "$config_file"
+  yq -i '.gh.project.status_map.in_progress = strenv(inprog_name)' "$config_file"
+  yq -i '.gh.project.status_map.needs_review = strenv(review_name)' "$config_file"
+  yq -i '.gh.project.status_map.done = strenv(done_name)' "$config_file"
+  if [ -n "$blocked_name" ]; then
+    yq -i '.gh.project.status_map.blocked = strenv(blocked_name)' "$config_file"
+  fi
+
+  save_resolved_status_ids "$config_file" "$status_field_id" "$new_id" "$inprog_id" "$review_id" "$done_id" "$blocked_id"
+  echo "Saved interactive status mapping."
+}
+
 auto_detect_status() {
   local config_file="$1" project_id="$2"
   local status_json
-  status_json=$(gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { fields(first:100){ nodes{ ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }' -f project="$project_id" 2>/dev/null || true)
+  status_json=$(fetch_project_status_json "$project_id")
   [ -n "$status_json" ] || return 0
 
   local status_field_id
   status_field_id=$(printf '%s' "$status_json" | yq -r '.data.node.fields.nodes[] | select(.name == "Status") | .id' 2>/dev/null | head -n1)
+  if [ -z "$status_field_id" ] || [ "$status_field_id" = "null" ]; then
+    return 0
+  fi
+
+  local configured_result=2
+  if apply_configured_status_map "$config_file" "$status_json" "$status_field_id"; then
+    return 0
+  else
+    configured_result=$?
+  fi
+  if [ "$configured_result" -eq 1 ]; then
+    echo "Configured status map validation failed. Falling back to auto-detection." >&2
+  fi
 
   find_option_id() {
     local json="$1"; shift
@@ -142,26 +322,31 @@ auto_detect_status() {
     done
   }
 
-  local backlog_id inprog_id review_id done_id
-  backlog_id=$(find_option_id "$status_json" "Backlog" "Todo" "To Do" "New")
+  local new_id inprog_id review_id done_id blocked_id
+  new_id=$(find_option_id "$status_json" "Backlog" "Todo" "To Do" "New" "Triage" "Planned")
   inprog_id=$(find_option_id "$status_json" "In Progress" "In progress" "Doing" "Active" "Working")
-  review_id=$(find_option_id "$status_json" "Review" "In Review" "Needs Review")
+  review_id=$(find_option_id "$status_json" "Review" "In Review" "Needs Review" "QA")
   done_id=$(find_option_id "$status_json" "Done" "Completed" "Closed" "Finished")
+  blocked_id=$(find_option_id "$status_json" "Blocked" "On Hold" "On-Hold" "Waiting")
+  [ -n "$blocked_id" ] || blocked_id="$inprog_id"
 
-  export status_field_id backlog_id inprog_id review_id done_id
-  if [ -n "$status_field_id" ] && [ "$status_field_id" != "null" ]; then
-    yq -i ".gh.project_status_field_id = strenv(status_field_id)" "$config_file"
-  fi
-  [ -n "$backlog_id" ] && [ "$backlog_id" != "null" ] && yq -i '.gh.project_status_map.backlog = strenv(backlog_id)' "$config_file"
-  [ -n "$inprog_id" ] && [ "$inprog_id" != "null" ] && yq -i '.gh.project_status_map.in_progress = strenv(inprog_id)' "$config_file"
-  [ -n "$review_id" ] && [ "$review_id" != "null" ] && yq -i '.gh.project_status_map.review = strenv(review_id)' "$config_file"
-  [ -n "$done_id" ] && [ "$done_id" != "null" ] && yq -i '.gh.project_status_map.done = strenv(done_id)' "$config_file"
+  save_resolved_status_ids "$config_file" "$status_field_id" "$new_id" "$inprog_id" "$review_id" "$done_id" "$blocked_id"
 
   echo "Detected status options:"
-  [ -n "$backlog_id" ] && echo "  backlog -> $backlog_id" || echo "  backlog -> (not found)"
+  [ -n "$new_id" ] && echo "  new -> $new_id" || echo "  new -> (not found)"
   [ -n "$inprog_id" ] && echo "  in_progress -> $inprog_id" || echo "  in_progress -> (not found)"
-  [ -n "$review_id" ] && echo "  review -> $review_id" || echo "  review -> (not found)"
+  [ -n "$review_id" ] && echo "  needs_review -> $review_id" || echo "  needs_review -> (not found)"
   [ -n "$done_id" ] && echo "  done -> $done_id" || echo "  done -> (not found)"
+  [ -n "$blocked_id" ] && echo "  blocked -> $blocked_id" || echo "  blocked -> (not found)"
+
+  if [ -z "$new_id" ] || [ -z "$inprog_id" ] || [ -z "$review_id" ] || [ -z "$done_id" ]; then
+    echo "Could not auto-detect all required status columns."
+    if [ -t 0 ] && [ -t 1 ]; then
+      prompt_status_mapping "$config_file" "$status_json" "$status_field_id" || true
+    else
+      echo "Configure .gh.project.status_map in .orchestrator.yml and run init again." >&2
+    fi
+  fi
 }
 
 # Non-interactive: explicit flags provided

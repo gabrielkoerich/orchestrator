@@ -573,6 +573,8 @@ All runtime configuration lives in `config.yml`.
 | `gh` | `sync_label` | Only sync tasks/issues with this label (empty = all). | `"sync"` |
 | `gh` | `project_id` | GitHub Project v2 ID. | `""` |
 | `gh` | `project_status_field_id` | Status field ID in Project v2. | `""` |
+| `gh.project` | `status_map` | Optional mapping from orchestrator statuses to project option names (`new/in_progress/needs_review/done`, `blocked` optional). | `{}` |
+| `gh` | `project_status_options` | Resolved Project option IDs keyed by task status (`new`, `in_progress`, `needs_review`, etc.). | `{}` |
 | `gh` | `project_status_map` | Mapping for `backlog/in_progress/review/done` option IDs. | `{}` |
 | `gh.backoff` | `mode` | Rate-limit behavior: `wait` or `skip`. | `"wait"` |
 | `gh.backoff` | `base_seconds` | Initial backoff duration in seconds. | `30` |
@@ -702,6 +704,21 @@ Project fields belong in `config.yml`:
 gh:
   project_id: ""
   project_status_field_id: ""
+  project:
+    status_map:
+      new: "Backlog"
+      in_progress: "In Progress"
+      needs_review: "Review"
+      done: "Done"
+      blocked: "Blocked" # optional
+  project_status_options:
+    new: ""
+    routed: ""
+    in_progress: ""
+    blocked: ""
+    needs_review: ""
+    in_review: ""
+    done: ""
   project_status_map:
     backlog: ""
     in_progress: ""
@@ -766,6 +783,8 @@ The backoff is shared across pull/push/comment/project updates, so a single rate
 Provide in `config.yml`:
 - `gh.project_id`
 - `gh.project_status_field_id`
+- `gh.project.status_map` (optional explicit option names in `.orchestrator.yml`)
+- `gh.project_status_options` (resolved option IDs by task status)
 - `gh.project_status_map` (Backlog/In Progress/Review/Done option IDs)
 
 #### Finding IDs

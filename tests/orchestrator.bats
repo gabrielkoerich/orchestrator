@@ -1357,6 +1357,85 @@ YAML
   grep -q "add_to_project" "${STATE_DIR}/gh_calls"
 }
 
+@test "sync_project_status prefers gh.project_status_options over legacy map" {
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+args="$*"
+
+if printf '%s' "$args" | grep -q "repos/test/repo/issues/1" && printf '%s' "$args" | grep -q -- "-q .node_id"; then
+  echo "I_issue1node"
+  exit 0
+fi
+
+if printf '%s' "$args" | grep -q "items(first"; then
+  echo '{"data":{"node":{"items":{"nodes":[{"id":"PVTI_item1","content":{"id":"I_issue1node"}}]}}}}'
+  exit 0
+fi
+
+if printf '%s' "$args" | grep -q "updateProjectV2ItemFieldValue"; then
+  echo "$args" > "${STATE_DIR}/project_update_args"
+  echo '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_item1"}}}}'
+  exit 0
+fi
+
+if printf '%s' "$args" | grep -q "repos/test/repo/issues"; then
+  if printf '%s' "$args" | grep -q "PATCH"; then
+    echo '{}'
+    exit 0
+  fi
+  if printf '%s' "$args" | grep -q "comments"; then
+    echo '{}'
+    exit 0
+  fi
+  echo '{"number":1,"html_url":"https://github.com/test/repo/issues/1","state":"open"}'
+  exit 0
+fi
+
+echo '{}'
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  cat > "$CONFIG_PATH" <<'YAML'
+workflow:
+  auto_close: true
+gh:
+  repo: "test/repo"
+  project_id: "PVT_proj123"
+  project_status_field_id: "PVTSSF_field1"
+  project_status_options:
+    done: "opt_done_status"
+  project_status_map:
+    done: "legacy_done_should_not_be_used"
+YAML
+
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  export NOW
+  yq -i \
+    "(.tasks[0].gh_issue_number) = 1 |
+     (.tasks[0].gh_url) = \"https://github.com/test/repo/issues/1\" |
+     (.tasks[0].gh_state) = \"open\" |
+     (.tasks[0].status) = \"done\" |
+     (.tasks[0].updated_at) = env(NOW) |
+     (.tasks[0].gh_synced_at) = \"\"" \
+    "$TASKS_PATH"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_push.sh"
+  [ "$status" -eq 0 ]
+
+  run cat "${STATE_DIR}/project_update_args"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opt_done_status"* ]]
+  [[ "$output" != *"legacy_done_should_not_be_used"* ]]
+}
+
 @test "plan_chat.sh cleans up history on exit" {
   CLAUDE_STUB="${TMP_DIR}/claude"
   cat > "$CLAUDE_STUB" <<'SH'
@@ -1425,14 +1504,26 @@ SH
     "${REPO_DIR}/scripts/init.sh" --repo "test/repo" --project-id "PVT_proj1" </dev/null
   [ "$status" -eq 0 ]
   [[ "$output" == *"Detected status options"* ]]
-  [[ "$output" == *"backlog -> opt_bl"* ]]
+  [[ "$output" == *"new -> opt_bl"* ]]
   [[ "$output" == *"in_progress -> opt_ip"* ]]
-  [[ "$output" == *"review -> opt_rv"* ]]
+  [[ "$output" == *"needs_review -> opt_rv"* ]]
   [[ "$output" == *"done -> opt_dn"* ]]
 
   # Config file should have all status map entries
   run yq -r '.gh.project_status_field_id' "$INIT_DIR/.orchestrator.yml"
   [ "$output" = "PVTSSF_status1" ]
+
+  run yq -r '.gh.project_status_options.new' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_bl" ]
+
+  run yq -r '.gh.project_status_options.in_progress' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_ip" ]
+
+  run yq -r '.gh.project_status_options.needs_review' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_rv" ]
+
+  run yq -r '.gh.project_status_options.done' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_dn" ]
 
   run yq -r '.gh.project_status_map.backlog' "$INIT_DIR/.orchestrator.yml"
   [ "$output" = "opt_bl" ]
@@ -1447,6 +1538,121 @@ SH
   [ "$output" = "opt_dn" ]
 
   rm -rf "$INIT_DIR"
+}
+
+@test "init.sh uses configured gh.project.status_map when provided" {
+  INIT_DIR=$(mktemp -d)
+  cat > "$INIT_DIR/.orchestrator.yml" <<'YAML'
+gh:
+  repo: "test/repo"
+  project:
+    status_map:
+      new: "Triage"
+      in_progress: "Working"
+      needs_review: "Review"
+      done: "Shipped"
+      blocked: "Waiting"
+YAML
+
+  GH_STUB="$INIT_DIR/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+args="$*"
+if printf '%s' "$args" | grep -q "graphql" && printf '%s' "$args" | grep -q "fields(first"; then
+  cat <<'JSON'
+{"data":{"node":{"fields":{"nodes":[{"id":"PVTSSF_status1","name":"Status","options":[{"id":"opt_tr","name":"Triage"},{"id":"opt_wk","name":"Working"},{"id":"opt_rv","name":"Review"},{"id":"opt_sh","name":"Shipped"},{"id":"opt_wait","name":"Waiting"}]}]}}}}
+JSON
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="$INIT_DIR:$PATH" PROJECT_DIR="$INIT_DIR" \
+    "${REPO_DIR}/scripts/init.sh" --repo "test/repo" --project-id "PVT_proj1" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Using configured status map from .orchestrator.yml"* ]]
+
+  run yq -r '.gh.project_status_options.new' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_tr" ]
+  run yq -r '.gh.project_status_options.in_progress' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_wk" ]
+  run yq -r '.gh.project_status_options.needs_review' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_rv" ]
+  run yq -r '.gh.project_status_options.done' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_sh" ]
+  run yq -r '.gh.project_status_options.blocked' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_wait" ]
+
+  run yq -r '.gh.project_status_map.backlog' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_tr" ]
+  run yq -r '.gh.project_status_map.review' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_rv" ]
+}
+
+@test "init.sh validates configured status_map values and falls back to auto-detect" {
+  INIT_DIR=$(mktemp -d)
+  cat > "$INIT_DIR/.orchestrator.yml" <<'YAML'
+gh:
+  repo: "test/repo"
+  project:
+    status_map:
+      new: "Backlog"
+      in_progress: "In Progress"
+      needs_review: "Missing Review Column"
+      done: "Done"
+YAML
+
+  GH_STUB="$INIT_DIR/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+args="$*"
+if printf '%s' "$args" | grep -q "graphql" && printf '%s' "$args" | grep -q "fields(first"; then
+  cat <<'JSON'
+{"data":{"node":{"fields":{"nodes":[{"id":"PVTSSF_status1","name":"Status","options":[{"id":"opt_bl","name":"Backlog"},{"id":"opt_ip","name":"In Progress"},{"id":"opt_rv","name":"Review"},{"id":"opt_dn","name":"Done"}]}]}}}}
+JSON
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="$INIT_DIR:$PATH" PROJECT_DIR="$INIT_DIR" \
+    "${REPO_DIR}/scripts/init.sh" --repo "test/repo" --project-id "PVT_proj1" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Configured status map validation failed. Falling back to auto-detection."* ]]
+  [[ "$output" == *"Detected status options:"* ]]
+
+  run yq -r '.gh.project_status_options.needs_review' "$INIT_DIR/.orchestrator.yml"
+  [ "$output" = "opt_rv" ]
+}
+
+@test "interactive status mapping prompts and stores selected options" {
+  INIT_DIR=$(mktemp -d)
+  CONFIG_FILE="$INIT_DIR/.orchestrator.yml"
+  cat > "$CONFIG_FILE" <<'YAML'
+gh:
+  repo: "test/repo"
+YAML
+  STATUS_JSON='{"data":{"node":{"fields":{"nodes":[{"id":"PVTSSF_status1","name":"Status","options":[{"id":"opt_t","name":"Triage"},{"id":"opt_w","name":"Working"},{"id":"opt_r","name":"Review"},{"id":"opt_s","name":"Shipped"}]}]}}}}'
+
+  run env CONFIG_FILE="$CONFIG_FILE" STATUS_JSON="$STATUS_JSON" bash -c "
+    $(sed -n '/^save_resolved_status_ids()/,/^}/p' "${REPO_DIR}/scripts/init.sh")
+    $(sed -n '/^prompt_status_mapping()/,/^}/p' "${REPO_DIR}/scripts/init.sh")
+    printf '1\n2\n3\n4\n\n' | prompt_status_mapping \"\$CONFIG_FILE\" \"\$STATUS_JSON\" \"PVTSSF_status1\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Could not auto-detect status columns. Available options:"* ]]
+  [[ "$output" == *"Saved interactive status mapping."* ]]
+
+  run yq -r '.gh.project.status_map.new' "$CONFIG_FILE"
+  [ "$output" = "Triage" ]
+  run yq -r '.gh.project.status_map.done' "$CONFIG_FILE"
+  [ "$output" = "Shipped" ]
+  run yq -r '.gh.project_status_options.in_progress' "$CONFIG_FILE"
+  [ "$output" = "opt_w" ]
+  run yq -r '.gh.project_status_options.done' "$CONFIG_FILE"
+  [ "$output" = "opt_s" ]
 }
 
 @test "configure_project_status_field calls updateProjectV2Field" {

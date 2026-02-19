@@ -91,6 +91,21 @@ Link tasks to a GitHub Project v2 board:
 gh:
   project_id: "PVT_..."
   project_status_field_id: "PVTSSF_..."
+  project:
+    status_map:
+      new: "Backlog"
+      in_progress: "In Progress"
+      needs_review: "Review"
+      done: "Done"
+      blocked: "Blocked" # optional
+  project_status_options:
+    new: "option-id-1"
+    routed: "option-id-1"
+    in_progress: "option-id-2"
+    blocked: "option-id-5"
+    needs_review: "option-id-3"
+    in_review: "option-id-3"
+    done: "option-id-4"
   project_status_map:
     backlog: "option-id-1"
     in_progress: "option-id-2"

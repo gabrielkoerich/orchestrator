@@ -34,6 +34,10 @@ export GH_BACKOFF_MODE GH_BACKOFF_BASE_SECONDS GH_BACKOFF_MAX_SECONDS
 
 PROJECT_ID=${GITHUB_PROJECT_ID:-$(config_get '.gh.project_id // ""')}
 PROJECT_STATUS_FIELD_ID=${GITHUB_PROJECT_STATUS_FIELD_ID:-$(config_get '.gh.project_status_field_id // ""')}
+PROJECT_STATUS_OPTIONS_JSON=${GITHUB_PROJECT_STATUS_OPTIONS_JSON:-}
+if [ -z "$PROJECT_STATUS_OPTIONS_JSON" ]; then
+  PROJECT_STATUS_OPTIONS_JSON=$(yq -o=json -I=0 '.gh.project_status_options // {}' "$CONFIG_PATH")
+fi
 PROJECT_STATUS_MAP_JSON=${GITHUB_PROJECT_STATUS_MAP_JSON:-}
 if [ -z "$PROJECT_STATUS_MAP_JSON" ]; then
   PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
@@ -111,40 +115,64 @@ if errors:
 PY
 }
 
-map_status_to_project() {
+project_status_option_id() {
   local status="$1"
-  case "$status" in
-    new|routed)
-      echo "backlog"
-      ;;
-    in_progress|blocked)
-      echo "in_progress"
-      ;;
-    in_review|needs_review)
-      echo "review"
-      ;;
-    done)
-      echo "done"
-      ;;
-    *)
-      echo "backlog"
-      ;;
-  esac
+  local option_id=""
+
+  if [ -n "$PROJECT_STATUS_OPTIONS_JSON" ] && [ "$PROJECT_STATUS_OPTIONS_JSON" != "{}" ]; then
+    option_id=$(printf '%s' "$PROJECT_STATUS_OPTIONS_JSON" | yq -r ".\"$status\" // \"\"" 2>/dev/null)
+    if [ -n "$option_id" ] && [ "$option_id" != "null" ]; then
+      echo "$option_id"
+      return
+    fi
+
+    case "$status" in
+      routed)
+        option_id=$(printf '%s' "$PROJECT_STATUS_OPTIONS_JSON" | yq -r '.new // ""' 2>/dev/null)
+        ;;
+      in_review)
+        option_id=$(printf '%s' "$PROJECT_STATUS_OPTIONS_JSON" | yq -r '.needs_review // ""' 2>/dev/null)
+        ;;
+      needs_review)
+        option_id=$(printf '%s' "$PROJECT_STATUS_OPTIONS_JSON" | yq -r '.in_review // ""' 2>/dev/null)
+        ;;
+      blocked)
+        option_id=$(printf '%s' "$PROJECT_STATUS_OPTIONS_JSON" | yq -r '.in_progress // ""' 2>/dev/null)
+        ;;
+    esac
+  fi
+
+  if [ -z "$option_id" ] || [ "$option_id" = "null" ]; then
+    case "$status" in
+      new|routed)
+        option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r '.backlog // ""' 2>/dev/null)
+        ;;
+      in_progress|blocked)
+        option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r '.in_progress // ""' 2>/dev/null)
+        ;;
+      in_review|needs_review)
+        option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r '.review // ""' 2>/dev/null)
+        ;;
+      done)
+        option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r '.done // ""' 2>/dev/null)
+        ;;
+    esac
+  fi
+
+  [ "$option_id" = "null" ] && option_id=""
+  echo "$option_id"
 }
 
 sync_project_status() {
   local issue_number="$1"
   local status="$2"
 
-  if [ -z "$PROJECT_ID" ] || [ -z "$PROJECT_STATUS_FIELD_ID" ] || [ -z "$PROJECT_STATUS_MAP_JSON" ]; then
+  if [ -z "$PROJECT_ID" ] || [ -z "$PROJECT_STATUS_FIELD_ID" ]; then
     return 0
   fi
 
-  local key
-  key=$(map_status_to_project "$status")
-
   local option_id
-  option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r ".\"$key\" // \"\"")
+  option_id=$(project_status_option_id "$status")
   if [ -z "$option_id" ] || [ "$option_id" = "null" ]; then
     return 0
   fi
@@ -281,6 +309,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     REPO=$(config_get '.gh.repo // ""')
     PROJECT_ID=$(config_get '.gh.project_id // ""')
     PROJECT_STATUS_FIELD_ID=$(config_get '.gh.project_status_field_id // ""')
+    PROJECT_STATUS_OPTIONS_JSON=$(yq -o=json -I=0 '.gh.project_status_options // {}' "$CONFIG_PATH")
     PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
   fi
 
