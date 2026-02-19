@@ -4714,6 +4714,126 @@ _setup_sqlite_env() {
   [ "$body_lines" -ge 4 ]
 }
 
+@test "validate_required_tools passes when no tools configured" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Default config has no required_tools
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && CONFIG_PATH='$CONFIG_PATH' validate_required_tools"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate_required_tools passes when all tools are present" {
+  cat > "$CONFIG_PATH" <<'YAML'
+required_tools:
+  - bash
+  - git
+YAML
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && CONFIG_PATH='$CONFIG_PATH' validate_required_tools"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate_required_tools fails when a tool is missing" {
+  cat > "$CONFIG_PATH" <<'YAML'
+required_tools:
+  - bash
+  - __nonexistent_tool_abc123__
+YAML
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && CONFIG_PATH='$CONFIG_PATH' validate_required_tools && echo OK || echo MISSING=\$MISSING_TOOLS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"MISSING="*"__nonexistent_tool_abc123__"* ]]
+}
+
+@test "validate_required_tools reports multiple missing tools" {
+  cat > "$CONFIG_PATH" <<'YAML'
+required_tools:
+  - __fake_tool_a__
+  - bash
+  - __fake_tool_b__
+YAML
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && CONFIG_PATH='$CONFIG_PATH' validate_required_tools || echo MISSING=\$MISSING_TOOLS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"__fake_tool_a__"* ]]
+  [[ "$output" == *"__fake_tool_b__"* ]]
+}
+
+@test "run_task.sh blocks task when required tool is missing" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Tool Check" "Test required_tools validation" ""
+  [ "$status" -eq 0 ]
+
+  # Configure a missing required tool
+  cat > "$CONFIG_PATH" <<YAML
+required_tools:
+  - __missing_tool_xyz__
+router:
+  agent: "codex"
+  model: ""
+  timeout_seconds: 0
+  fallback_executor: "codex"
+workflow:
+  enable_review_agent: false
+YAML
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"status":"done","summary":"should not run","files_changed":[]}'
+SH
+  chmod +x "$CODEX_STUB"
+
+  run tdb_set 2 agent "codex"
+  [ "$status" -eq 0 ]
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+  [ "$status" -eq 0 ]
+
+  # Task should be blocked, not done
+  run tdb_field 2 status
+  [ "$status" -eq 0 ]
+  [ "$output" = "blocked" ]
+
+  # Last error should mention the missing tool
+  run tdb_field 2 last_error
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"__missing_tool_xyz__"* ]]
+}
+
+@test "run_task.sh proceeds when required tools are all present" {
+  run "${REPO_DIR}/scripts/add_task.sh" "Tools OK" "Test required_tools pass" ""
+  [ "$status" -eq 0 ]
+
+  # Configure tools that definitely exist
+  cat > "$CONFIG_PATH" <<YAML
+required_tools:
+  - bash
+  - git
+router:
+  agent: "codex"
+  model: ""
+  timeout_seconds: 0
+  fallback_executor: "codex"
+workflow:
+  enable_review_agent: false
+YAML
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"status":"done","summary":"all tools present","files_changed":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  run tdb_set 2 agent "codex"
+  [ "$status" -eq 0 ]
+
+  run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
+
+  # Task should not be blocked by required_tools validation
+  run tdb_field 2 status
+  [ "$status" -eq 0 ]
+  [ "$output" != "blocked" ]
+}
+
 @test "gh_push.sh skips tasks from other projects (cross-project guard)" {
   source "${REPO_DIR}/scripts/lib.sh"
 
