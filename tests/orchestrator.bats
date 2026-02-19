@@ -3854,3 +3854,93 @@ SH
   [ "$local_status" = "new" ]
   [[ "$output" == *"status synced from GH: needs_review"* ]]
 }
+
+# --- stop.sh --force tests ---
+
+@test "stop.sh --force cleans up pid file and serve lock" {
+  # Create fake PID file and serve lock
+  echo "99999" > "$STATE_DIR/orchestrator.pid"
+  mkdir -p "$STATE_DIR/serve.lock"
+  echo "99998" > "$STATE_DIR/tail.pid"
+
+  run env STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/stop.sh" --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Force-killed all orchestrator processes"* ]]
+  [ ! -f "$STATE_DIR/orchestrator.pid" ]
+  [ ! -d "$STATE_DIR/serve.lock" ]
+  [ ! -f "$STATE_DIR/tail.pid" ]
+}
+
+@test "stop.sh -f is an alias for --force" {
+  echo "99999" > "$STATE_DIR/orchestrator.pid"
+  mkdir -p "$STATE_DIR/serve.lock"
+
+  run env STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/stop.sh" -f
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Force-killed all orchestrator processes"* ]]
+  [ ! -f "$STATE_DIR/orchestrator.pid" ]
+}
+
+# --- version in log output tests ---
+
+@test "log() includes version when ORCH_VERSION is set" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  export ORCH_VERSION="1.2.3"
+  result=$(log "[test] hello")
+  [[ "$result" == *"[v1.2.3]"* ]]
+  [[ "$result" == *"[test] hello"* ]]
+}
+
+@test "log() omits version when ORCH_VERSION is unset" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  unset ORCH_VERSION
+  result=$(log "[test] hello")
+  # Should NOT contain [v
+  [[ "$result" != *"[v"* ]]
+  [[ "$result" == *"[test] hello"* ]]
+}
+
+@test "log_err() includes version when ORCH_VERSION is set" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  export ORCH_VERSION="0.33.0"
+  result=$(log_err "[gh_push] syncing" 2>&1)
+  [[ "$result" == *"[v0.33.0]"* ]]
+}
+
+@test "serve.sh _log includes version prefix" {
+  # Verify the _log function in serve.sh includes [vVERSION]
+  run grep -E '_log\(\).*\[v\$\{ORCH_VERSION\}\]' "${REPO_DIR}/scripts/serve.sh"
+  [ "$status" -eq 0 ]
+}
+
+# --- rate limit backoff in serve.sh tests ---
+
+@test "serve.sh sources lib.sh for backoff helpers" {
+  run grep 'source.*lib\.sh' "${REPO_DIR}/scripts/serve.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "serve.sh checks gh_backoff_active before gh_sync" {
+  run grep 'gh_backoff_active' "${REPO_DIR}/scripts/serve.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "serve.sh GH_PULL_INTERVAL defaults to 120" {
+  run grep 'GH_PULL_INTERVAL=.*120' "${REPO_DIR}/scripts/serve.sh"
+  [ "$status" -eq 0 ]
+}
+
+# --- graceful shutdown tests ---
+
+@test "serve.sh uses interruptible sleep" {
+  # Verify sleep is backgrounded and waited on
+  run grep -A2 'sleep.*INTERVAL.*&' "${REPO_DIR}/scripts/serve.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"wait"* ]]
+}
+
+@test "serve.sh checks _stopping flag after each child" {
+  # At least 3 stopping checks in the main loop
+  count=$(grep -c '_stopping' "${REPO_DIR}/scripts/serve.sh")
+  [ "$count" -ge 5 ]
+}
