@@ -112,8 +112,8 @@ if [ -n "$DONE_WITH_WORKTREE" ]; then
   done <<< "$DONE_WITH_WORKTREE"
 fi
 
-# Run all new/routed tasks in parallel
-NEW_IDS=$(yq -r '.tasks[] | select(.status == "new" or .status == "routed") | .id' "$TASKS_PATH")
+# Run all new/routed tasks in parallel (skip tasks with no-agent label)
+NEW_IDS=$(yq -r '.tasks[] | select((.status == "new" or .status == "routed") and (.labels // [] | map(select(. == "no-agent")) | length == 0)) | .id' "$TASKS_PATH")
 if [ -n "$NEW_IDS" ]; then
   printf '%s\n' "$NEW_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
 fi

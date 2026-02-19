@@ -4211,3 +4211,16 @@ SH
   run grep "review_prs.sh" "${REPO_DIR}/scripts/serve.sh"
   [ "$status" -eq 0 ]
 }
+
+@test "poll.sh skips tasks with no-agent label" {
+  # Create a task with no-agent label
+  run yq -i '.tasks += [{"id": 99, "title": "No agent task", "body": "", "labels": ["no-agent"], "status": "new", "agent": null, "agent_model": null, "agent_profile": null, "selected_skills": [], "parent_id": null, "children": [], "route_reason": null, "route_warning": null, "summary": null, "reason": null, "accomplished": [], "remaining": [], "blockers": [], "files_changed": [], "needs_help": false, "attempts": 0, "last_error": null, "retry_at": null, "review_decision": null, "review_notes": null, "history": [], "dir": "'"$TMP_DIR"'", "created_at": "2026-01-01", "updated_at": "2026-01-01"}]' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+
+  # Verify the filter expression works — should NOT match no-agent tasks
+  run yq -r '.tasks[] | select((.status == "new" or .status == "routed") and (.labels // [] | map(select(. == "no-agent")) | length == 0)) | .id' "$TASKS_PATH"
+  [ "$status" -eq 0 ]
+  # Should only have task 1 (Init from setup), not 99
+  [[ "$output" == *"1"* ]]
+  [[ "$output" != *"99"* ]]
+}
