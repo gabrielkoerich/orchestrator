@@ -1723,10 +1723,10 @@ SH
   [[ "$output" == *"--format json"* ]]
 }
 
-@test "run_task.sh passes --permission-mode acceptEdits to claude" {
-  run grep -n 'permission-mode acceptEdits' "${REPO_DIR}/scripts/run_task.sh"
+@test "run_task.sh passes --permission-mode bypassPermissions to claude" {
+  run grep -n 'permission-mode bypassPermissions' "${REPO_DIR}/scripts/run_task.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"--permission-mode acceptEdits"* ]]
+  [[ "$output" == *"--permission-mode bypassPermissions"* ]]
 }
 
 @test "run_task.sh injects agent and model into response JSON" {
