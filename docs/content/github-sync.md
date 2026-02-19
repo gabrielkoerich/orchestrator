@@ -1,8 +1,7 @@
 +++
 title = "GitHub Sync"
 description = "Two-way sync between tasks.yml and GitHub Issues"
-[extra]
-weight = 7
+weight = 8
 +++
 
 Sync tasks to GitHub Issues using `gh`. The orchestrator supports two-way sync, project boards, error comments, and rate-limit backoff.

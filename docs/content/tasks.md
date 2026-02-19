@@ -1,7 +1,6 @@
 +++
 title = "Task Model"
 description = "Task schema, lifecycle, and delegation"
-[extra]
 weight = 2
 +++
 

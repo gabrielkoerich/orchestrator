@@ -1,7 +1,6 @@
 +++
 title = "Routing"
 description = "How the orchestrator picks an agent for each task"
-[extra]
 weight = 4
 +++
 

@@ -375,6 +375,24 @@ release *msg:
     echo "==> Done! $(orchestrator version)"
 
 ############################
+# Namespace: docs (build, serve)
+############################
+
+# Documentation site (build, serve)
+[group('docs')]
+docs target *args:
+    #!/usr/bin/env bash
+    just "_docs_$1" "${@:2}"
+
+[private]
+_docs_build:
+    @zola --root docs build
+
+[private]
+_docs_serve:
+    @zola --root docs serve --open
+
+############################
 #  Legacy manual & Services
 ############################
 

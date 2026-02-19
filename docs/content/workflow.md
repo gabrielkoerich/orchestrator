@@ -1,7 +1,6 @@
 +++
 title = "Workflow"
 description = "How the orchestrator runs tasks end-to-end"
-[extra]
 weight = 3
 +++
 

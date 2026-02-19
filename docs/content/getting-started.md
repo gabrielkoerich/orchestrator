@@ -1,7 +1,6 @@
 +++
 title = "Getting Started"
 description = "Install orchestrator and run your first task"
-[extra]
 weight = 1
 +++
 

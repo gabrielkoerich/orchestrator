@@ -1,3 +1,9 @@
++++
+title = "Daily Retrospective — 2026-02-18"
+description = "Evening retrospective on orchestrator service activity"
+date = 2026-02-18
++++
+
 # Daily Evening Retrospective — 2026-02-18
 
 ## Executive Summary

@@ -1,7 +1,6 @@
 +++
 title = "Development"
 description = "Contributing, testing, and release pipeline"
-[extra]
 weight = 11
 +++
 

@@ -7,8 +7,9 @@ default_language = "en"
 minify_html = true
 
 [markdown]
-highlight_code = true
-highlight_theme = "base16-ocean-dark"
+[markdown.highlighting]
+style = "class"
+theme = "github-dark"
 
 [extra]
 github = "https://github.com/gabrielkoerich/orchestrator"

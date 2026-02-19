@@ -1,8 +1,7 @@
 +++
 title = "CLI Reference"
 description = "Commands, namespaces, and background service"
-[extra]
-weight = 10
+weight = 6
 +++
 
 ## Namespaces

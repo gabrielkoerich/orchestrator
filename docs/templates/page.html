@@ -9,7 +9,7 @@
     <nav class="docs-sidebar">
         <ul>
             {% set section = get_section(path="_index.md") %}
-            {% for p in section.pages | sort(attribute="extra.weight") %}
+            {% for p in section.pages %}
             <li{% if p.path == page.path %} class="active"{% endif %}>
                 <a href="{{p.permalink | safe}}">{{p.title}}</a>
             </li>

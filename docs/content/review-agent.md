@@ -1,8 +1,7 @@
 +++
 title = "Review Agent"
 description = "Automated PR reviews using a different agent"
-[extra]
-weight = 6
+weight = 10
 +++
 
 The review agent automatically reviews pull requests after an agent completes a task. It picks a different agent from the one that wrote the code (e.g. if codex wrote the code, claude reviews it), and posts a real GitHub PR review.

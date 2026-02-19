@@ -1,8 +1,7 @@
 +++
 title = "Configuration"
 description = "Config reference and per-project overrides"
-[extra]
-weight = 9
+weight = 7
 +++
 
 All runtime configuration lives in `~/.orchestrator/config.yml`.

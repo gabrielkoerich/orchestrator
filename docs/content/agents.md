@@ -1,7 +1,6 @@
 +++
 title = "Agents"
 description = "Agentic mode, safety rules, and context enrichment"
-[extra]
 weight = 5
 +++
 

@@ -9,3 +9,4 @@ tasks.yml.lock*
 contexts/
 __pycache__/
 jobs.yml
+docs/public/

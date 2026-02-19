@@ -311,9 +311,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: zola@0.22.1
+      - run: zola --root docs build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs
+          path: docs/public
       - id: deployment
         uses: actions/deploy-pages@v4
