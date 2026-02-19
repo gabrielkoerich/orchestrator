@@ -20,19 +20,27 @@ now_epoch() {
   date -u +"%s"
 }
 
+_log_prefix() {
+  if [ -n "${ORCH_VERSION:-}" ]; then
+    echo "$(now_iso) [v${ORCH_VERSION}]"
+  else
+    echo "$(now_iso)"
+  fi
+}
+
 log() {
-  echo "$(now_iso) $*"
+  echo "$(_log_prefix) $*"
 }
 
 # Log to stderr (for scripts whose stdout is consumed by callers)
 log_err() {
-  echo "$(now_iso) $*" >&2
+  echo "$(_log_prefix) $*" >&2
 }
 
 # Log to the error log file (agent errors, stuck agents, auth issues)
 error_log() {
   local error_file="${STATE_DIR}/orchestrator.error.log"
-  echo "$(now_iso) $*" >> "$error_file"
+  echo "$(_log_prefix) $*" >> "$error_file"
   log_err "$@"
 }
 
