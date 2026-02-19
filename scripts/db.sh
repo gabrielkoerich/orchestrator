@@ -69,9 +69,8 @@ db_task_set() {
 # Usage: db_task_claim <id> <from_status> <to_status>
 db_task_claim() {
   local id="$1" from_status="$2" to_status="$3"
-  db "UPDATE tasks SET status = '$to_status', updated_at = datetime('now') WHERE id = $id AND status = '$from_status';"
   local changed
-  changed=$(db_scalar "SELECT changes();")
+  changed=$(db_scalar "UPDATE tasks SET status = '$to_status', updated_at = datetime('now') WHERE id = $id AND status = '$from_status'; SELECT changes();")
   [ "$changed" -gt 0 ]
 }
 

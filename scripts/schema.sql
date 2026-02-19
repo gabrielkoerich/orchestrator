@@ -1,8 +1,11 @@
 -- Orchestrator SQLite schema
 -- Replaces tasks.yml and jobs.yml for better performance, concurrency, and querying.
+-- Configure SQLite for concurrent access
+-- Note: journal_mode returns 'wal', this is normal
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
+
 
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY,

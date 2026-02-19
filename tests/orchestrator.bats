@@ -4224,3 +4224,314 @@ SH
   [[ "$output" == *"1"* ]]
   [[ "$output" != *"99"* ]]
 }
+
+# --- SQLite db.sh tests ---
+
+@test "schema.sql creates all expected tables" {
+  local db="${TMP_DIR}/test.db"
+  run sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  [ "$status" -eq 0 ]
+
+  # Check all tables exist
+  for table in tasks task_labels task_history task_files task_children task_accomplished task_remaining task_blockers task_selected_skills jobs; do
+    run sqlite3 "$db" "SELECT name FROM sqlite_master WHERE type='table' AND name='$table';"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$table" ]
+  done
+}
+
+@test "db_task_field reads a single field" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_task_field 1 status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  run db_task_field 1 title
+  [ "$status" -eq 0 ]
+  [ "$output" = "Test" ]
+}
+
+@test "db_task_set updates field and bumps updated_at" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  db_task_set 1 status "in_progress"
+  run db_task_field 1 status
+  [ "$output" = "in_progress" ]
+
+  # updated_at should be newer than 2026-01-01
+  run db_task_field 1 updated_at
+  [[ "$output" > "2026-01-01" ]]
+}
+
+@test "db_task_claim is atomic — rejects wrong from_status" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'done', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  # Trying to claim from 'new' should fail because status is 'done'
+  run db_task_claim 1 "new" "in_progress"
+  [ "$status" -ne 0 ]
+
+  # Status should still be 'done'
+  run db_task_field 1 status
+  [ "$output" = "done" ]
+}
+
+@test "db_task_claim succeeds with correct from_status" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_task_claim 1 "new" "in_progress"
+  [ "$status" -eq 0 ]
+
+  run db_task_field 1 status
+  [ "$output" = "in_progress" ]
+}
+
+@test "db_task_count counts by status" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'A', 'new', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (2, 'B', 'done', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (3, 'C', 'done', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_task_count "new"
+  [ "$output" = "1" ]
+
+  run db_task_count "done"
+  [ "$output" = "2" ]
+
+  run db_task_count
+  [ "$output" = "3" ]
+}
+
+@test "db_create_task creates task with labels" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+
+  export DB_PATH="$db" PROJECT_DIR="$TMP_DIR"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  NEW_ID=$(db_create_task "My task" "Some body" "$TMP_DIR" "bug,priority:high")
+  [ "$NEW_ID" = "1" ]
+
+  run db_task_field 1 title
+  [ "$output" = "My task" ]
+
+  run db_task_field 1 status
+  [ "$output" = "new" ]
+
+  run db_task_labels_csv 1
+  [ "$output" = "bug,priority:high" ]
+}
+
+@test "db_append_history adds entries" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  db_append_history 1 "routed" "routed to claude"
+  db_append_history 1 "in_progress" "started attempt 1"
+
+  run sqlite3 "$db" "SELECT COUNT(*) FROM task_history WHERE task_id = 1;"
+  [ "$output" = "2" ]
+
+  run sqlite3 "$db" "SELECT note FROM task_history WHERE task_id = 1 ORDER BY id LIMIT 1;"
+  [ "$output" = "routed to claude" ]
+}
+
+@test "db_set_labels replaces existing labels" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (1, 'old-label');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  db_set_labels 1 "new-a,new-b"
+  run db_task_labels_csv 1
+  [ "$output" = "new-a,new-b" ]
+
+  # Old label should be gone
+  run sqlite3 "$db" "SELECT COUNT(*) FROM task_labels WHERE task_id = 1 AND label = 'old-label';"
+  [ "$output" = "0" ]
+}
+
+@test "db_task_update updates multiple fields at once" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  db_task_update 1 status=done agent=claude summary="Complete"
+  run db_task_field 1 status
+  [ "$output" = "done" ]
+  run db_task_field 1 agent
+  [ "$output" = "claude" ]
+  run db_task_field 1 summary
+  [ "$output" = "Complete" ]
+}
+
+@test "db_task_ids_by_status excludes tasks with label" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'A', 'new', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (2, 'B', 'new', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (2, 'no-agent');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_task_ids_by_status "new" "no-agent"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"1"* ]]
+  [[ "$output" != *"2"* ]]
+}
+
+@test "migrate_to_sqlite.sh creates database from YAML" {
+  # Create a minimal tasks.yml
+  cat > "$TASKS_PATH" <<'YAML'
+tasks:
+  - id: 1
+    title: "Test task"
+    body: "Test body"
+    labels: ["bug", "p1"]
+    status: "done"
+    agent: "claude"
+    agent_model: null
+    agent_profile: null
+    complexity: null
+    selected_skills: []
+    parent_id: null
+    children: []
+    route_reason: null
+    route_warning: null
+    summary: "completed"
+    reason: null
+    accomplished: ["item1"]
+    remaining: []
+    blockers: []
+    files_changed: ["a.sh"]
+    needs_help: false
+    attempts: 2
+    last_error: null
+    prompt_hash: null
+    last_comment_hash: null
+    retry_at: null
+    review_decision: null
+    review_notes: null
+    history:
+      - ts: "2026-01-01T00:00:00Z"
+        status: "new"
+        note: "created"
+      - ts: "2026-01-01T01:00:00Z"
+        status: "done"
+        note: "completed"
+    dir: "/tmp"
+    created_at: "2026-01-01"
+    updated_at: "2026-01-01"
+    gh_last_feedback_at: null
+YAML
+
+  # Create a minimal jobs.yml
+  export JOBS_PATH="${ORCH_HOME}/jobs.yml"
+  cat > "$JOBS_PATH" <<'YAML'
+jobs:
+  - id: test-job
+    type: task
+    schedule: "0 9 * * 1"
+    task:
+      title: "Weekly review"
+      body: "Review code"
+      labels: ["review"]
+    command: null
+    dir: /tmp
+    enabled: true
+    last_run: null
+    last_task_status: null
+    active_task_id: null
+YAML
+
+  local db="${ORCH_HOME}/orchestrator.db"
+  run env DB_PATH="$db" "${REPO_DIR}/scripts/migrate_to_sqlite.sh"
+  [ "$status" -eq 0 ]
+  [ -f "$db" ]
+
+  # Verify task
+  run sqlite3 "$db" "SELECT title FROM tasks WHERE id = 1;"
+  [ "$output" = "Test task" ]
+
+  # Verify labels
+  run sqlite3 "$db" "SELECT COUNT(*) FROM task_labels WHERE task_id = 1;"
+  [ "$output" = "2" ]
+
+  # Verify history
+  run sqlite3 "$db" "SELECT COUNT(*) FROM task_history WHERE task_id = 1;"
+  [ "$output" = "2" ]
+
+  # Verify files
+  run sqlite3 "$db" "SELECT file_path FROM task_files WHERE task_id = 1;"
+  [ "$output" = "a.sh" ]
+
+  # Verify accomplished
+  run sqlite3 "$db" "SELECT item FROM task_accomplished WHERE task_id = 1;"
+  [ "$output" = "item1" ]
+
+  # Verify job
+  run sqlite3 "$db" "SELECT title FROM jobs WHERE id = 'test-job';"
+  [ "$output" = "Weekly review" ]
+}
+
+@test "db_job_field and db_job_set work correctly" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  sqlite3 "$db" "INSERT INTO jobs (id, title, schedule, type, enabled, created_at) VALUES ('j1', 'Job', '0 9 * * *', 'task', 1, '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_job_field j1 schedule
+  [ "$output" = "0 9 * * *" ]
+
+  db_job_set j1 enabled 0
+  run db_job_field j1 enabled
+  [ "$output" = "0" ]
+}
+
+@test "sql_escape handles single quotes" {
+  export DB_PATH="${TMP_DIR}/test.db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run sql_escape "it's a test"
+  [ "$output" = "it''s a test" ]
+
+  run sql_escape "no quotes"
+  [ "$output" = "no quotes" ]
+}
