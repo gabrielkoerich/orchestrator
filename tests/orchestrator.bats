@@ -273,17 +273,18 @@ SH
 
   run yq -i '(.gh.repo) = "testowner/testrepo"' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
-  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
-    (.tasks[] | select(.id == 2) | .gh_issue_number) = 47 |
-    (.tasks[] | select(.id == 2) | .branch) = "gh-task-47-cleanup" |
-    (.tasks[] | select(.id == 2) | .worktree) = "'"$WT_DIR"'"' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
+  tdb_set 2 status "done"
+  tdb_set 2 gh_issue_number 47
+  tdb_set 2 branch "gh-task-47-cleanup"
+  tdb_set 2 worktree "$WT_DIR"
+  tdb_set 2 dir "$PROJECT_DIR"
 
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
 #!/usr/bin/env bash
+# Return PR number as gh --jq '.[0].number // ""' would output
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-  echo '[{"number":123}]'
+  echo '123'
   exit 0
 fi
 exit 0
@@ -302,14 +303,12 @@ SH
   chmod +x "$GIT_STUB"
 
   run env PATH="${TMP_DIR}:${PATH}" TMP_DIR="$TMP_DIR" \
-    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
+    DB_PATH="$DB_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
     ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
     "${REPO_DIR}/scripts/cleanup_worktrees.sh"
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .worktree_cleaned // false' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
-  [ "$output" = "true" ]
+  [ "$(tdb_field 2 worktree_cleaned)" = "1" ]
 
   run bash -c "cat '${TMP_DIR}/git_calls'"
   [ "$status" -eq 0 ]
@@ -326,20 +325,17 @@ SH
 
   run yq -i '(.gh.repo) = "testowner/testrepo"' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
-  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
-    (.tasks[] | select(.id == 2) | .gh_issue_number) = 48 |
-    (.tasks[] | select(.id == 2) | .branch) = "gh-task-48-cleanup" |
-    (.tasks[] | select(.id == 2) | .worktree) = "'"$WT_DIR"'"' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
-  run yq -r '.tasks[] | select(.id == 2) | .worktree' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
-  [ "$output" = "$WT_DIR" ]
+  tdb_set 2 status "done"
+  tdb_set 2 gh_issue_number 48
+  tdb_set 2 branch "gh-task-48-cleanup"
+  tdb_set 2 worktree "$WT_DIR"
+  tdb_set 2 dir "$PROJECT_DIR"
 
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
 #!/usr/bin/env bash
+# Return empty output to simulate no merged PR found (gh --jq returns empty for no matches)
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-  echo ''
   exit 0
 fi
 exit 0
@@ -355,14 +351,12 @@ SH
   chmod +x "$GIT_STUB"
 
   run env PATH="${TMP_DIR}:${PATH}" TMP_DIR="$TMP_DIR" \
-    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
+    DB_PATH="$DB_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
     ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
     "${REPO_DIR}/scripts/cleanup_worktrees.sh"
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .worktree_cleaned // false' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
-  [ "$output" = "false" ]
+  [ "$(tdb_field 2 worktree_cleaned)" = "0" ]
 
   [ ! -f "${TMP_DIR}/git_calls_skip" ]
 }
@@ -374,10 +368,10 @@ SH
   WT_DIR="${TMP_DIR}/wt-local"
   mkdir -p "$WT_DIR"
 
-  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
-    (.tasks[] | select(.id == 2) | .branch) = "task-2-local" |
-    (.tasks[] | select(.id == 2) | .worktree) = "'"$WT_DIR"'"' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
+  tdb_set 2 status "done"
+  tdb_set 2 branch "task-2-local"
+  tdb_set 2 worktree "$WT_DIR"
+  tdb_set 2 dir "$PROJECT_DIR"
 
   GIT_STUB="${TMP_DIR}/git"
   cat > "$GIT_STUB" <<'SH'
@@ -390,14 +384,12 @@ SH
   chmod +x "$GIT_STUB"
 
   run env PATH="${TMP_DIR}:${PATH}" \
-    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
+    DB_PATH="$DB_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
     ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
     "${REPO_DIR}/scripts/cleanup_worktrees.sh"
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .worktree_cleaned // false' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
-  [ "$output" = "true" ]
+  [ "$(tdb_field 2 worktree_cleaned)" = "1" ]
 }
 
 @test "cleanup_worktrees.sh handles missing worktree directory gracefully" {
@@ -405,12 +397,9 @@ SH
   [ "$status" -eq 0 ]
 
   WT_DIR="${TMP_DIR}/wt-missing"
-  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
-    (.tasks[] | select(.id == 2) | .worktree) = "'"$WT_DIR"'"' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
-  run yq -r '.tasks[] | select(.id == 2) | .worktree' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
-  [ "$output" = "$WT_DIR" ]
+  tdb_set 2 status "done"
+  tdb_set 2 worktree "$WT_DIR"
+  tdb_set 2 dir "$PROJECT_DIR"
 
   GIT_STUB="${TMP_DIR}/git"
   cat > "$GIT_STUB" <<'SH'
@@ -421,14 +410,12 @@ SH
   chmod +x "$GIT_STUB"
 
   run env PATH="${TMP_DIR}:${PATH}" TMP_DIR="$TMP_DIR" \
-    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
+    DB_PATH="$DB_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" \
     ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
     "${REPO_DIR}/scripts/cleanup_worktrees.sh"
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .worktree_cleaned // false' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
-  [ "$output" = "true" ]
+  [ "$(tdb_field 2 worktree_cleaned)" = "1" ]
 
   [ ! -f "${TMP_DIR}/git_calls_missing" ]
 }

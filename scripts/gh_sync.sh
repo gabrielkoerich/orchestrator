@@ -25,6 +25,7 @@ else
   log "[gh_sync] GitHub sync disabled."
 fi
 
+# Cleanup runs regardless of gh.enabled — worktrees are local
 log "[gh_sync] project=$PROJECT_NAME cleanup start"
 "$SCRIPT_DIR/cleanup_worktrees.sh"
 log "[gh_sync] project=$PROJECT_NAME cleanup done"

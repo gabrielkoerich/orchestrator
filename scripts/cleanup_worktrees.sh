@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 source "$SCRIPT_DIR/lib.sh"
-require_yq
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
@@ -63,17 +62,16 @@ issue_has_merged_pr() {
 
 log "[cleanup_worktrees] [$PROJECT_NAME] scan start"
 
-# Use @json instead of @tsv to avoid bash IFS issues with empty fields
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-
-  id=$(normalize_field "$(printf '%s' "$line" | yq -r -p=json '.[0]')")
-  worktree=$(normalize_field "$(printf '%s' "$line" | yq -r -p=json '.[1]')")
-  branch=$(normalize_field "$(printf '%s' "$line" | yq -r -p=json '.[2]')")
-  project_dir=$(normalize_field "$(printf '%s' "$line" | yq -r -p=json '.[3]')")
-  gh_issue=$(normalize_field "$(printf '%s' "$line" | yq -r -p=json '.[4]')")
-
+# Query done tasks with worktrees that haven't been cleaned yet
+# Use unit separator (\x1f) to handle empty fields correctly
+while IFS=$'\x1f' read -r id worktree branch project_dir gh_issue; do
   [ -n "$id" ] || continue
+
+  worktree=$(normalize_field "$worktree")
+  branch=$(normalize_field "$branch")
+  project_dir=$(normalize_field "$project_dir")
+  gh_issue=$(normalize_field "$gh_issue")
+
   [ -n "$worktree" ] || continue
   [ -n "$project_dir" ] || continue
 
@@ -107,14 +105,13 @@ while IFS= read -r line; do
   fi
 
   if [ "$cleanup_ok" = true ]; then
-    NOW=$(now_iso)
-    export NOW
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $id) | .worktree_cleaned) = true |\
-       (.tasks[] | select(.id == $id) | .updated_at) = strenv(NOW)" \
-      "$TASKS_PATH"
+    db_task_set "$id" "worktree_cleaned" "1"
     log "[cleanup_worktrees] [$PROJECT_NAME] task=$id marked worktree_cleaned=true"
   fi
-done < <(task_tsv 'select(.status == "done" and (.worktree // "") != "" and .worktree_cleaned != true) | [.id, (.worktree // ""), (.branch // ""), (.dir // ""), ((.gh_issue_number // .gh_issue // "") | tostring)] | @json')
+done < <(db_row "SELECT id, COALESCE(worktree,''), COALESCE(branch,''), COALESCE(dir,''), COALESCE(gh_issue_number,'')
+  FROM tasks
+  WHERE status = 'done'
+    AND worktree IS NOT NULL AND worktree != ''
+    AND worktree_cleaned != 1;")
 
 log "[cleanup_worktrees] [$PROJECT_NAME] scan done"
