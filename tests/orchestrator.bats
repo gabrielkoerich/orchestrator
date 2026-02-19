@@ -3836,19 +3836,19 @@ SH
   [[ "$output" == *"bareowner/barerepo"* ]]
 }
 
-@test "gh_pull.sh syncs status from GH labels when GH updated more recently" {
+@test "gh_pull.sh syncs status forward from GH labels (ratchet)" {
   source "${REPO_DIR}/scripts/lib.sh"
   init_tasks_file
 
-  # Create a task linked to GH issue #10, local status=needs_review, old updated_at
+  # Create a task linked to GH issue #10, local status=new, old updated_at
   acquire_lock
   create_task_entry 2 "Sync test task" "" ""
   release_lock
 
   # Set gh_issue_number, status, and an old updated_at so GH appears newer
-  tdb "UPDATE tasks SET gh_issue_number = 10, status = 'needs_review', dir = '$PROJECT_DIR', updated_at = '2026-01-01T00:00:00Z' WHERE id = 2;"
+  tdb "UPDATE tasks SET gh_issue_number = 10, status = 'new', dir = '$PROJECT_DIR', updated_at = '2026-01-01T00:00:00Z' WHERE id = 2;"
 
-  # Stub gh to return issue #10 with status:new label and a newer updated_at
+  # Stub gh to return issue #10 with status:in_progress label and a newer updated_at
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
 #!/usr/bin/env bash
@@ -3858,7 +3858,7 @@ if [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
   "number": 10,
   "title": "Sync test task",
   "body": "",
-  "labels": [{"name": "status:new"}],
+  "labels": [{"name": "status:in_progress"}],
   "state": "open",
   "html_url": "https://github.com/test/repo/issues/10",
   "updated_at": "2026-02-01T00:00:00Z",
@@ -3880,10 +3880,56 @@ SH
     bash "${REPO_DIR}/scripts/gh_pull.sh"
   [ "$status" -eq 0 ]
 
-  # Verify status was synced from GH
+  # Verify status moved forward
   local_status=$(tdb "SELECT status FROM tasks WHERE gh_issue_number = 10;")
-  [ "$local_status" = "new" ]
-  [[ "$output" == *"status synced from GH: needs_review"* ]]
+  [ "$local_status" = "in_progress" ]
+  [[ "$output" == *"status synced from GH: new → in_progress"* ]]
+}
+
+@test "gh_pull.sh does not downgrade status from GH labels (ratchet)" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+
+  acquire_lock
+  create_task_entry 2 "Ratchet test" "" ""
+  release_lock
+
+  tdb "UPDATE tasks SET gh_issue_number = 11, status = 'in_progress', dir = '$PROJECT_DIR', updated_at = '2026-01-01T00:00:00Z' WHERE id = 2;"
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
+  cat <<JSON
+[{
+  "number": 11,
+  "title": "Ratchet test",
+  "body": "",
+  "labels": [{"name": "status:new"}],
+  "state": "open",
+  "html_url": "https://github.com/test/repo/issues/11",
+  "updated_at": "2026-02-01T00:00:00Z",
+  "pull_request": null
+}]
+JSON
+elif [[ "$*" == *"graphql"* ]]; then
+  echo '{"data":{"repository":{}}}'
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$PROJECT_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    bash "${REPO_DIR}/scripts/gh_pull.sh"
+  [ "$status" -eq 0 ]
+
+  # Status should NOT be downgraded
+  local_status=$(tdb "SELECT status FROM tasks WHERE gh_issue_number = 11;")
+  [ "$local_status" = "in_progress" ]
 }
 
 # --- stop.sh --force tests ---
