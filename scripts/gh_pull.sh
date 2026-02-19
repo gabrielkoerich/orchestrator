@@ -119,6 +119,7 @@ for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
     db_set_labels "$EXISTS" "$LABELS_CSV"
 
     # 2-way status sync: if GH was updated after local, derive status from labels
+    # Only allow status to move forward (ratchet), never backwards.
     if [ -n "$UPDATED" ] && [ -n "$LOCAL_UPDATED" ] && [[ "$UPDATED" > "$LOCAL_UPDATED" ]]; then
       GH_STATUS=""
       for _label in $(printf '%s' "$LABELS_CSV" | tr ',' '\n'); do
@@ -134,8 +135,25 @@ for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
       if [ -n "$GH_STATUS" ]; then
         LOCAL_STATUS=$(db_task_field "$EXISTS" "status")
         if [ "$GH_STATUS" != "$LOCAL_STATUS" ]; then
-          db_task_update "$EXISTS" "status=$GH_STATUS"
-          log "[gh_pull] [$PROJECT_NAME] issue #$NUM status synced from GH: $LOCAL_STATUS → $GH_STATUS"
+          # Status rank: higher number = further along in the workflow
+          _status_rank() {
+            case "$1" in
+              new)           echo 0 ;;
+              routed)        echo 1 ;;
+              in_progress)   echo 2 ;;
+              needs_review)  echo 3 ;;
+              blocked)       echo 3 ;;
+              in_review)     echo 4 ;;
+              done)          echo 5 ;;
+              *)             echo 0 ;;
+            esac
+          }
+          GH_RANK=$(_status_rank "$GH_STATUS")
+          LOCAL_RANK=$(_status_rank "$LOCAL_STATUS")
+          if [ "$GH_RANK" -ge "$LOCAL_RANK" ]; then
+            db_task_update "$EXISTS" "status=$GH_STATUS"
+            log "[gh_pull] [$PROJECT_NAME] issue #$NUM status synced from GH: $LOCAL_STATUS → $GH_STATUS"
+          fi
         fi
       fi
     fi
