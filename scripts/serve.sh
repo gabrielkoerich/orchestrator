@@ -50,24 +50,9 @@ if ! mkdir "$SERVE_LOCK" 2>/dev/null; then
   fi
 fi
 
+# Clean up any stale YAML lock dirs left from pre-SQLite versions
 if [ -d "${TASKS_PATH:-tasks.yml}.lock" ]; then
-  LOCK_PATH="${TASKS_PATH:-tasks.yml}.lock"
-  if command -v stat >/dev/null 2>&1; then
-    if stat -f %m "$LOCK_PATH" >/dev/null 2>&1; then
-      MTIME=$(stat -f %m "$LOCK_PATH")
-    elif stat -c %Y "$LOCK_PATH" >/dev/null 2>&1; then
-      MTIME=$(stat -c %Y "$LOCK_PATH")
-    else
-      MTIME=0
-    fi
-  else
-    MTIME=0
-  fi
-  NOW=$(date +%s)
-  STALE_SECONDS=${LOCK_STALE_SECONDS:-600}
-  if [ "$MTIME" -gt 0 ] && [ $((NOW - MTIME)) -ge "$STALE_SECONDS" ]; then
-    rm -rf "$LOCK_PATH"
-  fi
+  rm -rf "${TASKS_PATH:-tasks.yml}.lock"
 fi
 
 echo $$ > "$PID_FILE"
@@ -95,6 +80,25 @@ cleanup() {
 trap '_on_signal; cleanup' INT TERM
 trap cleanup EXIT
 
+# Auto-migrate YAML → SQLite on first run after upgrade
+# This runs once: if tasks.yml exists and orchestrator.db doesn't, migrate.
+TASKS_FILE="${TASKS_PATH:-${ORCH_HOME:-$HOME/.orchestrator}/tasks.yml}"
+if [ -f "$TASKS_FILE" ] && [ ! -f "$DB_PATH" ] && command -v sqlite3 >/dev/null 2>&1; then
+  _log "[serve] SQLite database not found, running auto-migration from YAML..."
+  if "$SCRIPT_DIR/migrate_to_sqlite.sh" 2>&1; then
+    _log "[serve] Migration complete. Backing up YAML files..."
+    cp "$TASKS_FILE" "${TASKS_FILE}.bak" 2>/dev/null || true
+    JOBS_FILE="${JOBS_PATH:-${ORCH_HOME:-$HOME/.orchestrator}/jobs.yml}"
+    [ -f "$JOBS_FILE" ] && cp "$JOBS_FILE" "${JOBS_FILE}.bak" 2>/dev/null || true
+    _log "[serve] YAML backups created (.bak). SQLite is now the active backend."
+  else
+    _log "[serve] Migration failed."
+  fi
+fi
+
+# Ensure SQLite database exists
+db_init
+
 # Rotate log on start
 if [ -f "$LOG_FILE" ]; then
   cat "$LOG_FILE" >> "$ARCHIVE_LOG"
@@ -116,23 +120,6 @@ lock_mtime() {
     return
   fi
   echo 0
-}
-
-clear_stale_task_lock() {
-  local lock_dir="${TASKS_PATH:-tasks.yml}.lock"
-  local stale_seconds=${LOCK_STALE_SECONDS:-600}
-  if [ -d "$lock_dir" ]; then
-    local mtime
-    mtime=$(lock_mtime "$lock_dir")
-    if [ "$mtime" -gt 0 ]; then
-      local now
-      now=$(date +%s)
-      if [ $((now - mtime)) -ge "$stale_seconds" ]; then
-        rm -rf "$lock_dir"
-        _log "[serve] cleared stale task lock" >> "$LOG_FILE"
-      fi
-    fi
-  fi
 }
 
 snapshot_hash() {
@@ -195,7 +182,6 @@ fi
 while true; do
   $_stopping && { _log "[serve] shutting down gracefully" >> "$LOG_FILE"; break; }
   _log "[serve] tick" >> "$LOG_FILE"
-  clear_stale_task_lock
   "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
   $_stopping && break
   "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
@@ -207,21 +193,16 @@ while true; do
       _log "[serve] gh backoff active (${_remaining}s remaining), skipping sync" >> "$LOG_FILE"
     else
       # Run gh_sync for each unique project dir
-      TASKS_FILE="${TASKS_PATH:-tasks.yml}"
-      if [ -f "$TASKS_FILE" ]; then
-        DIRS=$(yq -r '[.tasks[].dir // ""] | unique | .[]' "$TASKS_FILE" 2>/dev/null || true)
-        SYNCED_DEFAULT=false
-        for dir in $DIRS; do
-          $_stopping && break
-          if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
-            PROJECT_DIR="$dir" "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
-            SYNCED_DEFAULT=true
-          fi
-        done
-        if [ "$SYNCED_DEFAULT" = false ]; then
-          "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+      DIRS=$(db_task_projects 2>/dev/null || true)
+      SYNCED_DEFAULT=false
+      for dir in $DIRS; do
+        $_stopping && break
+        if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
+          PROJECT_DIR="$dir" "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+          SYNCED_DEFAULT=true
         fi
-      else
+      done
+      if [ "$SYNCED_DEFAULT" = false ]; then
         "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
       fi
     fi
@@ -229,19 +210,15 @@ while true; do
 
     # Review open PRs after sync (runs inside the same interval gate)
     if ! $_stopping; then
-      if [ -f "$TASKS_FILE" ]; then
-        REVIEWED_DEFAULT=false
-        for dir in $DIRS; do
-          $_stopping && break
-          if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
-            PROJECT_DIR="$dir" "$SCRIPT_DIR/review_prs.sh" >> "$LOG_FILE" 2>&1 || true
-            REVIEWED_DEFAULT=true
-          fi
-        done
-        if [ "$REVIEWED_DEFAULT" = false ]; then
-          "$SCRIPT_DIR/review_prs.sh" >> "$LOG_FILE" 2>&1 || true
+      REVIEWED_DEFAULT=false
+      for dir in $DIRS; do
+        $_stopping && break
+        if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
+          PROJECT_DIR="$dir" "$SCRIPT_DIR/review_prs.sh" >> "$LOG_FILE" 2>&1 || true
+          REVIEWED_DEFAULT=true
         fi
-      else
+      done
+      if [ "$REVIEWED_DEFAULT" = false ]; then
         "$SCRIPT_DIR/review_prs.sh" >> "$LOG_FILE" 2>&1 || true
       fi
     fi

@@ -11,6 +11,16 @@ CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
 JOBS_PATH=${JOBS_PATH:-"${ORCH_HOME}/jobs.yml"}
 STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
+DB_PATH=${DB_PATH:-"${ORCH_HOME}/orchestrator.db"}
+
+# Source SQLite wrapper if available
+_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [ -f "${_LIB_DIR}/db.sh" ]; then
+  source "${_LIB_DIR}/db.sh"
+fi
+
+# Legacy compat — always returns true (SQLite is the only backend now).
+_use_sqlite() { return 0; }
 
 now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -377,32 +387,14 @@ normalize_json_response() {
   return 1
 }
 
+# Legacy compat — now just ensures SQLite DB is initialized.
 init_tasks_file() {
-  if [ ! -f "$TASKS_PATH" ]; then
-    if [ -f "tasks.example.yml" ]; then
-      cp "tasks.example.yml" "$TASKS_PATH"
-    else
-      cat > "$TASKS_PATH" <<'YAML'
-version: 1
-agents:
-  - id: codex
-    description: General-purpose coding agent.
-  - id: claude
-    description: General-purpose reasoning agent.
-tasks: []
-YAML
-    fi
-  fi
+  db_init
 }
 
+# Legacy compat — now just ensures SQLite DB is initialized.
 init_jobs_file() {
-  if [ ! -f "$JOBS_PATH" ]; then
-    if [ -f "jobs.example.yml" ]; then
-      cp "jobs.example.yml" "$JOBS_PATH"
-    else
-      printf 'jobs: []\n' > "$JOBS_PATH"
-    fi
-  fi
+  db_init
 }
 
 init_config_file() {
@@ -463,30 +455,9 @@ repo_owner() {
   fi
 }
 
-acquire_lock() {
-  local wait_seconds=${LOCK_WAIT_SECONDS:-20}
-  local start
-  start=$(date +%s)
-
-  while ! mkdir "$LOCK_PATH" 2>/dev/null; do
-    if lock_is_stale "$LOCK_PATH"; then
-      rmdir "$LOCK_PATH" 2>/dev/null || true
-      continue
-    fi
-    local now
-    now=$(date +%s)
-    if [ $((now - start)) -ge "$wait_seconds" ]; then
-      log_err "Failed to acquire lock: $LOCK_PATH"
-      log_err "Tip: if no orchestrator is running, remove stale locks with 'just unlock'."
-      exit 1
-    fi
-    sleep 0.1
-  done
-}
-
-release_lock() {
-  rmdir "$LOCK_PATH" 2>/dev/null || true
-}
+# Legacy compat — SQLite WAL mode handles concurrency.
+acquire_lock() { :; }
+release_lock() { :; }
 
 lock_mtime() {
   local path="$1" mtime
@@ -511,25 +482,12 @@ lock_is_stale() {
   return 1
 }
 
-with_lock() {
-  acquire_lock
-  local _wl_rc=0
-  "$@" || _wl_rc=$?
-  release_lock
-  return "$_wl_rc"
-}
+# Legacy compat — runs command directly (SQLite handles concurrency).
+with_lock() { "$@"; }
 
 append_history() {
-  local task_id="$1"
-  local status="$2"
-  local note="$3"
-  local ts
-  ts=$(now_iso)
-  export ts status note
-
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .history) += [{\"ts\": strenv(ts), \"status\": strenv(status), \"note\": strenv(note)}]" \
-    "$TASKS_PATH"
+  local task_id="$1" _hist_status="$2" note="$3"
+  db_append_history "$task_id" "$_hist_status" "$note"
 }
 
 load_task_context() {
@@ -678,13 +636,13 @@ build_skills_docs() {
 build_parent_context() {
   local task_id="$1"
   local parent_id
-  parent_id=$(yq -r ".tasks[] | select(.id == $task_id) | .parent_id // \"\"" "$TASKS_PATH")
+  parent_id=$(db_task_field "$task_id" "parent_id")
   if [ -z "$parent_id" ] || [ "$parent_id" = "null" ]; then return; fi
 
   local out=""
   local parent_title parent_summary
-  parent_title=$(yq -r ".tasks[] | select(.id == $parent_id) | .title // \"\"" "$TASKS_PATH")
-  parent_summary=$(yq -r ".tasks[] | select(.id == $parent_id) | .summary // \"\"" "$TASKS_PATH")
+  parent_title=$(db_task_field "$parent_id" "title")
+  parent_summary=$(db_task_field "$parent_id" "summary")
 
   if [ -n "$parent_title" ] && [ "$parent_title" != "null" ]; then
     out+="Parent task #${parent_id}: ${parent_title}\n"
@@ -692,9 +650,8 @@ build_parent_context() {
       out+="Parent summary: ${parent_summary}\n"
     fi
 
-    # Sibling summaries
     local siblings
-    siblings=$(yq -r ".tasks[] | select(.parent_id == $parent_id and .id != $task_id) | \"\(.id): \(.title) [\(.status)]\"" "$TASKS_PATH" 2>/dev/null || true)
+    siblings=$(db "SELECT id || ': ' || title || ' [' || status || ']' FROM tasks WHERE parent_id = $parent_id AND id != $task_id;")
     if [ -n "$siblings" ]; then
       out+="\nSibling tasks:\n${siblings}\n"
     fi
@@ -710,87 +667,39 @@ build_git_diff() {
 
 load_task() {
   local task_id="$1"
-  local json
-  json=$(yq -o=json -I=0 '.' "$TASKS_PATH")
-  eval "$(printf '%s' "$json" | jq -r --argjson id "$task_id" '
-    .tasks[] | select(.id == $id) |
-    "export TASK_TITLE=" + (.title | @sh) +
-    "\nexport TASK_BODY=" + (.body | @sh) +
-    "\nexport TASK_LABELS=" + ((.labels // []) | join(",") | @sh) +
-    "\nexport TASK_AGENT=" + (.agent // "" | @sh) +
-    "\nexport AGENT_MODEL=" + (.agent_model // "" | @sh) +
-    "\nexport TASK_COMPLEXITY=" + (.complexity // "medium" | @sh) +
-    "\nexport AGENT_PROFILE_JSON=" + (.agent_profile // {} | tojson | @sh) +
-    "\nexport ATTEMPTS=" + (.attempts // 0 | tostring | @sh) +
-    "\nexport SELECTED_SKILLS=" + ((.selected_skills // []) | join(",") | @sh) +
-    "\nexport TASK_PARENT_ID=" + (.parent_id // "" | tostring | @sh) +
-    "\nexport GH_ISSUE_NUMBER=" + (.gh_issue_number // "" | tostring | @sh)
-  ')"
-  ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | jq -r '.role // "general"')
-  export ROLE
+  db_load_task "$task_id"
 }
 
-# --- YQ helpers ---
-# Read a single field from a task by ID
+# --- Task helpers ---
+# Read a single field from a task by ID.
 # Usage: task_field <id> <field>
 # Example: task_field 3 .status  →  "done"
+#   Accepts yq-style ".status" or plain "status" — the leading dot is stripped.
 task_field() {
   local id="$1" field="$2"
-  yq -r ".tasks[] | select(.id == $id) | $field" "$TASKS_PATH"
+  local col="${field#.}"
+  db_task_field "$id" "$col"
 }
 
-# Update task fields atomically (with lock)
+# Update a single task field.
 # Usage: task_set <id> <field> <value>
-# Example: task_set 3 .status "done"
-# Example: task_set 3 .agent "claude"
 task_set() {
   local id="$1" field="$2" value="$3"
-  export _TS_VALUE="$value"
-  with_lock yq -i "(.tasks[] | select(.id == $id) | $field) = strenv(_TS_VALUE)" "$TASKS_PATH"
-  unset _TS_VALUE
+  local col="${field#.}"
+  db_task_set "$id" "$col" "$value"
 }
 
-# Count tasks matching a filter (uses dir_filter by default)
+# Count tasks matching a filter (uses dir-based filtering).
 # Usage: task_count [status]
-# Example: task_count "done"  →  5
-#          task_count          →  12 (all)
 task_count() {
   local status="${1:-}"
-  local filter
-  filter=$(dir_filter)
-  if [ -n "$status" ]; then
-    yq -r "[${filter} | select(.status == \"$status\")] | length" "$TASKS_PATH"
-  else
-    yq -r "[${filter}] | length" "$TASKS_PATH"
-  fi
-}
-
-# List tasks as TSV rows for piping to table_with_header
-# Usage: task_tsv <yq_fields_expr> [filter_expr]
-# Example: task_tsv '[.id, .status, .title] | @tsv'
-#          task_tsv '[.id, .title] | @tsv' 'select(.status == "new")'
-task_tsv() {
-  local fields="$1" extra_filter="${2:-}"
-  local filter
-  filter=$(dir_filter)
-  if [ -n "$extra_filter" ]; then
-    yq -r "${filter} | ${extra_filter} | ${fields}" "$TASKS_PATH"
-  else
-    yq -r "${filter} | ${fields}" "$TASKS_PATH"
-  fi
-}
-
-dir_filter() {
   local project_dir="${PROJECT_DIR:-}"
   local orch_home="${ORCH_HOME:-$HOME/.orchestrator}"
-  if [ -z "$project_dir" ] || [ "$project_dir" = "$orch_home" ]; then
-    # No project context — show all tasks
-    echo '.tasks[]'
-  else
-    # Filter to current project. The null/empty check handles pre-v0.1.0 tasks
-    # that were created before the dir field existed.
-    echo ".tasks[] | select(.dir == \"$project_dir\" or .dir == null or .dir == \"\")"
+  local dir_arg=""
+  if [ -n "$project_dir" ] && [ "$project_dir" != "$orch_home" ]; then
+    dir_arg="$project_dir"
   fi
+  db_task_count "$status" "$dir_arg"
 }
 
 # Resolve the agent-specific model for a complexity level.
@@ -815,56 +724,13 @@ max_attempts() {
 }
 
 # Shared task creation — used by add_task.sh and run_task.sh delegations.
-# Caller must hold the lock if calling inside a locked section.
 # Args: id title body labels_csv [parent_id] [suggested_agent]
-# Expects PROJECT_DIR and NOW in environment.
+# Expects PROJECT_DIR in environment. The id arg is ignored (SQLite auto-increments).
+# Returns the new task ID.
 create_task_entry() {
-  local id="$1" title="$2" body="$3" labels_csv="$4"
+  local _id="$1" title="$2" body="$3" labels_csv="$4"
   local parent_id="${5:-}" suggested_agent="${6:-}"
-
-  export id title body labels_csv parent_id suggested_agent
-  local parent_expr="null"
-  if [ -n "$parent_id" ]; then
-    parent_expr="(env(parent_id) | tonumber)"
-  fi
-
-  yq -i \
-    ".tasks += [{
-      \"id\": (env(id) | tonumber),
-      \"title\": strenv(title),
-      \"body\": strenv(body),
-      \"labels\": (strenv(labels_csv) | split(\",\") | map(select(length > 0))),
-      \"status\": \"new\",
-      \"agent\": (strenv(suggested_agent) | select(length > 0) // null),
-      \"agent_model\": null,
-      \"complexity\": null,
-      \"agent_profile\": null,
-      \"selected_skills\": [],
-      \"parent_id\": ${parent_expr},
-      \"children\": [],
-      \"route_reason\": null,
-      \"route_warning\": null,
-      \"summary\": null,
-      \"reason\": null,
-      \"accomplished\": [],
-      \"remaining\": [],
-      \"blockers\": [],
-      \"files_changed\": [],
-      \"needs_help\": false,
-      \"attempts\": 0,
-      \"last_error\": null,
-      \"prompt_hash\": null,
-      \"last_comment_hash\": null,
-      \"retry_at\": null,
-      \"review_decision\": null,
-      \"review_notes\": null,
-      \"history\": [],
-      \"dir\": strenv(PROJECT_DIR),
-      \"created_at\": strenv(NOW),
-      \"updated_at\": strenv(NOW),
-      \"gh_last_feedback_at\": null
-    }]" \
-    "$TASKS_PATH"
+  db_create_task "$title" "$body" "${PROJECT_DIR:-}" "$labels_csv" "$parent_id" "$suggested_agent"
 }
 
 # Simple spinner for long-running operations.
@@ -942,14 +808,7 @@ label_issue() {
 # Usage: mark_needs_review TASK_ID ATTEMPTS "error message" ["history note"]
 mark_needs_review() {
   local task_id="$1" attempts="$2" error="$3" note="${4:-$3}"
-  local now
-  now=$(now_iso)
-  export now
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .status) = \"needs_review\" | \
-     (.tasks[] | select(.id == $task_id) | .last_error) = \"$error\" | \
-     (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
-    "$TASKS_PATH"
+  db_task_update "$task_id" status=needs_review "last_error=$error"
   append_history "$task_id" "needs_review" "$note"
 }
 
@@ -980,11 +839,10 @@ fetch_owner_feedback() {
   # shellcheck disable=SC2086
   raw=$(gh_api -X GET "$api_url" $since_param 2>/dev/null) || { echo "[]"; return 0; }
 
-  export _FOF_OWNER="$owner_login" _FOF_SINCE="${since:-}"
-  printf '%s' "$raw" | yq -o=json -I=0 -p=json \
-    '[.[] | select(.user.login == strenv(_FOF_OWNER) and (.body | test("via \[Orchestrator\]") | not) and (strenv(_FOF_SINCE) == "" or .created_at > strenv(_FOF_SINCE))) | {"login": .user.login, "created_at": .created_at, "body": .body}]' \
+  printf '%s' "$raw" | jq -c \
+    --arg owner "$owner_login" --arg since "${since:-}" \
+    '[.[] | select(.user.login == $owner and (.body | test("via \\[Orchestrator\\]") | not) and ($since == "" or .created_at > $since)) | {login: .user.login, created_at: .created_at, body: .body}]' \
     2>/dev/null || echo "[]"
-  unset _FOF_OWNER _FOF_SINCE
 }
 
 # Apply owner feedback to a task: append to context, reset status to routed.
@@ -994,7 +852,7 @@ process_owner_feedback() {
   local task_id="$1" feedback_json="$2"
 
   local count
-  count=$(printf '%s' "$feedback_json" | yq -r 'length' 2>/dev/null || echo "0")
+  count=$(printf '%s' "$feedback_json" | jq -r 'length' 2>/dev/null || echo "0")
   if [ "$count" -le 0 ]; then return 0; fi
 
   # Build feedback text for context file
@@ -1002,9 +860,9 @@ process_owner_feedback() {
   local latest_ts=""
   for i in $(seq 0 $((count - 1))); do
     local login created_at body
-    login=$(printf '%s' "$feedback_json" | yq -r ".[$i].login")
-    created_at=$(printf '%s' "$feedback_json" | yq -r ".[$i].created_at")
-    body=$(printf '%s' "$feedback_json" | yq -r ".[$i].body")
+    login=$(printf '%s' "$feedback_json" | jq -r ".[$i].login")
+    created_at=$(printf '%s' "$feedback_json" | jq -r ".[$i].created_at")
+    body=$(printf '%s' "$feedback_json" | jq -r ".[$i].body")
     feedback_text+="### Owner feedback from ${login} (${created_at})"$'\n'"${body}"$'\n---\n'
     latest_ts="$created_at"
   done
@@ -1014,26 +872,14 @@ process_owner_feedback() {
 
   # Truncate for last_error (first 200 chars of combined feedback bodies)
   local combined_bodies
-  combined_bodies=$(printf '%s' "$feedback_json" | yq -r '.[].body' | head -c 200)
+  combined_bodies=$(printf '%s' "$feedback_json" | jq -r '.[].body' | head -c 200)
 
-  local now
-  now=$(now_iso)
-  export now combined_bodies latest_ts
-  yq -i \
-    "(.tasks[] | select(.id == $task_id) | .status) = \"routed\" |
-     (.tasks[] | select(.id == $task_id) | .last_error) = strenv(combined_bodies) |
-     (.tasks[] | select(.id == $task_id) | .needs_help) = false |
-     (.tasks[] | select(.id == $task_id) | .gh_last_feedback_at) = strenv(latest_ts) |
-     (.tasks[] | select(.id == $task_id) | .updated_at) = strenv(now)" \
-    "$TASKS_PATH"
-
-  local ts
-  ts=$(now_iso)
-  export ts
-  export status="routed" note="owner feedback received"
-  yq -i \
-    "(.tasks[] | select(.id == $task_id) | .history) += [{\"ts\": strenv(ts), \"status\": strenv(status), \"note\": strenv(note)}]" \
-    "$TASKS_PATH"
+  db_task_update "$task_id" \
+    "status=routed" \
+    "last_error=$combined_bodies" \
+    "needs_help=0" \
+    "gh_last_feedback_at=$latest_ts"
+  db_append_history "$task_id" "routed" "owner feedback received"
 }
 
 run_with_timeout() {

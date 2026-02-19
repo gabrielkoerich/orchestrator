@@ -2,10 +2,7 @@
 # shellcheck source=scripts/lib.sh
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-require_yq
 require_jq
-init_jobs_file
-init_tasks_file
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -18,7 +15,7 @@ job_log() {
   log_err "$@"
 }
 
-JOB_COUNT=$(yq -r '.jobs | length' "$JOBS_PATH")
+JOB_COUNT=$(db_enabled_job_count)
 if [ "$JOB_COUNT" -eq 0 ]; then
   exit 0
 fi
@@ -26,33 +23,21 @@ fi
 NOW_MINUTE=$(date -u +"%Y-%m-%dT%H:%MZ")
 CREATED=0
 
-for i in $(seq 0 $((JOB_COUNT - 1))); do
-  ENABLED=$(yq -r ".jobs[$i].enabled" "$JOBS_PATH")
-  if [ "$ENABLED" != "true" ]; then
-    continue
-  fi
-
-  JOB_ID=$(yq -r ".jobs[$i].id" "$JOBS_PATH")
-  SCHEDULE=$(yq -r ".jobs[$i].schedule" "$JOBS_PATH")
-  ACTIVE_TASK_ID=$(yq -r ".jobs[$i].active_task_id // \"\"" "$JOBS_PATH")
-  LAST_RUN=$(yq -r ".jobs[$i].last_run // \"\"" "$JOBS_PATH")
+while IFS=$'\x1f' read -r JOB_ID SCHEDULE JOB_TYPE JOB_CMD JOB_TITLE JOB_BODY JOB_LABELS JOB_AGENT JOB_DIR ACTIVE_TASK_ID LAST_RUN; do
+  [ -n "$JOB_ID" ] || continue
 
   # Check if active task is still in-flight
   if [ -n "$ACTIVE_TASK_ID" ] && [ "$ACTIVE_TASK_ID" != "null" ]; then
-    TASK_STATUS=$(yq -r ".tasks[] | select(.id == $ACTIVE_TASK_ID) | .status // \"\"" "$TASKS_PATH" 2>/dev/null || true)
+    TASK_STATUS=$(db_task_field "$ACTIVE_TASK_ID" "status" 2>/dev/null || true)
 
     if [ -z "$TASK_STATUS" ]; then
-      # Task no longer exists — clear active_task_id
       job_log "[jobs] job=$JOB_ID active task $ACTIVE_TASK_ID not found, clearing"
-      yq -i ".jobs[$i].active_task_id = null" "$JOBS_PATH"
+      db_job_set "$JOB_ID" "active_task_id" ""
       ACTIVE_TASK_ID=""
     elif [ "$TASK_STATUS" != "done" ]; then
-      # Task still in-flight — skip this job
       continue
     else
-      # Task is done — record status, clear active_task_id
-      export TASK_STATUS
-      yq -i ".jobs[$i].active_task_id = null | .jobs[$i].last_task_status = strenv(TASK_STATUS)" "$JOBS_PATH"
+      db "UPDATE jobs SET active_task_id = NULL, last_task_status = '$(sql_escape "$TASK_STATUS")' WHERE id = '$(sql_escape "$JOB_ID")';"
       ACTIVE_TASK_ID=""
     fi
   fi
@@ -71,13 +56,8 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
     fi
   fi
 
-  JOB_TYPE=$(yq -r ".jobs[$i].type // \"task\"" "$JOBS_PATH")
-  JOB_DIR=$(yq -r ".jobs[$i].dir // \"\"" "$JOBS_PATH")
-
   if [ "$JOB_TYPE" = "bash" ]; then
-    # Bash job: run command directly, no LLM involved
-    JOB_CMD=$(yq -r ".jobs[$i].command // \"\"" "$JOBS_PATH")
-    if [ -z "$JOB_CMD" ]; then
+    if [ -z "$JOB_CMD" ] || [ "$JOB_CMD" = "null" ]; then
       job_log "[jobs] job=$JOB_ID type=bash but no command, skipping"
       continue
     fi
@@ -85,9 +65,7 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
     if [ -n "$JOB_DIR" ] && [ "$JOB_DIR" != "null" ] && [ ! -d "$JOB_DIR" ]; then
       job_log "[jobs] job=$JOB_ID invalid dir=$JOB_DIR, disabling job to prevent repeated failures"
       NOW=$(now_iso)
-      BASH_STATUS="failed"
-      export NOW BASH_STATUS
-      yq -i ".jobs[$i].enabled = false | .jobs[$i].last_run = strenv(NOW) | .jobs[$i].last_task_status = strenv(BASH_STATUS)" "$JOBS_PATH"
+      db "UPDATE jobs SET enabled = 0, last_run = '$NOW', last_task_status = 'failed' WHERE id = '$(sql_escape "$JOB_ID")';"
       continue
     fi
 
@@ -96,14 +74,12 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
     BASH_OUTPUT=$(cd "${JOB_DIR:-.}" && bash -c "$JOB_CMD" 2>&1) || BASH_RC=$?
 
     NOW=$(now_iso)
-    export NOW
     if [ "$BASH_RC" -eq 0 ]; then
       BASH_STATUS="done"
     else
       BASH_STATUS="failed"
     fi
-    export BASH_STATUS
-    yq -i ".jobs[$i].last_run = strenv(NOW) | .jobs[$i].last_task_status = strenv(BASH_STATUS)" "$JOBS_PATH"
+    db "UPDATE jobs SET last_run = '$NOW', last_task_status = '$(sql_escape "$BASH_STATUS")' WHERE id = '$(sql_escape "$JOB_ID")';"
 
     job_log "[jobs] job=$JOB_ID bash exit=$BASH_RC status=$BASH_STATUS"
     if [ -n "$BASH_OUTPUT" ]; then
@@ -113,13 +89,8 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
   fi
 
   # Task job: create a task for agent processing
-  JOB_TITLE=$(yq -r ".jobs[$i].task.title" "$JOBS_PATH")
-  JOB_BODY=$(yq -r ".jobs[$i].task.body // \"\"" "$JOBS_PATH")
-  JOB_LABELS=$(yq -r ".jobs[$i].task.labels // [] | join(\",\")" "$JOBS_PATH")
-  JOB_AGENT=$(yq -r ".jobs[$i].task.agent // \"\"" "$JOBS_PATH")
-
   # Add job tracking labels
-  if [ -n "$JOB_LABELS" ]; then
+  if [ -n "$JOB_LABELS" ] && [ "$JOB_LABELS" != "null" ]; then
     JOB_LABELS="${JOB_LABELS},scheduled,job:${JOB_ID}"
   else
     JOB_LABELS="scheduled,job:${JOB_ID}"
@@ -130,20 +101,16 @@ for i in $(seq 0 $((JOB_COUNT - 1))); do
 
   # Set agent if specified
   if [ -n "$JOB_AGENT" ] && [ "$JOB_AGENT" != "null" ]; then
-    export JOB_AGENT
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $NEW_TASK_ID) | .agent) = strenv(JOB_AGENT)" \
-      "$TASKS_PATH"
+    db_task_set "$NEW_TASK_ID" "agent" "$JOB_AGENT"
   fi
 
   # Update job state
   NOW=$(now_iso)
-  export NOW NEW_TASK_ID
-  yq -i ".jobs[$i].last_run = strenv(NOW) | .jobs[$i].active_task_id = (env(NEW_TASK_ID) | tonumber)" "$JOBS_PATH"
+  db "UPDATE jobs SET last_run = '$NOW', active_task_id = $NEW_TASK_ID WHERE id = '$(sql_escape "$JOB_ID")';"
 
   job_log "[jobs] job=$JOB_ID created task $NEW_TASK_ID"
   CREATED=$((CREATED + 1))
-done
+done < <(db_enabled_jobs)
 
 if [ "$CREATED" -gt 0 ]; then
   job_log "[jobs] created $CREATED task(s)"

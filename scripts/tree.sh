@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-require_yq
-init_tasks_file
 
 print_tree() {
   local id=$1
@@ -10,9 +8,10 @@ print_tree() {
   local last=$3
 
   local title status agent
-  title=$(yq -r ".tasks[] | select(.id == $id) | .title" "$TASKS_PATH")
-  status=$(yq -r ".tasks[] | select(.id == $id) | .status" "$TASKS_PATH")
-  agent=$(yq -r ".tasks[] | select(.id == $id) | .agent // \"-\"" "$TASKS_PATH")
+  title=$(db_task_field "$id" "title")
+  status=$(db_task_field "$id" "status")
+  agent=$(db_task_field "$id" "agent")
+  [ -z "$agent" ] && agent="-"
 
   if [ "$last" = true ]; then
     echo "${prefix}└─ [${id}] (${status}) ${agent} - ${title}"
@@ -23,7 +22,7 @@ print_tree() {
   fi
 
   local children
-  children=$(yq -r ".tasks[] | select(.id == $id) | .children[]?" "$TASKS_PATH")
+  children=$(db_task_children "$id")
   if [ -n "$children" ]; then
     local count=0
     local total
@@ -42,9 +41,8 @@ print_tree() {
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
-FILTER=$(dir_filter)
 
-ROOTS=$(yq -r "${FILTER} | select(.parent_id == null) | .id" "$TASKS_PATH")
+ROOTS=$(db_task_roots)
 if [ -z "$ROOTS" ]; then
   echo "No tasks."
   exit 0

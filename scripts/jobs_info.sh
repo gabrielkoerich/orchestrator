@@ -2,8 +2,6 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 source "$(dirname "$0")/output.sh"
-require_yq
-init_jobs_file
 
 JOB_ID="$1"
 if [ -z "$JOB_ID" ]; then
@@ -11,23 +9,26 @@ if [ -z "$JOB_ID" ]; then
   exit 1
 fi
 
-JOB=$(yq -r ".jobs[] | select(.id == \"$JOB_ID\")" "$JOBS_PATH")
-if [ -z "$JOB" ] || [ "$JOB" = "null" ]; then
+# Check if job exists
+TYPE=$(db_job_field "$JOB_ID" "type" 2>/dev/null || true)
+if [ -z "$TYPE" ]; then
   echo "Job '$JOB_ID' not found." >&2
   exit 1
 fi
+[ "$TYPE" = "null" ] && TYPE="task"
 
-TYPE=$(printf '%s' "$JOB" | yq -r '.type // "task"')
-SCHEDULE=$(printf '%s' "$JOB" | yq -r '.schedule')
-ENABLED=$(printf '%s' "$JOB" | yq -r '.enabled')
-LAST_RUN=$(printf '%s' "$JOB" | yq -r '.last_run // "-"')
-LAST_STATUS=$(printf '%s' "$JOB" | yq -r '.last_task_status // "-"')
-ACTIVE_TASK=$(printf '%s' "$JOB" | yq -r '.active_task_id // "-"')
-DIR=$(printf '%s' "$JOB" | yq -r '.dir // "-"')
+SCHEDULE=$(db_job_field "$JOB_ID" "schedule")
+ENABLED=$(db_job_field "$JOB_ID" "enabled")
+LAST_RUN=$(db_job_field "$JOB_ID" "last_run")
+LAST_STATUS=$(db_job_field "$JOB_ID" "last_task_status")
+ACTIVE_TASK=$(db_job_field "$JOB_ID" "active_task_id")
+DIR=$(db_job_field "$JOB_ID" "dir")
 
-[ "$LAST_RUN" = "null" ] && LAST_RUN="-"
-[ "$LAST_STATUS" = "null" ] && LAST_STATUS="-"
-[ "$ACTIVE_TASK" = "null" ] && ACTIVE_TASK="-"
+[ -z "$LAST_RUN" ] || [ "$LAST_RUN" = "null" ] && LAST_RUN="-"
+[ -z "$LAST_STATUS" ] || [ "$LAST_STATUS" = "null" ] && LAST_STATUS="-"
+[ -z "$ACTIVE_TASK" ] || [ "$ACTIVE_TASK" = "null" ] && ACTIVE_TASK="-"
+[ -z "$DIR" ] || [ "$DIR" = "null" ] && DIR="-"
+[ "$ENABLED" = "1" ] && ENABLED="true" || ENABLED="false"
 
 kv "ID" "$JOB_ID"
 kv "Type" "$TYPE"
@@ -39,20 +40,20 @@ kv "Active task" "$ACTIVE_TASK"
 kv "Directory" "$DIR"
 
 if [ "$TYPE" = "bash" ]; then
-  COMMAND=$(printf '%s' "$JOB" | yq -r '.command // ""')
+  COMMAND=$(db_job_field "$JOB_ID" "command")
   section "Command"
-  echo "$COMMAND"
+  echo "${COMMAND:-}"
 else
-  TITLE=$(printf '%s' "$JOB" | yq -r '.task.title // ""')
-  BODY=$(printf '%s' "$JOB" | yq -r '.task.body // ""')
-  LABELS=$(printf '%s' "$JOB" | yq -r '.task.labels // [] | join(", ")')
-  AGENT=$(printf '%s' "$JOB" | yq -r '.task.agent // "-"')
-  [ "$AGENT" = "null" ] && AGENT="(router decides)"
+  TITLE=$(db_job_field "$JOB_ID" "title")
+  BODY=$(db_job_field "$JOB_ID" "body")
+  LABELS=$(db_job_field "$JOB_ID" "labels")
+  AGENT=$(db_job_field "$JOB_ID" "agent")
+  [ -z "$AGENT" ] || [ "$AGENT" = "null" ] && AGENT="(router decides)"
 
   section "Task"
   kv "Title" "$TITLE"
   kv "Agent" "$AGENT"
-  kv "Labels" "$LABELS"
+  kv "Labels" "${LABELS:-}"
 
   if [ -n "$BODY" ] && [ "$BODY" != "null" ]; then
     section "Body"

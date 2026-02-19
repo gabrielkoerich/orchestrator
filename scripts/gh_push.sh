@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-require_yq
 require_jq
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
@@ -17,7 +16,6 @@ require_gh() {
 }
 
 require_gh
-init_tasks_file
 
 REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
@@ -36,7 +34,7 @@ PROJECT_ID=${GITHUB_PROJECT_ID:-$(config_get '.gh.project_id // ""')}
 PROJECT_STATUS_FIELD_ID=${GITHUB_PROJECT_STATUS_FIELD_ID:-$(config_get '.gh.project_status_field_id // ""')}
 PROJECT_STATUS_MAP_JSON=${GITHUB_PROJECT_STATUS_MAP_JSON:-}
 if [ -z "$PROJECT_STATUS_MAP_JSON" ]; then
-  PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
+  PROJECT_STATUS_MAP_JSON=$(yq -o=json -r '.gh.project_status_map // {}' "$CONFIG_PATH" 2>/dev/null | jq -c '.' 2>/dev/null || echo '{}')
 fi
 
 SKIP_LABELS=("no_gh" "local-only")
@@ -63,7 +61,6 @@ read_prompt_file() {
 }
 
 # Build a condensed tool activity summary from tools-{ID}.json
-# Returns markdown: table of tool counts + collapsed error details
 read_tool_summary() {
   local task_dir="$1" task_id="$2"
   local state_dir="${task_dir:+${task_dir}/.orchestrator}"
@@ -144,7 +141,7 @@ sync_project_status() {
   key=$(map_status_to_project "$status")
 
   local option_id
-  option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | yq -r ".\"$key\" // \"\"")
+  option_id=$(printf '%s' "$PROJECT_STATUS_MAP_JSON" | jq -r ".\"$key\" // \"\"")
   if [ -z "$option_id" ] || [ "$option_id" = "null" ]; then
     return 0
   fi
@@ -156,7 +153,7 @@ sync_project_status() {
   items_json=$(gh_api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV2 { items(first:100){ nodes{ id content{ ... on Issue { id } } } } } } }' -f project="$PROJECT_ID")
 
   local item_id
-  item_id=$(printf '%s' "$items_json" | yq -r ".data.node.items.nodes[] | select(.content.id == \"$issue_node\") | .id" | head -n1)
+  item_id=$(printf '%s' "$items_json" | jq -r ".data.node.items.nodes[] | select(.content.id == \"$issue_node\") | .id" | head -n1)
   if [ -z "$item_id" ] || [ "$item_id" = "null" ]; then
     # Issue not in project — add it
     local add_json
@@ -164,7 +161,7 @@ sync_project_status() {
       -f query='mutation($project:ID!,$contentId:ID!){ addProjectV2ItemById(input:{projectId:$project, contentId:$contentId}){ item{ id } } }' \
       -f project="$PROJECT_ID" \
       -f contentId="$issue_node" 2>/dev/null || true)
-    item_id=$(printf '%s' "$add_json" | yq -r '.data.addProjectV2ItemById.item.id // ""' 2>/dev/null)
+    item_id=$(printf '%s' "$add_json" | jq -r '.data.addProjectV2ItemById.item.id // ""' 2>/dev/null)
     if [ -z "$item_id" ] || [ "$item_id" = "null" ]; then
       return 0
     fi
@@ -186,32 +183,7 @@ archive_project_item() {
   ' -f projectId="$project_id" -f itemId="$item_id" 2>/dev/null || true
 }
 
-# Content-hash dedup: hash comment body, compare with stored last_comment_hash.
-# Returns 0 (skip) if hash matches, 1 (post) if new. Stores hash after caller posts.
-should_skip_comment() {
-  local task_id="$1" body="$2"
-  local new_hash
-  new_hash=$(printf '%s' "$body" | shasum -a 256 | cut -c1-16)
-  local old_hash
-  old_hash=$(yq -r ".tasks[] | select(.id == $task_id) | .last_comment_hash // \"\"" "$TASKS_PATH")
-  if [ "$new_hash" = "$old_hash" ]; then
-    return 0  # skip
-  fi
-  return 1  # post
-}
-
-store_comment_hash() {
-  local task_id="$1" body="$2"
-  local hash
-  hash=$(printf '%s' "$body" | shasum -a 256 | cut -c1-16)
-  export hash
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $task_id) | .last_comment_hash) = strenv(hash)" \
-    "$TASKS_PATH"
-}
-
 # Ensure a label exists on the repo (create with color if missing).
-# Usage: ensure_label "blocked" "d73a4a" "Task is blocked and needs attention"
 ensure_label() {
   local name="$1" color="${2:-ededed}" description="${3:-}"
   local encoded
@@ -222,7 +194,6 @@ ensure_label() {
     gh_api "repos/$REPO/labels" \
       -f name="$name" -f color="$color" -f description="$description" >/dev/null 2>&1 || true
   else
-    # Update color if it doesn't match
     local current_color
     current_color=$(printf '%s' "$existing" | jq -r '.color // ""')
     if [ "$current_color" != "$color" ]; then
@@ -232,96 +203,95 @@ ensure_label() {
   fi
 }
 
-TASK_COUNT=$(yq -r '.tasks | length' "$TASKS_PATH")
+# ============================================================
+# Main sync loop
+# ============================================================
+
+TASK_COUNT=$(db_total_task_count)
 if [ "$TASK_COUNT" -le 0 ]; then
   exit 0
 fi
 
-DIRTY_COUNT=$(yq -r '
-  [.tasks[] | select(
-    ((.status == "done") and (.updated_at == .gh_synced_at) | not) and (
-      (.gh_issue_number == null or .gh_issue_number == "") or
-      (.updated_at != .gh_synced_at)
-    )
-  )] | length
-' "$TASKS_PATH")
+DIRTY_COUNT=$(db_dirty_task_count)
 # Always run the loop if project board is configured (status may need syncing)
 if [ "$DIRTY_COUNT" -le 0 ] && [ -z "$PROJECT_ID" ]; then
   exit 0
 fi
-for i in $(seq 0 $((TASK_COUNT - 1))); do
-  TASK_JSON=$(yq -o=json ".tasks[$i]" "$TASKS_PATH")
-  ID=$(printf '%s' "$TASK_JSON" | jq -r '.id')
-  TITLE=$(printf '%s' "$TASK_JSON" | jq -r '.title')
-  BODY=$(printf '%s' "$TASK_JSON" | jq -r '.body // ""')
-  LABELS_JSON=$(printf '%s' "$TASK_JSON" | jq -c '.labels // []')
-  STATUS=$(printf '%s' "$TASK_JSON" | jq -r '.status')
-  GH_NUM=$(printf '%s' "$TASK_JSON" | jq -r '.gh_issue_number // ""')
-  GH_STATE=$(printf '%s' "$TASK_JSON" | jq -r '.gh_state // ""' | tr '[:upper:]' '[:lower:]')
-  GH_PROJECT_ITEM_ID=$(printf '%s' "$TASK_JSON" | jq -r '.gh_project_item_id // ""')
-  GH_ARCHIVED=$(printf '%s' "$TASK_JSON" | jq -r '.gh_archived // ""')
-  SUMMARY=$(printf '%s' "$TASK_JSON" | jq -r '.summary // ""')
-  REASON=$(printf '%s' "$TASK_JSON" | jq -r '.reason // ""')
-  ACCOMPLISHED=$(printf '%s' "$TASK_JSON" | jq -r '.accomplished // [] | join(", ")')
-  ACCOMPLISHED_LIST=$(printf '%s' "$TASK_JSON" | jq -r '.accomplished // [] | .[] | "- " + .')
-  REMAINING=$(printf '%s' "$TASK_JSON" | jq -r '.remaining // [] | join(", ")')
-  REMAINING_LIST=$(printf '%s' "$TASK_JSON" | jq -r '.remaining // [] | .[] | "- " + .')
-  BLOCKERS=$(printf '%s' "$TASK_JSON" | jq -r '.blockers // [] | join(", ")')
-  BLOCKERS_LIST=$(printf '%s' "$TASK_JSON" | jq -r '.blockers // [] | .[] | "- " + .')
-  FILES_CHANGED_JSON=$(printf '%s' "$TASK_JSON" | jq -c '.files_changed // []')
-  FILES_CHANGED_LIST=$(printf '%s' "$TASK_JSON" | jq -r '.files_changed // [] | .[] | "- `" + . + "`"')
-  LAST_ERROR=$(printf '%s' "$TASK_JSON" | jq -r '.last_error // ""')
-  AGENT=$(printf '%s' "$TASK_JSON" | jq -r '.agent // ""')
-  AGENT_MODEL=$(printf '%s' "$TASK_JSON" | jq -r '.agent_model // ""')
-  PARENT_ID=$(printf '%s' "$TASK_JSON" | jq -r '.parent_id // ""')
-  PROMPT_HASH=$(printf '%s' "$TASK_JSON" | jq -r '.prompt_hash // ""')
-  TASK_DIR=$(printf '%s' "$TASK_JSON" | jq -r '.dir // ""')
-  ATTEMPTS=$(printf '%s' "$TASK_JSON" | jq -r '.attempts // 0')
-  DURATION=$(printf '%s' "$TASK_JSON" | jq -r '.duration // 0')
-  INPUT_TOKENS=$(printf '%s' "$TASK_JSON" | jq -r '.input_tokens // 0')
-  OUTPUT_TOKENS=$(printf '%s' "$TASK_JSON" | jq -r '.output_tokens // 0')
-  STDERR_SNIPPET=$(printf '%s' "$TASK_JSON" | jq -r '.stderr_snippet // ""')
-  UPDATED_AT=$(printf '%s' "$TASK_JSON" | jq -r '.updated_at // ""')
-  GH_SYNCED_AT=$(printf '%s' "$TASK_JSON" | jq -r '.gh_synced_at // ""')
-  GH_SYNCED_STATUS=$(printf '%s' "$TASK_JSON" | jq -r '.gh_synced_status // ""')
+
+ALL_IDS=$(db_all_task_ids)
+[ -z "$ALL_IDS" ] && exit 0
+
+while IFS= read -r ID; do
+  [ -n "$ID" ] || continue
+
+  # Load all task fields into shell variables
+  db_load_task "$ID" || continue
+
+  STATUS="$TASK_STATUS"
+  TITLE="$TASK_TITLE"
+  BODY="$TASK_BODY"
+  AGENT="$TASK_AGENT"
+  AGENT_MODEL_VAL="$AGENT_MODEL"
+  GH_NUM="$GH_ISSUE_NUMBER"
+  GH_STATE=$(printf '%s' "$TASK_GH_STATE" | tr '[:upper:]' '[:lower:]')
+  GH_PROJECT_ITEM_ID="$TASK_GH_PROJECT_ITEM_ID"
+  GH_ARCHIVED="$TASK_GH_ARCHIVED"
+  SUMMARY="$TASK_SUMMARY"
+  REASON="$TASK_REASON"
+  LAST_ERROR="$TASK_LAST_ERROR"
+  PARENT_ID="$TASK_PARENT_ID"
+  PROMPT_HASH="$TASK_PROMPT_HASH"
+  TASK_DIR_VAL="$TASK_DIR"
+  ATTEMPTS_VAL="$ATTEMPTS"
+  DURATION="$TASK_DURATION"
+  INPUT_TOKENS="$TASK_INPUT_TOKENS"
+  OUTPUT_TOKENS="$TASK_OUTPUT_TOKENS"
+  STDERR_SNIPPET="$TASK_STDERR_SNIPPET"
+  UPDATED_AT="$TASK_UPDATED_AT"
+  GH_SYNCED_AT="$TASK_GH_SYNCED_AT"
+  GH_SYNCED_STATUS="$TASK_GH_SYNCED_STATUS"
+
+  # Get array fields
+  ACCOMPLISHED_LIST=$(db_task_accomplished_list "$ID")
+  REMAINING_LIST=$(db_task_remaining_list "$ID")
+  BLOCKERS_LIST=$(db_task_blockers_list "$ID")
+  FILES_CHANGED_LIST=$(db_task_files_list "$ID")
+
+  # Get labels as JSON array for GitHub API
+  LABELS_JSON=$(db_task_labels_json "$ID")
 
   # Reload project config if task belongs to a different project
-  if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ] && [ "$TASK_DIR" != "$PROJECT_DIR" ]; then
-    PROJECT_DIR="$TASK_DIR"
+  if [ -n "$TASK_DIR_VAL" ] && [ "$TASK_DIR_VAL" != "null" ] && [ "$TASK_DIR_VAL" != "$PROJECT_DIR" ]; then
+    PROJECT_DIR="$TASK_DIR_VAL"
     export PROJECT_DIR
     PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
-    # Reset to global config first, then merge project override if it exists
     CONFIG_PATH="$GLOBAL_CONFIG_PATH"
     load_project_config
     REPO=$(config_get '.gh.repo // ""')
     PROJECT_ID=$(config_get '.gh.project_id // ""')
     PROJECT_STATUS_FIELD_ID=$(config_get '.gh.project_status_field_id // ""')
-    PROJECT_STATUS_MAP_JSON=$(yq -o=json -I=0 '.gh.project_status_map // {}' "$CONFIG_PATH")
+    PROJECT_STATUS_MAP_JSON=$(config_get '.gh.project_status_map // {}' | jq -c '.' 2>/dev/null || echo '{}')
   fi
 
   log "[gh_push] [$PROJECT_NAME] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
 
   # Skip done tasks that already have a closed GitHub issue — nothing to sync
   if [ "$STATUS" = "done" ] && [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$GH_STATE" = "closed" ]; then
-    if [ "${GH_ARCHIVED:-}" != "true" ] && [ -n "${GH_PROJECT_ITEM_ID:-}" ] && [ "$GH_PROJECT_ITEM_ID" != "null" ] && [ -n "${PROJECT_ID:-}" ]; then
+    if [ "${GH_ARCHIVED:-0}" != "1" ] && [ -n "${GH_PROJECT_ITEM_ID:-}" ] && [ "$GH_PROJECT_ITEM_ID" != "null" ] && [ -n "${PROJECT_ID:-}" ]; then
       archive_project_item "$PROJECT_ID" "$GH_PROJECT_ITEM_ID"
-      task_set "$ID" '.gh_archived' "true"
+      db_task_set "$ID" "gh_archived" "1"
       log "[gh_push] [$PROJECT_NAME] task=$ID archived project item $GH_PROJECT_ITEM_ID"
     fi
-    # Mark synced so we don't re-check next time
     if [ "$UPDATED_AT" != "$GH_SYNCED_AT" ] || [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
-      export STATUS
-      with_lock yq -i \
-        "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at |
-         (.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
-        "$TASKS_PATH"
+      db_task_set_synced "$ID" "$STATUS"
     fi
     continue
   fi
 
+  # Skip tasks with no_gh or local-only labels
   skip=false
   for lbl in "${SKIP_LABELS[@]}"; do
-    if printf '%s' "$LABELS_JSON" | yq -e "any_c(. == \"$lbl\")" >/dev/null 2>&1; then
+    if db_task_has_label "$ID" "$lbl"; then
       skip=true
       break
     fi
@@ -331,21 +301,17 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   fi
 
   if [ -n "$SYNC_LABEL" ] && [ "$SYNC_LABEL" != "null" ]; then
-    if ! printf '%s' "$LABELS_JSON" | yq -e "any_c(. == \"$SYNC_LABEL\")" >/dev/null 2>&1; then
+    if ! db_task_has_label "$ID" "$SYNC_LABEL"; then
       # Still sync board status even if task doesn't have sync label
       if [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
         sync_project_status "$GH_NUM" "$STATUS"
-        export STATUS
-        with_lock yq -i \
-          "(.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
-          "$TASKS_PATH"
+        db_task_update "$ID" "gh_synced_status=$STATUS"
       fi
       continue
     fi
   fi
 
   STATUS_LABEL="${STATUS_LABEL_PREFIX}${STATUS}"
-  export STATUS_LABEL STATUS_LABEL_PREFIX
   # Ensure status label exists with a color
   case "$STATUS" in
     new)           ensure_label "$STATUS_LABEL" "0e8a16" "Task is new" ;;
@@ -357,6 +323,8 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     needs_review)  ensure_label "$STATUS_LABEL" "e4e669" "Task needs human review" ;;
     *)             ensure_label "$STATUS_LABEL" "c5def5" "" ;;
   esac
+
+  # Build labels for GitHub: existing labels minus old status + new status
   LABELS_FOR_GH=$(printf '%s' "$LABELS_JSON" | jq -c --arg prefix "$STATUS_LABEL_PREFIX" --arg status "$STATUS_LABEL" \
     'map(select(startswith($prefix) | not)) + [$status]')
 
@@ -365,35 +333,28 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
       log_err "Skipping task $ID: missing title; cannot create GitHub issue." >&2
       continue
     fi
-    # create issue
+    # Create issue
     LABEL_ARGS=()
-    LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
-    for j in $(seq 0 $((LABEL_COUNT - 1))); do
-      LBL=$(printf '%s' "$LABELS_FOR_GH" | yq -r ".[$j]")
-      LABEL_ARGS+=("-f" "labels[]=$LBL")
+    for lbl in $(printf '%s' "$LABELS_FOR_GH" | jq -r '.[]'); do
+      LABEL_ARGS+=("-f" "labels[]=$lbl")
     done
 
     RESP=$(gh_api "repos/$REPO/issues" -f title="$TITLE" -f body="$BODY" "${LABEL_ARGS[@]}")
-    NUM=$(printf '%s' "$RESP" | yq -r '.number')
-    URL=$(printf '%s' "$RESP" | yq -r '.html_url')
-    STATE=$(printf '%s' "$RESP" | yq -r '.state')
-    NOW=$(now_iso)
+    NUM=$(printf '%s' "$RESP" | jq -r '.number')
+    URL=$(printf '%s' "$RESP" | jq -r '.html_url')
+    STATE=$(printf '%s' "$RESP" | jq -r '.state')
 
-    export NUM URL STATE
-    export STATUS
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $ID) | .gh_issue_number) = (env(NUM) | tonumber) | \
-       (.tasks[] | select(.id == $ID) | .gh_url) = strenv(URL) | \
-       (.tasks[] | select(.id == $ID) | .gh_state) = strenv(STATE) | \
-       (.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at | \
-       (.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
-      "$TASKS_PATH"
+    db_task_update "$ID" \
+      "gh_issue_number=$NUM" \
+      "gh_url=$URL" \
+      "gh_state=$STATE"
+    db_task_set_synced "$ID" "$STATUS"
 
     log "[gh_push] [$PROJECT_NAME] task=$ID created issue #$NUM"
 
     # Link as sub-issue if task has a parent with a GitHub issue
     if [ -n "$PARENT_ID" ] && [ "$PARENT_ID" != "null" ]; then
-      PARENT_GH_NUM=$(yq -r ".tasks[] | select(.id == $PARENT_ID) | .gh_issue_number // \"\"" "$TASKS_PATH")
+      PARENT_GH_NUM=$(db_task_field "$PARENT_ID" "gh_issue_number")
       if [ -n "$PARENT_GH_NUM" ] && [ "$PARENT_GH_NUM" != "null" ] && [ "$PARENT_GH_NUM" != "0" ]; then
         PARENT_NODE_ID=$(gh_api "repos/$REPO/issues/$PARENT_GH_NUM" -q '.node_id' 2>/dev/null || true)
         CHILD_NODE_ID=$(gh_api "repos/$REPO/issues/$NUM" -q '.node_id' 2>/dev/null || true)
@@ -415,23 +376,16 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 
     if [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
       sync_project_status "$NUM" "$STATUS"
-      export STATUS
-      with_lock yq -i \
-        "(.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
-        "$TASKS_PATH"
+      db_task_update "$ID" "gh_synced_status=$STATUS"
     fi
     continue
   fi
 
   # Ensure issue labels reflect status only when task changed
   if [ "$UPDATED_AT" = "$GH_SYNCED_AT" ]; then
-    # Skip redundant project sync when status has not changed since last sync
     if [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
       sync_project_status "$GH_NUM" "$STATUS"
-      export STATUS
-      with_lock yq -i \
-        "(.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
-        "$TASKS_PATH"
+      db_task_update "$ID" "gh_synced_status=$STATUS"
     fi
     continue
   fi
@@ -439,10 +393,8 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   log "[gh_push] [$PROJECT_NAME] task=$ID syncing (updated_at=$UPDATED_AT gh_synced_at=$GH_SYNCED_AT)"
 
   LABEL_ARGS=()
-  LABEL_COUNT=$(printf '%s' "$LABELS_FOR_GH" | yq -r 'length')
-  for j in $(seq 0 $((LABEL_COUNT - 1))); do
-    LBL=$(printf '%s' "$LABELS_FOR_GH" | yq -r ".[$j]")
-    LABEL_ARGS+=("-f" "labels[]=$LBL")
+  for lbl in $(printf '%s' "$LABELS_FOR_GH" | jq -r '.[]'); do
+    LABEL_ARGS+=("-f" "labels[]=$lbl")
   done
   gh_api "repos/$REPO/issues/$GH_NUM" -X PATCH "${LABEL_ARGS[@]}" >/dev/null
 
@@ -452,11 +404,10 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     gh_api "repos/$REPO/issues/$GH_NUM/labels" \
       --input - <<< '{"labels":["blocked"]}' >/dev/null 2>&1 || true
   else
-    # Remove blocked label if present (ignore 404)
     gh_api "repos/$REPO/issues/$GH_NUM/labels/blocked" -X DELETE >/dev/null 2>&1 || true
   fi
 
-  # Add agent label (agent:claude, agent:codex, agent:opencode)
+  # Add agent label
   if [ -n "$AGENT" ] && [ "$AGENT" != "null" ]; then
     AGENT_LABEL="agent:${AGENT}"
     ensure_label "$AGENT_LABEL" "c5def5" "Assigned to $AGENT agent"
@@ -468,7 +419,7 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
   gh_api "repos/$REPO/issues/$GH_NUM/subscription" \
     -X PUT --input - <<< '{"subscribed":true,"ignored":false}' >/dev/null 2>&1 || true
 
-  # Post a comment for the update (we already know task changed from the gate above)
+  # Post a comment for the update
   if [ -n "$UPDATED_AT" ]; then
     BADGE=$(agent_badge "$AGENT")
     IS_BLOCKED=false
@@ -476,39 +427,34 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
       IS_BLOCKED=true
     fi
 
-    # Only post if there's something meaningful to say
     if [ "$IS_BLOCKED" = true ] || { [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; }; then
 
-      # --- Build comment ---
       COMMENT=""
 
-      # Header: summary as title (or "Needs help" for blocked)
       if [ "$IS_BLOCKED" = true ]; then
         COMMENT="## ${BADGE} Needs Help"
       elif [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
         COMMENT="## ${BADGE} ${SUMMARY}"
       fi
 
-      # Status & metadata table
       COMMENT="${COMMENT}
 
 | | |
 |---|---|
 | **Status** | \`${STATUS}\` |
 | **Agent** | ${AGENT:-unknown} |"
-      if [ -n "$AGENT_MODEL" ] && [ "$AGENT_MODEL" != "null" ]; then
+      if [ -n "$AGENT_MODEL_VAL" ] && [ "$AGENT_MODEL_VAL" != "null" ]; then
         COMMENT="${COMMENT}
-| **Model** | \`${AGENT_MODEL}\` |"
+| **Model** | \`${AGENT_MODEL_VAL}\` |"
       fi
       COMMENT="${COMMENT}
-| **Attempt** | ${ATTEMPTS} |"
+| **Attempt** | ${ATTEMPTS_VAL} |"
       if [ "$DURATION" -gt 0 ] 2>/dev/null; then
         DURATION_FMT=$(duration_fmt "$DURATION")
         COMMENT="${COMMENT}
 | **Duration** | ${DURATION_FMT} |"
       fi
       if [ "$INPUT_TOKENS" -gt 0 ] 2>/dev/null; then
-        # Format tokens as "15k in / 3k out"
         if [ "$INPUT_TOKENS" -ge 1000 ]; then
           IN_FMT="$((INPUT_TOKENS / 1000))k"
         else
@@ -527,14 +473,12 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
 | **Prompt** | \`${PROMPT_HASH}\` |"
       fi
 
-      # Summary paragraph (only when blocked, since progress uses it as the title)
       if [ "$IS_BLOCKED" = true ] && [ -n "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
         COMMENT="${COMMENT}
 
 ${SUMMARY}"
       fi
 
-      # Reason / error section
       if [ -n "$REASON" ] && [ "$REASON" != "null" ] || \
          [ -n "$LAST_ERROR" ] && [ "$LAST_ERROR" != "null" ] || \
          [ -n "$BLOCKERS_LIST" ]; then
@@ -558,7 +502,6 @@ ${BLOCKERS_LIST}"
         fi
       fi
 
-      # Accomplished
       if [ -n "$ACCOMPLISHED_LIST" ]; then
         COMMENT="${COMMENT}
 
@@ -567,7 +510,6 @@ ${BLOCKERS_LIST}"
 ${ACCOMPLISHED_LIST}"
       fi
 
-      # Remaining
       if [ -n "$REMAINING_LIST" ]; then
         COMMENT="${COMMENT}
 
@@ -576,7 +518,6 @@ ${ACCOMPLISHED_LIST}"
 ${REMAINING_LIST}"
       fi
 
-      # Files changed
       if [ -n "$FILES_CHANGED_LIST" ]; then
         COMMENT="${COMMENT}
 
@@ -585,15 +526,13 @@ ${REMAINING_LIST}"
 ${FILES_CHANGED_LIST}"
       fi
 
-      # Note for blocked tasks (no @mention since comment is posted as the owner)
       if [ "$IS_BLOCKED" = true ]; then
         COMMENT="${COMMENT}
 
 > ⚠️ This task needs your attention."
       fi
 
-      # Tool activity
-      TOOL_ACTIVITY=$(read_tool_summary "$TASK_DIR" "$ID")
+      TOOL_ACTIVITY=$(read_tool_summary "$TASK_DIR_VAL" "$ID")
       if [ -n "$TOOL_ACTIVITY" ]; then
         COMMENT="${COMMENT}
 
@@ -602,7 +541,6 @@ ${FILES_CHANGED_LIST}"
 ${TOOL_ACTIVITY}"
       fi
 
-      # Collapsed stderr
       if [ -n "$STDERR_SNIPPET" ] && [ "$STDERR_SNIPPET" != "null" ]; then
         COMMENT="${COMMENT}
 
@@ -615,8 +553,7 @@ ${STDERR_SNIPPET}
 </details>"
       fi
 
-      # Collapsed prompt
-      PROMPT_CONTENT=$(read_prompt_file "$TASK_DIR" "$ID")
+      PROMPT_CONTENT=$(read_prompt_file "$TASK_DIR_VAL" "$ID")
       if [ -n "$PROMPT_CONTENT" ]; then
         COMMENT="${COMMENT}
 
@@ -629,17 +566,15 @@ ${PROMPT_CONTENT}
 </details>"
       fi
 
-      # Footer
       AGENT_NAME="${AGENT:-orchestrator}"
       COMMENT="${COMMENT}
 
 ---
 *Commented by ${AGENT_NAME}[bot] via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*"
 
-      # --- Post with dedup ---
-      if ! should_skip_comment "$ID" "$COMMENT"; then
+      if ! db_should_skip_comment "$ID" "$COMMENT"; then
         gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null
-        store_comment_hash "$ID" "$COMMENT"
+        db_store_comment_hash "$ID" "$COMMENT"
         log "[gh_push] [$PROJECT_NAME] task=$ID posted comment on #$GH_NUM (status=$STATUS prompt=$PROMPT_HASH)"
       else
         log "[gh_push] [$PROJECT_NAME] task=$ID skipped duplicate comment on #$GH_NUM"
@@ -647,41 +582,19 @@ ${PROMPT_CONTENT}
     fi
   fi
 
-  export STATUS
-  # Mark synced atomically — copy the task's own updated_at so we never use a stale shell var
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $ID)).gh_synced_at = (.tasks[] | select(.id == $ID)).updated_at |
-     (.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
-    "$TASKS_PATH"
+  db_task_set_synced "$ID" "$STATUS"
   log "[gh_push] [$PROJECT_NAME] task=$ID synced"
-
-  # Don't auto-close issues — GitHub handles this via "Closes #N" in the PR body.
-  # When the PR merges, GitHub closes the issue, gh_pull.sh detects it, and marks the task "done".
 
   if [ "$STATUS" != "$GH_SYNCED_STATUS" ]; then
     sync_project_status "$GH_NUM" "$STATUS"
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $ID)).gh_synced_status = strenv(STATUS)" \
-      "$TASKS_PATH"
+    db_task_update "$ID" "gh_synced_status=$STATUS"
   fi
 
-done
+done <<< "$ALL_IDS"
 
 # --- Catch-all: create PRs for pushed branches that don't have one ---
-for i in $(seq 0 $((TASK_COUNT - 1))); do
-  _ID=$(yq -r ".tasks[$i].id" "$TASKS_PATH")
-  _BRANCH=$(yq -r ".tasks[$i].branch // \"\"" "$TASKS_PATH")
-  _STATUS=$(yq -r ".tasks[$i].status" "$TASKS_PATH")
-  _GH_NUM=$(yq -r ".tasks[$i].gh_issue_number // \"\"" "$TASKS_PATH")
-  _TITLE=$(yq -r ".tasks[$i].title" "$TASKS_PATH")
-  _SUMMARY=$(yq -r ".tasks[$i].summary // \"\"" "$TASKS_PATH")
-  _WORKTREE=$(yq -r ".tasks[$i].worktree // \"\"" "$TASKS_PATH")
-  _AGENT=$(yq -r ".tasks[$i].agent // \"\"" "$TASKS_PATH")
-
-  # Skip tasks without branches or on main
-  [ -n "$_BRANCH" ] && [ "$_BRANCH" != "null" ] && [ "$_BRANCH" != "main" ] && [ "$_BRANCH" != "master" ] || continue
-  # Only for tasks that are done, in_review, in_progress, or blocked
-  case "$_STATUS" in done|in_review|in_progress|blocked) ;; *) continue ;; esac
+while IFS=$'\x1f' read -r _ID _BRANCH _STATUS _TITLE _SUMMARY _WORKTREE _AGENT _GH_NUM; do
+  [ -n "$_ID" ] || continue
 
   # Check if branch exists on remote
   if ! git ls-remote --heads origin "$_BRANCH" 2>/dev/null | grep -q "$_BRANCH"; then
@@ -721,4 +634,4 @@ ${_GH_NUM:+Closes #${_GH_NUM}}
   if [ -n "$PR_URL" ]; then
     log "[gh_push] [$PROJECT_NAME] task=$_ID created catch-all PR for branch $_BRANCH: $PR_URL"
   fi
-done
+done < <(db_tasks_with_branches)

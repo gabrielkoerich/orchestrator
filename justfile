@@ -334,6 +334,11 @@ _job_tick:
 killall:
     @scripts/stop.sh --force
 
+# Migrate tasks.yml + jobs.yml to SQLite (automatic on next service start)
+[group('config')]
+migrate:
+    @scripts/migrate_to_sqlite.sh
+
 # Stop orchestrator service (via brew)
 [group('service')]
 stop:

@@ -10,8 +10,13 @@ setup() {
   export ORCH_HOME="${TMP_DIR}/orch_home"
   mkdir -p "$ORCH_HOME"
   export TASKS_PATH="${ORCH_HOME}/tasks.yml"
+  export JOBS_PATH="${ORCH_HOME}/jobs.yml"
   export CONFIG_PATH="${ORCH_HOME}/config.yml"
+  export DB_PATH="${ORCH_HOME}/orchestrator.db"
+  export SCHEMA_PATH="${REPO_DIR}/scripts/schema.sql"
   export PROJECT_DIR="${TMP_DIR}"
+  # Initialize SQLite database
+  sqlite3 "$DB_PATH" < "$SCHEMA_PATH" >/dev/null
   # Initialize a git repo so worktree creation works
   git -C "$PROJECT_DIR" init -b main --quiet 2>/dev/null || true
   git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet 2>/dev/null || true
@@ -35,6 +40,14 @@ YAML
   "${REPO_DIR}/scripts/add_task.sh" "Init" "Bootstrap" "" >/dev/null
 }
 
+# SQLite test helpers
+tdb() { sqlite3 "$DB_PATH" "$@"; }
+tdb_field() { sqlite3 "$DB_PATH" "SELECT $2 FROM tasks WHERE id = $1;"; }
+tdb_set() { sqlite3 "$DB_PATH" "UPDATE tasks SET $2 = '$3', updated_at = datetime('now') WHERE id = $1;"; }
+tdb_count() { sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM tasks;"; }
+tdb_job_field() { sqlite3 "$DB_PATH" "SELECT $2 FROM jobs WHERE id = '$1';"; }
+tdb_job_count() { sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM jobs;"; }
+
 teardown() {
   # Clean up worktrees created by tests (they live outside TMP_DIR)
   PROJECT_NAME=$(basename "$TMP_DIR")
@@ -50,15 +63,15 @@ teardown() {
   run "${REPO_DIR}/scripts/add_task.sh" "Test Title" "Test Body" "label1,label2"
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks | length' "$TASKS_PATH"
+  run tdb_count
   [ "$status" -eq 0 ]
   [ "$output" -eq 2 ]
 
-  run yq -r '.tasks[1].title' "$TASKS_PATH"
+  run tdb_field 2 title
   [ "$status" -eq 0 ]
   [ "$output" = "Test Title" ]
 
-  run yq -r '.tasks[1].dir' "$TASKS_PATH"
+  run tdb_field 2 dir
   [ "$status" -eq 0 ]
   [ "$output" = "$TMP_DIR" ]
 }
@@ -67,7 +80,7 @@ teardown() {
   run "${REPO_DIR}/scripts/add_task.sh" "Route Me" "Routing body" ""
   [ "$status" -eq 0 ]
 
-  run yq -i '.router.agent = "codex"' "$TASKS_PATH"
+  run yq -i '.router.agent = "codex"' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
 
   CODEX_STUB="${TMP_DIR}/codex"
@@ -84,11 +97,11 @@ SH
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | tail -n1)" = "codex" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "routed" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .agent_profile.role' "$TASKS_PATH"
+  run tdb "SELECT json_extract(agent_profile, '$.role') FROM tasks WHERE id = 2;"
   [ "$status" -eq 0 ]
   [ "$output" = "backend specialist" ]
 }
@@ -108,17 +121,17 @@ SH
   chmod +x "$CODEX_STUB"
   export PATH="${TMP_DIR}:${PATH}"
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "blocked" ]
 
-  run yq -r '.tasks[] | select(.parent_id == 2) | .title' "$TASKS_PATH"
+  run tdb "SELECT title FROM tasks WHERE parent_id = 2;"
   [ "$status" -eq 0 ]
   [ "$output" = "Child Task" ]
 }
@@ -137,19 +150,19 @@ SH
   chmod +x "$CODEX_STUB"
   export PATH="${TMP_DIR}:${PATH}"
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
   # Task should be done, not blocked
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 
   # No child tasks should be created
-  run yq -r '.tasks[] | select(.parent_id == 2) | .title' "$TASKS_PATH"
+  run tdb "SELECT title FROM tasks WHERE parent_id = 2;"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
@@ -161,14 +174,15 @@ SH
   run "${REPO_DIR}/scripts/add_task.sh" "Child" "Child body" ""
   [ "$status" -eq 0 ]
 
-  run yq -i '(.tasks[] | select(.id == 1) | .status) = "done"' "$TASKS_PATH"
+  run tdb_set 1 status "done"
   [ "$status" -eq 0 ]
 
-  run yq -i '(.tasks[] | select(.id == 2) | .status) = "blocked" | (.tasks[] | select(.id == 2) | .children) = [3]' "$TASKS_PATH"
+  tdb_set 2 status "blocked"
+  tdb "INSERT OR IGNORE INTO task_children (parent_id, child_id) VALUES (2, 3);"
   [ "$status" -eq 0 ]
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
-  run yq -i '(.tasks[] | select(.id == 3) | .status) = "done" | (.tasks[] | select(.id == 3) | .agent) = "codex"' "$TASKS_PATH"
+  tdb "UPDATE tasks SET status = 'done', agent = 'codex', updated_at = datetime('now') WHERE id = 3;"
   [ "$status" -eq 0 ]
 
   # Stub prints JSON to stdout (parsed by normalize_json_response)
@@ -185,7 +199,7 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/poll.sh"
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 }
@@ -313,11 +327,11 @@ SH
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | tail -n1)" = "codex" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "routed" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .route_reason' "$TASKS_PATH"
+  run tdb_field 2 route_reason
   [ "$status" -eq 0 ]
   [[ "$output" == *"fallback"* ]]
 }
@@ -330,7 +344,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Task agent is codex → review agent should be claude (opposite)
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   # Execution stub (codex) prints done JSON to stdout
@@ -374,7 +388,7 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .review_decision' "$TASKS_PATH"
+  run tdb_field 2 review_decision
   [ "$status" -eq 0 ]
   [ "$output" = "approve" ]
 }
@@ -393,21 +407,21 @@ JSON
 SH
   chmod +x "$CODEX_STUB"
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .summary' "$TASKS_PATH"
+  run tdb_field 2 summary
   [ "$status" -eq 0 ]
   [ "$output" = "wrote output file" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .files_changed[0]' "$TASKS_PATH"
+  run tdb "SELECT file_path FROM task_files WHERE task_id = 2 LIMIT 1;"
   [ "$status" -eq 0 ]
   [ "$output" = "test.txt" ]
 }
@@ -426,17 +440,17 @@ JSON
 SH
   chmod +x "$CODEX_STUB"
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .summary' "$TASKS_PATH"
+  run tdb_field 2 summary
   [ "$status" -eq 0 ]
   [ "$output" = "stdout mode" ]
 }
@@ -473,21 +487,21 @@ SH
   [ "$status" -eq 0 ]
   [[ "$output" == *"Added job"* ]]
 
-  run yq -r '.jobs | length' "$JOBS_PATH"
+  run tdb_job_count
   [ "$status" -eq 0 ]
   [ "$output" -eq 1 ]
 
-  run yq -r '.jobs[0].id' "$JOBS_PATH"
+  run tdb "SELECT id FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$status" -eq 0 ]
   [ "$output" = "daily-sync" ]
 
-  run yq -r '.jobs[0].schedule' "$JOBS_PATH"
+  run tdb "SELECT schedule FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$status" -eq 0 ]
   [ "$output" = "0 9 * * *" ]
 
-  run yq -r '.jobs[0].enabled' "$JOBS_PATH"
+  run tdb "SELECT enabled FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$status" -eq 0 ]
-  [ "$output" = "true" ]
+  [ "$output" = "1" ]
 }
 
 @test "jobs_add.sh rejects duplicate job IDs" {
@@ -503,131 +517,75 @@ SH
 }
 
 @test "jobs_tick.sh creates task when schedule matches" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  cat > "$JOBS_PATH" <<'YAML'
-jobs:
-  - id: test-always
-    schedule: "* * * * *"
-    task:
-      title: "Always Run"
-      body: "Test job body"
-      labels: [test]
-      agent: null
-    enabled: true
-    last_run: null
-    last_task_status: null
-    active_task_id: null
-YAML
+  tdb "INSERT INTO jobs (id, title, schedule, type, body, labels, enabled, created_at) VALUES ('test-always', 'Always Run', '* * * * *', 'task', 'Test job body', 'test', 1, datetime('now'));"
 
-  run env JOBS_PATH="$JOBS_PATH" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
+  run env DB_PATH="$DB_PATH" ORCH_HOME="$ORCH_HOME" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
 
   # Should have created a task
-  run yq -r '.tasks[] | select(.title == "Always Run") | .status' "$TASKS_PATH"
+  run tdb "SELECT status FROM tasks WHERE title = 'Always Run';"
   [ "$status" -eq 0 ]
   [ "$output" = "new" ]
 
   # Should have job:test-always label
-  run yq -r '.tasks[] | select(.title == "Always Run") | .labels[]' "$TASKS_PATH"
+  run tdb "SELECT label FROM task_labels tl JOIN tasks t ON t.id = tl.task_id WHERE t.title = 'Always Run' ORDER BY label;"
   [ "$status" -eq 0 ]
   [[ "$output" == *"job:test-always"* ]]
 
   # Job should have active_task_id set
-  run yq -r '.jobs[0].active_task_id' "$JOBS_PATH"
+  run tdb "SELECT active_task_id FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$status" -eq 0 ]
   [ "$output" != "null" ]
 }
 
 @test "jobs_tick.sh skips when active task is in-flight" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  cat > "$JOBS_PATH" <<'YAML'
-jobs:
-  - id: test-dedup
-    schedule: "* * * * *"
-    task:
-      title: "Dedup Test"
-      body: "Should not duplicate"
-      labels: []
-      agent: null
-    enabled: true
-    last_run: null
-    last_task_status: null
-    active_task_id: 1
-YAML
+  tdb "INSERT INTO jobs (id, title, schedule, type, body, labels, enabled, active_task_id, created_at) VALUES ('test-dedup', 'Dedup Test', '* * * * *', 'task', 'Should not duplicate', '', 1, 1, datetime('now'));"
 
   # Task 1 (Init) is status "new" — in-flight
-  run yq -r '.tasks[] | select(.id == 1) | .status' "$TASKS_PATH"
+  run tdb_field 1 status
   [ "$status" -eq 0 ]
   [ "$output" = "new" ]
 
-  TASK_COUNT_BEFORE=$(yq -r '.tasks | length' "$TASKS_PATH")
+  TASK_COUNT_BEFORE=$(tdb_count)
 
-  run env JOBS_PATH="$JOBS_PATH" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
+  run env TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
 
   # No new task should have been created
-  TASK_COUNT_AFTER=$(yq -r '.tasks | length' "$TASKS_PATH")
+  TASK_COUNT_AFTER=$(tdb_count)
   [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
 }
 
 @test "jobs_tick.sh creates task after previous completes" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  cat > "$JOBS_PATH" <<'YAML'
-jobs:
-  - id: test-after-done
-    schedule: "* * * * *"
-    task:
-      title: "After Done"
-      body: "Run after previous finishes"
-      labels: []
-      agent: null
-    enabled: true
-    last_run: null
-    last_task_status: null
-    active_task_id: 1
-YAML
+  tdb "INSERT INTO jobs (id, title, schedule, type, body, labels, enabled, active_task_id, created_at) VALUES ('test-after-done', 'After Done', '* * * * *', 'task', 'Run after previous finishes', '', 1, 1, datetime('now'));"
 
   # Mark task 1 as done
-  run yq -i '(.tasks[] | select(.id == 1) | .status) = "done"' "$TASKS_PATH"
+  run tdb_set 1 status "done"
   [ "$status" -eq 0 ]
 
-  run env JOBS_PATH="$JOBS_PATH" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
+  run env TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
 
   # Should have created a new task
-  run yq -r '.tasks[] | select(.title == "After Done") | .status' "$TASKS_PATH"
+  run tdb "SELECT status FROM tasks WHERE title = 'After Done';"
   [ "$status" -eq 0 ]
   [ "$output" = "new" ]
 
   # Last task status should be recorded
-  run yq -r '.jobs[0].last_task_status' "$JOBS_PATH"
+  run tdb "SELECT last_task_status FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 }
 
 @test "jobs_tick.sh skips disabled jobs" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  cat > "$JOBS_PATH" <<'YAML'
-jobs:
-  - id: test-disabled
-    schedule: "* * * * *"
-    task:
-      title: "Disabled Job"
-      body: "Should not run"
-      labels: []
-      agent: null
-    enabled: false
-    last_run: null
-    last_task_status: null
-    active_task_id: null
-YAML
+  tdb "INSERT INTO jobs (id, title, schedule, type, body, labels, enabled, created_at) VALUES ('test-disabled', 'Disabled Job', '* * * * *', 'task', 'Should not run', '', 0, datetime('now'));"
 
-  TASK_COUNT_BEFORE=$(yq -r '.tasks | length' "$TASKS_PATH")
+  TASK_COUNT_BEFORE=$(tdb_count)
 
-  run env JOBS_PATH="$JOBS_PATH" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
+  run env TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
 
-  TASK_COUNT_AFTER=$(yq -r '.tasks | length' "$TASKS_PATH")
+  TASK_COUNT_AFTER=$(tdb_count)
   [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
 }
 
@@ -682,20 +640,20 @@ fi
 SH
   chmod +x "$CODEX_STUB"
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
   # Should have created child tasks from delegation
-  run yq -r '.tasks[] | select(.parent_id == 2) | .title' "$TASKS_PATH"
+  run tdb "SELECT title FROM tasks WHERE parent_id = 2;"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Step 1"* ]]
   [[ "$output" == *"Step 2"* ]]
 
   # Parent should be blocked
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "blocked" ]
 }
@@ -707,13 +665,13 @@ SH
   run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "@daily" "To Remove" "" "" ""
   [ "$status" -eq 0 ]
 
-  run yq -r '.jobs | length' "$JOBS_PATH"
+  run tdb_job_count
   [ "$output" -eq 1 ]
 
   run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_remove.sh" "to-remove"
   [ "$status" -eq 0 ]
 
-  run yq -r '.jobs | length' "$JOBS_PATH"
+  run tdb_job_count
   [ "$output" -eq 0 ]
 }
 
@@ -755,7 +713,7 @@ SH
   run env JOBS_PATH="$JOBS_PATH" PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "Dir Job" "" "" ""
   [ "$status" -eq 0 ]
 
-  run yq -r '.jobs[0].dir' "$JOBS_PATH"
+  run tdb "SELECT dir FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$status" -eq 0 ]
   [ "$output" = "$TMP_DIR" ]
 }
@@ -765,7 +723,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Set task to already have 10 attempts (max default) and agent assigned
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex" | (.tasks[] | select(.id == 2) | .attempts) = 10' "$TASKS_PATH"
+  tdb "UPDATE tasks SET agent = 'codex', attempts = 10, updated_at = datetime('now') WHERE id = 2;"
   [ "$status" -eq 0 ]
 
   CODEX_STUB="${TMP_DIR}/codex"
@@ -779,11 +737,11 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "needs_review" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .reason' "$TASKS_PATH"
+  run tdb_field 2 reason
   [ "$status" -eq 0 ]
   [[ "$output" == *"max attempts"* ]]
 }
@@ -879,11 +837,11 @@ YAML
   [ "$status" -eq 0 ]
 
   # Both issues should have been imported
-  run yq -r '.tasks[] | select(.title == "Issue 1") | .gh_issue_number' "$TASKS_PATH"
+  run tdb "SELECT gh_issue_number FROM tasks WHERE title = 'Issue 1';"
   [ "$status" -eq 0 ]
   [ "$output" = "1" ]
 
-  run yq -r '.tasks[] | select(.title == "Issue 2") | .gh_issue_number' "$TASKS_PATH"
+  run tdb "SELECT gh_issue_number FROM tasks WHERE title = 'Issue 2';"
   [ "$status" -eq 0 ]
   [ "$output" = "2" ]
 }
@@ -902,7 +860,7 @@ YAML
   pids=()
   successes=0
   for i in $(seq 1 5); do
-    env TASKS_PATH="$TASKS_PATH" PROJECT_DIR="$PROJECT_DIR" LOCK_WAIT_SECONDS=120 "${REPO_DIR}/scripts/add_task.sh" "Concurrent $i" "body $i" "" >/dev/null 2>&1 &
+    env TASKS_PATH="$TASKS_PATH" DB_PATH="$DB_PATH" ORCH_HOME="$ORCH_HOME" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/add_task.sh" "Concurrent $i" "body $i" "" >/dev/null 2>&1 &
     pids+=($!)
   done
 
@@ -916,25 +874,25 @@ YAML
 
   # File must be valid YAML with correct task count (Init + successes)
   EXPECTED=$((1 + successes))
-  run yq -r '.tasks | length' "$TASKS_PATH"
+  run tdb_count
   [ "$status" -eq 0 ]
   [ "$output" -eq "$EXPECTED" ]
 
   # IDs should be unique (no corruption from concurrent writes)
-  run bash -c "yq -r '.tasks[].id' '$TASKS_PATH' | sort -u | wc -l"
+  run tdb_count
   [ "$status" -eq 0 ]
   UNIQUE_COUNT=$(echo "$output" | tr -d ' ')
   [ "$UNIQUE_COUNT" -eq "$EXPECTED" ]
 }
 
 @test "performance: list_tasks.sh handles 100+ tasks" {
-  # Create 100 tasks via yq batch
+  # Create 100 tasks via SQLite batch
   for i in $(seq 2 100); do
-    export i NOW="2026-01-01T00:00:00Z"
-    yq -i ".tasks += [{\"id\": $i, \"title\": \"Task $i\", \"body\": \"\", \"labels\": [], \"status\": \"new\", \"agent\": null, \"agent_model\": null, \"agent_profile\": null, \"selected_skills\": [], \"parent_id\": null, \"children\": [], \"route_reason\": null, \"route_warning\": null, \"summary\": null, \"reason\": null, \"accomplished\": [], \"remaining\": [], \"blockers\": [], \"files_changed\": [], \"needs_help\": false, \"attempts\": 0, \"last_error\": null, \"retry_at\": null, \"review_decision\": null, \"review_notes\": null, \"history\": [], \"dir\": \"$TMP_DIR\", \"created_at\": \"$NOW\", \"updated_at\": \"$NOW\"}]" "$TASKS_PATH"
+    tdb "INSERT INTO tasks (title, body, status, dir, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
+      VALUES ('Task $i', '', 'new', '$TMP_DIR', 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
   done
 
-  run yq -r '.tasks | length' "$TASKS_PATH"
+  run tdb_count
   [ "$status" -eq 0 ]
   [ "$output" -eq 100 ]
 
@@ -990,16 +948,17 @@ EOF
 
   run bash -c "
     source '${REPO_DIR}/scripts/lib.sh'
-    TASKS_PATH='$TASKS_PATH'
     create_task_entry 99 'Helper Task' 'Created by helper' 'test,helper' '' ''
   "
   [ "$status" -eq 0 ]
+  # db_create_task returns auto-assigned ID (ignoring the passed-in 99)
+  NEW_ID=$(echo "$output" | tr -d '[:space:]')
 
-  run yq -r '.tasks[] | select(.id == 99) | .title' "$TASKS_PATH"
+  run tdb_field "$NEW_ID" title
   [ "$status" -eq 0 ]
   [ "$output" = "Helper Task" ]
 
-  run yq -r '.tasks[] | select(.id == 99) | .dir' "$TASKS_PATH"
+  run tdb_field "$NEW_ID" dir
   [ "$status" -eq 0 ]
   [ "$output" = "$TMP_DIR" ]
 }
@@ -1031,7 +990,7 @@ SH
   [[ "$output" == *"Fix login page"* ]]
 
   # Verify task was actually created
-  run yq -r '.tasks[] | select(.title == "Fix login page") | .title' "$TASKS_PATH"
+  run tdb "SELECT title FROM tasks WHERE title = 'Fix login page';"
   [ "$status" -eq 0 ]
   [ "$output" = "Fix login page" ]
 }
@@ -1256,11 +1215,11 @@ SH
   [[ "$output" == *"Created 2 task(s)"* ]]
 
   # Verify tasks were actually created
-  run yq -r '.tasks[] | select(.title == "Create user model") | .title' "$TASKS_PATH"
+  run tdb "SELECT title FROM tasks WHERE title = 'Create user model';"
   [ "$status" -eq 0 ]
   [ "$output" = "Create user model" ]
 
-  run yq -r '.tasks[] | select(.title == "Add login endpoint") | .title' "$TASKS_PATH"
+  run tdb "SELECT title FROM tasks WHERE title = 'Add login endpoint';"
   [ "$status" -eq 0 ]
   [ "$output" = "Add login endpoint" ]
 }
@@ -1365,18 +1324,11 @@ YAML
 
   # Create a task with gh_issue_number already set but not synced
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  export NOW
-  yq -i \
-    "(.tasks[0].gh_issue_number) = 1 |
-     (.tasks[0].gh_url) = \"https://github.com/test/repo/issues/1\" |
-     (.tasks[0].gh_state) = \"open\" |
-     (.tasks[0].status) = \"in_progress\" |
-     (.tasks[0].updated_at) = env(NOW) |
-     (.tasks[0].gh_synced_at) = \"\"" \
-    "$TASKS_PATH"
+  tdb "UPDATE tasks SET gh_issue_number = 1, gh_url = 'https://github.com/test/repo/issues/1', gh_state = 'open', status = 'in_progress', updated_at = '$NOW', gh_synced_at = '' WHERE id = 1;"
 
   run env PATH="${TMP_DIR}:${PATH}" \
     TASKS_PATH="$TASKS_PATH" \
+    DB_PATH="$DB_PATH" ORCH_HOME="$ORCH_HOME" \
     CONFIG_PATH="$CONFIG_PATH" \
     PROJECT_DIR="$TMP_DIR" \
     STATE_DIR="$STATE_DIR" \
@@ -1414,15 +1366,7 @@ gh:
 YAML
 
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  yq -i \
-    "(.tasks[0].gh_issue_number) = 1 |
-     (.tasks[0].gh_state) = \"closed\" |
-     (.tasks[0].status) = \"done\" |
-     (.tasks[0].gh_project_item_id) = \"PVTI_item1\" |
-     (.tasks[0].gh_archived) = false |
-     (.tasks[0].updated_at) = \"$NOW\" |
-     (.tasks[0].gh_synced_at) = \"\"" \
-    "$TASKS_PATH"
+  tdb "UPDATE tasks SET gh_issue_number = 1, gh_state = 'closed', status = 'done', gh_project_item_id = 'PVTI_item1', gh_archived = 0, updated_at = '$NOW', gh_synced_at = '' WHERE id = 1;"
 
   run env PATH="${TMP_DIR}:${PATH}" \
     TASKS_PATH="$TASKS_PATH" \
@@ -1436,9 +1380,9 @@ YAML
   [ -f "${STATE_DIR}/gh_calls" ]
   grep -q "archive_called" "${STATE_DIR}/gh_calls"
 
-  run yq -r '.tasks[0].gh_archived' "$TASKS_PATH"
+  run tdb_field 1 gh_archived
   [ "$status" -eq 0 ]
-  [ "$output" = "true" ]
+  [ "$output" = "1" ]
 }
 
 @test "gh_push.sh skips archiving if already archived" {
@@ -1463,15 +1407,7 @@ gh:
 YAML
 
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  yq -i \
-    "(.tasks[0].gh_issue_number) = 1 |
-     (.tasks[0].gh_state) = \"closed\" |
-     (.tasks[0].status) = \"done\" |
-     (.tasks[0].gh_project_item_id) = \"PVTI_item1\" |
-     (.tasks[0].gh_archived) = true |
-     (.tasks[0].updated_at) = \"$NOW\" |
-     (.tasks[0].gh_synced_at) = \"\"" \
-    "$TASKS_PATH"
+  tdb "UPDATE tasks SET gh_issue_number = 1, gh_state = 'closed', status = 'done', gh_project_item_id = 'PVTI_item1', gh_archived = 1, updated_at = '$NOW', gh_synced_at = '' WHERE id = 1;"
 
   run env PATH="${TMP_DIR}:${PATH}" \
     TASKS_PATH="$TASKS_PATH" \
@@ -1511,15 +1447,7 @@ gh:
 YAML
 
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  yq -i \
-    "(.tasks[0].gh_issue_number) = 1 |
-     (.tasks[0].gh_state) = \"open\" |
-     (.tasks[0].status) = \"done\" |
-     (.tasks[0].gh_project_item_id) = \"PVTI_item1\" |
-     (.tasks[0].gh_archived) = false |
-     (.tasks[0].updated_at) = \"$NOW\" |
-     (.tasks[0].gh_synced_at) = \"$NOW\"" \
-    "$TASKS_PATH"
+  tdb "UPDATE tasks SET gh_issue_number = 1, gh_state = 'open', status = 'done', gh_project_item_id = 'PVTI_item1', gh_archived = 0, updated_at = '$NOW', gh_synced_at = '$NOW' WHERE id = 1;"
 
   run env PATH="${TMP_DIR}:${PATH}" \
     TASKS_PATH="$TASKS_PATH" \
@@ -1700,7 +1628,7 @@ GHSTUB
   run "${REPO_DIR}/scripts/add_task.sh" "Stuck Task" "Should recover from stale lock" ""
   [ "$status" -eq 0 ]
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex" | (.tasks[] | select(.id == 2) | .status) = "routed"' "$TASKS_PATH"
+  tdb "UPDATE tasks SET agent = 'codex', status = 'routed', updated_at = datetime('now') WHERE id = 2;"
   [ "$status" -eq 0 ]
 
   # Create stale lock dir with pid file (dead PID)
@@ -1725,7 +1653,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Task should have run and completed
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 
@@ -1744,7 +1672,7 @@ SH
   "
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 1) | .history[-1].status' "$TASKS_PATH"
+  run tdb "SELECT status FROM task_history WHERE task_id = 1 ORDER BY id DESC LIMIT 1;"
   [ "$status" -eq 0 ]
   [ "$output" = "blocked" ]
 }
@@ -1768,11 +1696,7 @@ SH
   # Set task 1 to done with a known updated_at
   FROZEN="2026-01-15T12:00:00Z"
   export FROZEN
-  run yq -i "(.tasks[] | select(.id == 1) | .status) = \"done\" |
-    (.tasks[] | select(.id == 1) | .gh_issue_number) = 1 |
-    (.tasks[] | select(.id == 1) | .gh_state) = \"closed\" |
-    (.tasks[] | select(.id == 1) | .updated_at) = \"$FROZEN\"" "$TASKS_PATH"
-  [ "$status" -eq 0 ]
+  tdb "UPDATE tasks SET status = 'done', gh_issue_number = 1, gh_state = 'closed', updated_at = '$FROZEN' WHERE id = 1;"
 
   run env PATH="${TMP_DIR}:${PATH}" \
     TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
@@ -1782,7 +1706,7 @@ SH
   [ "$status" -eq 0 ]
 
   # updated_at should still be the original value, not bumped
-  run yq -r '.tasks[] | select(.id == 1) | .updated_at' "$TASKS_PATH"
+  run tdb_field 1 updated_at
   [ "$status" -eq 0 ]
   [ "$output" = "$FROZEN" ]
 }
@@ -1818,19 +1742,19 @@ JSON
 SH
   chmod +x "$CODEX_STUB"
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  # Check that the task's yq state got updated with the correct status
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  # Check that the task's state got updated with the correct status
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 
   # Agent model should be recorded in the task
-  run yq -r '.tasks[] | select(.id == 2) | .agent_model' "$TASKS_PATH"
+  run tdb_field 2 agent_model
   [ "$status" -eq 0 ]
   [ "$output" = "default" ]
 }
@@ -1884,20 +1808,12 @@ SH
   BODY="test comment body"
   HASH=$(printf '%s' "$BODY" | shasum -a 256 | cut -c1-16)
   export HASH
-  yq -i "(.tasks[] | select(.id == 1) | .last_comment_hash) = strenv(HASH)" "$TASKS_PATH"
+  tdb "UPDATE tasks SET last_comment_hash = '${HASH}' WHERE id = 1;"
 
   run bash -c "
+    export DB_PATH='$DB_PATH' SCHEMA_PATH='$SCHEMA_PATH' ORCH_HOME='$ORCH_HOME'
     source '${REPO_DIR}/scripts/lib.sh'
-    TASKS_PATH='$TASKS_PATH'
-    # Source the dedup functions from gh_push
-    should_skip_comment() {
-      local task_id=\"\$1\" body=\"\$2\"
-      local new_hash old_hash
-      new_hash=\$(printf '%s' \"\$body\" | shasum -a 256 | cut -c1-16)
-      old_hash=\$(yq -r \".tasks[] | select(.id == \$task_id) | .last_comment_hash // \\\"\\\"\" \"\$TASKS_PATH\")
-      [ \"\$new_hash\" = \"\$old_hash\" ]
-    }
-    if should_skip_comment 1 '$BODY'; then
+    if db_should_skip_comment 1 '$BODY'; then
       echo 'SKIPPED'
     else
       echo 'POSTED'
@@ -1908,19 +1824,12 @@ SH
 }
 
 @test "comment dedup posts when content differs" {
-  yq -i '(.tasks[] | select(.id == 1) | .last_comment_hash) = "oldoldhash12345"' "$TASKS_PATH"
+  tdb_set 1 last_comment_hash "oldoldhash12345"
 
   run bash -c "
+    export DB_PATH='$DB_PATH' SCHEMA_PATH='$SCHEMA_PATH' ORCH_HOME='$ORCH_HOME'
     source '${REPO_DIR}/scripts/lib.sh'
-    TASKS_PATH='$TASKS_PATH'
-    should_skip_comment() {
-      local task_id=\"\$1\" body=\"\$2\"
-      local new_hash old_hash
-      new_hash=\$(printf '%s' \"\$body\" | shasum -a 256 | cut -c1-16)
-      old_hash=\$(yq -r \".tasks[] | select(.id == \$task_id) | .last_comment_hash // \\\"\\\"\" \"\$TASKS_PATH\")
-      [ \"\$new_hash\" = \"\$old_hash\" ]
-    }
-    if should_skip_comment 1 'new different body'; then
+    if db_should_skip_comment 1 'new different body'; then
       echo 'SKIPPED'
     else
       echo 'POSTED'
@@ -1936,14 +1845,15 @@ SH
 
   run bash -c "
     source '${REPO_DIR}/scripts/lib.sh'
-    TASKS_PATH='$TASKS_PATH'
     create_task_entry 50 'Schema Test' 'Check fields' '' '' ''
   "
   [ "$status" -eq 0 ]
+  NEW_ID=$(echo "$output" | tr -d '[:space:]')
 
-  run yq -r '.tasks[] | select(.id == 50) | has("last_comment_hash")' "$TASKS_PATH"
+  # last_comment_hash column exists in schema
+  run tdb "SELECT name FROM pragma_table_info('tasks') WHERE name = 'last_comment_hash';"
   [ "$status" -eq 0 ]
-  [ "$output" = "true" ]
+  [ "$output" = "last_comment_hash" ]
 }
 
 @test "fetch_issue_comments returns empty for missing issue" {
@@ -2030,14 +1940,10 @@ MD
   # Set up task with 3 attempts and 3 identical blocked history entries
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   export NOW
-  yq -i "(.tasks[] | select(.id == 2) | .agent) = \"codex\" |
-    (.tasks[] | select(.id == 2) | .attempts) = 3 |
-    (.tasks[] | select(.id == 2) | .status) = \"routed\" |
-    (.tasks[] | select(.id == 2) | .history) = [
-      {\"ts\": \"2026-01-01T00:00:00Z\", \"status\": \"blocked\", \"note\": \"agent command failed (exit 1)\"},
-      {\"ts\": \"2026-01-01T00:01:00Z\", \"status\": \"blocked\", \"note\": \"agent command failed (exit 1)\"},
-      {\"ts\": \"2026-01-01T00:02:00Z\", \"status\": \"blocked\", \"note\": \"agent command failed (exit 1)\"}
-    ]" "$TASKS_PATH"
+  tdb "UPDATE tasks SET agent = 'codex', attempts = 3, status = 'routed' WHERE id = 2;"
+  tdb "INSERT INTO task_history (task_id, ts, status, note) VALUES (2, '2026-01-01T00:00:00Z', 'blocked', 'agent command failed (exit 1)');"
+  tdb "INSERT INTO task_history (task_id, ts, status, note) VALUES (2, '2026-01-01T00:01:00Z', 'blocked', 'agent command failed (exit 1)');"
+  tdb "INSERT INTO task_history (task_id, ts, status, note) VALUES (2, '2026-01-01T00:02:00Z', 'blocked', 'agent command failed (exit 1)');"
 
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
@@ -2053,11 +1959,11 @@ SH
   [ "$status" -eq 0 ]
 
   # Task should be needs_review due to retry loop
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "needs_review" ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .last_error' "$TASKS_PATH"
+  run tdb_field 2 last_error
   [ "$status" -eq 0 ]
   [[ "$output" == *"retry loop"* ]]
 }
@@ -2068,14 +1974,10 @@ SH
 
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   export NOW
-  yq -i "(.tasks[] | select(.id == 2) | .agent) = \"codex\" |
-    (.tasks[] | select(.id == 2) | .attempts) = 3 |
-    (.tasks[] | select(.id == 2) | .status) = \"routed\" |
-    (.tasks[] | select(.id == 2) | .history) = [
-      {\"ts\": \"2026-01-01T00:00:00Z\", \"status\": \"blocked\", \"note\": \"error A\"},
-      {\"ts\": \"2026-01-01T00:01:00Z\", \"status\": \"blocked\", \"note\": \"error B\"},
-      {\"ts\": \"2026-01-01T00:02:00Z\", \"status\": \"blocked\", \"note\": \"error C\"}
-    ]" "$TASKS_PATH"
+  tdb "UPDATE tasks SET agent = 'codex', attempts = 3, status = 'routed' WHERE id = 2;"
+  tdb "INSERT INTO task_history (task_id, ts, status, note) VALUES (2, '2026-01-01T00:00:00Z', 'blocked', 'error A');"
+  tdb "INSERT INTO task_history (task_id, ts, status, note) VALUES (2, '2026-01-01T00:01:00Z', 'blocked', 'error B');"
+  tdb "INSERT INTO task_history (task_id, ts, status, note) VALUES (2, '2026-01-01T00:02:00Z', 'blocked', 'error C');"
 
   # Stub that succeeds (prints JSON to stdout)
   CODEX_STUB="${TMP_DIR}/codex"
@@ -2093,7 +1995,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Task should complete normally (not blocked by retry loop)
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 }
@@ -2117,9 +2019,10 @@ SH
 }
 
 @test "gh_push.sh has comment dedup functions" {
+  # Functions live in db.sh; gh_push.sh calls db_should_skip_comment + db_store_comment_hash
   run grep -c 'should_skip_comment\|store_comment_hash\|last_comment_hash' "${REPO_DIR}/scripts/gh_push.sh"
   [ "$status" -eq 0 ]
-  [ "$output" -ge 4 ]
+  [ "$output" -ge 2 ]
 }
 
 @test "gh_push.sh applies blocked label on blocked status" {
@@ -2129,14 +2032,10 @@ SH
 }
 
 @test "gh_push.sh uses atomic gh_synced_at write" {
-  # Must use yq self-reference, not strenv(UPDATED_AT)
-  run grep -c 'gh_synced_at.*=.*updated_at' "${REPO_DIR}/scripts/gh_push.sh"
+  # SQLite: db_task_set_synced sets gh_synced_at = updated_at atomically
+  run grep -c 'db_task_set_synced' "${REPO_DIR}/scripts/gh_push.sh"
   [ "$status" -eq 0 ]
   [ "$output" -ge 2 ]
-
-  # Must NOT use strenv(UPDATED_AT) for gh_synced_at
-  run bash -c "grep 'gh_synced_at.*strenv(UPDATED_AT)' '${REPO_DIR}/scripts/gh_push.sh' || true"
-  [ -z "$output" ]
 }
 
 @test "skills_sync.sh uses ORCH_HOME paths" {
@@ -2323,7 +2222,7 @@ JSON
 }
 
 @test "gh_push.sh comment includes stderr section" {
-  run grep -c 'stderr_snippet\|Agent stderr' "${REPO_DIR}/scripts/gh_push.sh"
+  run grep -ci 'stderr_snippet\|Agent stderr' "${REPO_DIR}/scripts/gh_push.sh"
   [ "$status" -eq 0 ]
   [ "$output" -ge 2 ]
 }
@@ -2341,7 +2240,7 @@ JSON
 
 @test "dashboard.sh runs without errors" {
   # Add tasks with gh_issue_number to exercise issue formatting
-  yq -i '(.tasks[] | select(.id == 1) | .gh_issue_number) = 10' "$TASKS_PATH"
+  tdb "UPDATE tasks SET gh_issue_number = 10, updated_at = datetime('now') WHERE id = 1;"
   run "${REPO_DIR}/scripts/dashboard.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Tasks:"* ]]
@@ -2351,7 +2250,7 @@ JSON
 
 @test "status.sh --global shows PROJECT column" {
   # Add a task with a dir to test global view
-  yq -i '(.tasks[] | select(.id == 1) | .dir) = "/Users/test/myproject"' "$TASKS_PATH"
+  tdb_set 1 dir "/Users/test/myproject"
   run "${REPO_DIR}/scripts/status.sh" --global
   [ "$status" -eq 0 ]
   [[ "$output" == *"PROJECT"* ]]
@@ -2359,7 +2258,7 @@ JSON
 }
 
 @test "list_tasks.sh shows table with issue numbers" {
-  yq -i '(.tasks[] | select(.id == 1) | .gh_issue_number) = 42' "$TASKS_PATH"
+  tdb "UPDATE tasks SET gh_issue_number = 42, updated_at = datetime('now') WHERE id = 1;"
   run "${REPO_DIR}/scripts/list_tasks.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"#42"* ]]
@@ -2394,10 +2293,10 @@ JSON
   [ "$status" -eq 0 ]
   [[ "$output" == *"bash job"* ]]
 
-  run yq -r '.jobs[0].type' "$JOBS_PATH"
+  run tdb "SELECT type FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$output" = "bash" ]
 
-  run yq -r '.jobs[0].command' "$JOBS_PATH"
+  run tdb "SELECT command FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$output" = "echo hello" ]
 }
 
@@ -2414,9 +2313,9 @@ JSON
 @test "tree.sh shows parent-child relationships" {
   "${REPO_DIR}/scripts/add_task.sh" "Parent" "" "" >/dev/null
   "${REPO_DIR}/scripts/add_task.sh" "Child" "" "" >/dev/null
-  # Set up parent-child relationship
-  yq -i '(.tasks[] | select(.id == 3) | .parent_id) = 2 |
-         (.tasks[] | select(.id == 2) | .children) = [3]' "$TASKS_PATH"
+  # Set up parent-child relationship (both parent_id and task_children table)
+  tdb "UPDATE tasks SET parent_id = 2 WHERE id = 3;"
+  tdb "INSERT INTO task_children (parent_id, child_id) VALUES (2, 3);"
 
   run "${REPO_DIR}/scripts/tree.sh"
   [ "$status" -eq 0 ]
@@ -2429,34 +2328,33 @@ JSON
 # --- retry_task.sh ---
 
 @test "retry_task.sh resets done task to new" {
-  yq -i '(.tasks[] | select(.id == 1) | .status) = "done"' "$TASKS_PATH"
+  tdb_set 1 status "done"
 
   run "${REPO_DIR}/scripts/retry_task.sh" 1
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 1) | .status' "$TASKS_PATH"
+  run tdb_field 1 status
   [ "$output" = "new" ]
 }
 
 @test "retry_task.sh resets blocked task to new" {
-  yq -i '(.tasks[] | select(.id == 1) | .status) = "blocked"' "$TASKS_PATH"
+  tdb_set 1 status "blocked"
 
   run "${REPO_DIR}/scripts/retry_task.sh" 1
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 1) | .status' "$TASKS_PATH"
+  run tdb_field 1 status
   [ "$output" = "new" ]
 }
 
 @test "retry_task.sh clears agent on reset" {
-  yq -i '(.tasks[] | select(.id == 1) | .status) = "done" |
-         (.tasks[] | select(.id == 1) | .agent) = "claude"' "$TASKS_PATH"
+  tdb "UPDATE tasks SET status = 'done', agent = 'claude' WHERE id = 1;"
 
   run "${REPO_DIR}/scripts/retry_task.sh" 1
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 1) | .agent' "$TASKS_PATH"
-  [ "$output" = "null" ]
+  run tdb_field 1 agent
+  [ -z "$output" ]
 }
 
 @test "retry_task.sh skips already-new tasks" {
@@ -2481,7 +2379,7 @@ JSON
   run "${REPO_DIR}/scripts/set_agent.sh" 1 claude
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 1) | .agent' "$TASKS_PATH"
+  run tdb_field 1 agent
   [ "$output" = "claude" ]
 }
 
@@ -2578,7 +2476,7 @@ JSON
   [ "$status" -eq 0 ]
 
   # Check last_run is set
-  run yq -r '.jobs[0].last_run' "$JOBS_PATH"
+  run tdb "SELECT last_run FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$output" != "null" ]
   [ -n "$output" ]
 }
@@ -2594,7 +2492,7 @@ JSON
   run "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
 
-  run yq -r '.jobs[0].last_task_status' "$JOBS_PATH"
+  run tdb "SELECT last_task_status FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$output" = "failed" ]
 }
 
@@ -2609,10 +2507,10 @@ JSON
   run "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
 
-  run yq -r '.jobs[0].enabled' "$JOBS_PATH"
-  [ "$output" = "false" ]
+  run tdb "SELECT enabled FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
+  [ "$output" = "0" ]
 
-  run yq -r '.jobs[0].last_task_status' "$JOBS_PATH"
+  run tdb "SELECT last_task_status FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
   [ "$output" = "failed" ]
 }
 
@@ -2643,10 +2541,10 @@ JSON
   run "${REPO_DIR}/scripts/add_task.sh" "No Body Task" "" ""
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[-1].title' "$TASKS_PATH"
+  run tdb "SELECT title FROM tasks ORDER BY id DESC LIMIT 1;"
   [ "$output" = "No Body Task" ]
 
-  run yq -r '.tasks[-1].body' "$TASKS_PATH"
+  run tdb "SELECT body FROM tasks ORDER BY id DESC LIMIT 1;"
   [ "$output" = "" ] || [ "$output" = "null" ]
 }
 
@@ -2655,10 +2553,10 @@ JSON
   "${REPO_DIR}/scripts/add_task.sh" "Task B" "" "" >/dev/null
   "${REPO_DIR}/scripts/add_task.sh" "Task C" "" "" >/dev/null
 
-  run yq -r '.tasks[-1].id' "$TASKS_PATH"
+  run tdb "SELECT id FROM tasks ORDER BY id DESC LIMIT 1;"
   ID_C="$output"
 
-  run yq -r '.tasks[-2].id' "$TASKS_PATH"
+  run tdb "SELECT id FROM tasks ORDER BY id DESC LIMIT 1 OFFSET 1;"
   ID_B="$output"
 
   # IDs should be sequential
@@ -2673,7 +2571,7 @@ JSON
 
   task_set 1 .status "blocked"
 
-  run yq -r '.tasks[] | select(.id == 1) | .status' "$TASKS_PATH"
+  run tdb_field 1 status
   [ "$output" = "blocked" ]
 }
 
@@ -2862,10 +2760,7 @@ YAML
   [ "$status" -eq 0 ]
 
   # Set agent and issue number
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex" |
-    (.tasks[] | select(.id == 2) | .gh_issue_number) = 42 |
-    (.tasks[] | select(.id == 2) | .gh_url) = "https://github.com/test/repo/issues/42"' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
+  tdb "UPDATE tasks SET agent = 'codex', gh_issue_number = 42, gh_url = 'https://github.com/test/repo/issues/42' WHERE id = 2;"
 
   # Stub codex: writes output JSON to .orchestrator/ and creates a file + commit
   CODEX_STUB="${TMP_DIR}/codex"
@@ -2911,16 +2806,16 @@ STUB
   [ -d "$WORKTREE_DIR" ]
 
   # Verify worktree info saved to task
-  run yq -r '.tasks[] | select(.id == 2) | .worktree' "$TASKS_PATH"
+  run tdb_field 2 worktree
   [ "$status" -eq 0 ]
   [[ "$output" == *"gh-task-42-add-readme"* ]]
 
-  run yq -r '.tasks[] | select(.id == 2) | .branch' "$TASKS_PATH"
+  run tdb_field 2 branch
   [ "$status" -eq 0 ]
   [ "$output" = "gh-task-42-add-readme" ]
 
   # Verify task completed
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 
@@ -2951,10 +2846,7 @@ STUB
   [ "$status" -eq 0 ]
 
   # Set agent and issue number
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "claude" |
-    (.tasks[] | select(.id == 2) | .gh_issue_number) = 55 |
-    (.tasks[] | select(.id == 2) | .gh_url) = "https://github.com/test/repo/issues/55"' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
+  tdb "UPDATE tasks SET agent = 'claude', gh_issue_number = 55, gh_url = 'https://github.com/test/repo/issues/55' WHERE id = 2;"
 
   # Stub claude: writes files and output JSON but does NOT git commit
   CLAUDE_STUB="${TMP_DIR}/claude"
@@ -3063,12 +2955,12 @@ SH
   [ "$status" -eq 0 ]
 
   # Complexity should be stored on the task
-  run yq -r '.tasks[] | select(.id == 2) | .complexity' "$TASKS_PATH"
+  run tdb_field 2 complexity
   [ "$status" -eq 0 ]
   [ "$output" = "simple" ]
 
   # Label should be complexity:simple, not model:*
-  run yq -r '.tasks[] | select(.id == 2) | .labels[]' "$TASKS_PATH"
+  run tdb "SELECT label FROM task_labels WHERE task_id = 2 ORDER BY label;"
   [ "$status" -eq 0 ]
   [[ "$output" == *"complexity:simple"* ]]
   [[ "$output" != *"model:"* ]]
@@ -3099,12 +2991,12 @@ SH
   [ "$status" -eq 0 ]
 
   # Fallback should default to medium complexity
-  run yq -r '.tasks[] | select(.id == 2) | .complexity' "$TASKS_PATH"
+  run tdb_field 2 complexity
   [ "$status" -eq 0 ]
   [ "$output" = "medium" ]
 
   # Label should include complexity:medium
-  run yq -r '.tasks[] | select(.id == 2) | .labels[]' "$TASKS_PATH"
+  run tdb "SELECT label FROM task_labels WHERE task_id = 2 ORDER BY label;"
   [ "$status" -eq 0 ]
   [[ "$output" == *"complexity:medium"* ]]
 }
@@ -3115,14 +3007,15 @@ SH
 
   run bash -c "
     source '${REPO_DIR}/scripts/lib.sh'
-    TASKS_PATH='$TASKS_PATH'
     create_task_entry 99 'Complexity Task' 'Test body' 'test' '' ''
   "
   [ "$status" -eq 0 ]
+  NEW_ID=$(echo "$output" | tr -d '[:space:]')
 
-  run yq -r '.tasks[] | select(.id == 99) | .complexity' "$TASKS_PATH"
+  # complexity is NULL by default (not set until routing)
+  run tdb_field "$NEW_ID" complexity
   [ "$status" -eq 0 ]
-  [ "$output" = "null" ]
+  [ -z "$output" ]
 }
 
 @test "run_task.sh resolves model from complexity config" {
@@ -3134,8 +3027,7 @@ SH
          .model_map.medium.codex = "gpt-5.2" |
          .model_map.complex.codex = "gpt-5.3-codex"' "$CONFIG_PATH"
 
-  yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex" |
-         (.tasks[] | select(.id == 2) | .complexity) = "simple"' "$TASKS_PATH"
+  tdb "UPDATE tasks SET agent = 'codex', complexity = 'simple' WHERE id = 2;"
 
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
@@ -3149,7 +3041,7 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "done" ]
 }
@@ -3161,7 +3053,7 @@ SH
   run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   # Execution stub (codex) returns done
@@ -3208,12 +3100,12 @@ SH
   [ "$status" -eq 0 ]
 
   # Task should be needs_review after reject
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "needs_review" ]
 
   # Last error should mention rejection
-  run yq -r '.tasks[] | select(.id == 2) | .last_error' "$TASKS_PATH"
+  run tdb_field 2 last_error
   [ "$status" -eq 0 ]
   [[ "$output" == *"review rejected"* ]]
 }
@@ -3285,7 +3177,7 @@ SH
   run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
 
-  run yq -i '(.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  run tdb_set 2 agent "codex"
   [ "$status" -eq 0 ]
 
   # Execution stub (codex) returns done
@@ -3334,7 +3226,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Task should be needs_review (not done)
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "needs_review" ]
 
@@ -3369,13 +3261,13 @@ SH
   run bash -c "export PATH='${TMP_DIR}:${PATH}'; source '${REPO_DIR}/scripts/lib.sh'; fetch_owner_feedback 'org/repo' 42 'owner1' ''"
   [ "$status" -eq 0 ]
 
-  count=$(printf '%s' "$output" | yq -r 'length')
+  count=$(printf '%s' "$output" | jq -r 'length')
   [ "$count" -eq 2 ]
 
-  login0=$(printf '%s' "$output" | yq -r '.[0].login')
+  login0=$(printf '%s' "$output" | jq -r '.[0].login')
   [ "$login0" = "owner1" ]
 
-  login1=$(printf '%s' "$output" | yq -r '.[1].login')
+  login1=$(printf '%s' "$output" | jq -r '.[1].login')
   [ "$login1" = "owner1" ]
 }
 
@@ -3399,10 +3291,10 @@ SH
   run bash -c "export PATH='${TMP_DIR}:${PATH}'; source '${REPO_DIR}/scripts/lib.sh'; fetch_owner_feedback 'org/repo' 42 'owner1' ''"
   [ "$status" -eq 0 ]
 
-  count=$(printf '%s' "$output" | yq -r 'length')
+  count=$(printf '%s' "$output" | jq -r 'length')
   [ "$count" -eq 1 ]
 
-  body=$(printf '%s' "$output" | yq -r '.[0].body')
+  body=$(printf '%s' "$output" | jq -r '.[0].body')
   [ "$body" = "Real feedback" ]
 }
 
@@ -3411,7 +3303,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Set task to done with an agent
-  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" | (.tasks[] | select(.id == 2) | .agent) = "codex"' "$TASKS_PATH"
+  tdb "UPDATE tasks SET status = 'done', agent = 'codex', updated_at = datetime('now') WHERE id = 2;"
   [ "$status" -eq 0 ]
 
   FEEDBACK='[{"login":"owner1","created_at":"2026-01-01T12:00:00Z","body":"This should be an internal doc"}]'
@@ -3420,27 +3312,27 @@ SH
   [ "$status" -eq 0 ]
 
   # Status should be routed
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "routed" ]
 
   # Agent should be preserved
-  run yq -r '.tasks[] | select(.id == 2) | .agent' "$TASKS_PATH"
+  run tdb_field 2 agent
   [ "$status" -eq 0 ]
   [ "$output" = "codex" ]
 
   # last_error should contain feedback
-  run yq -r '.tasks[] | select(.id == 2) | .last_error' "$TASKS_PATH"
+  run tdb_field 2 last_error
   [ "$status" -eq 0 ]
   [[ "$output" == *"internal doc"* ]]
 
   # gh_last_feedback_at should be set
-  run yq -r '.tasks[] | select(.id == 2) | .gh_last_feedback_at' "$TASKS_PATH"
+  run tdb_field 2 gh_last_feedback_at
   [ "$status" -eq 0 ]
   [ "$output" = "2026-01-01T12:00:00Z" ]
 
   # History should have owner feedback entry
-  run yq -r '.tasks[] | select(.id == 2) | .history[-1].note' "$TASKS_PATH"
+  run tdb "SELECT note FROM task_history WHERE task_id = 2 ORDER BY id DESC LIMIT 1;"
   [ "$status" -eq 0 ]
   [ "$output" = "owner feedback received" ]
 }
@@ -3469,12 +3361,7 @@ SH
   run "${REPO_DIR}/scripts/add_task.sh" "Done Task" "Body" ""
   [ "$status" -eq 0 ]
 
-  run yq -i '(.tasks[] | select(.id == 2) | .status) = "done" |
-    (.tasks[] | select(.id == 2) | .agent) = "claude" |
-    (.tasks[] | select(.id == 2) | .gh_issue_number) = 99 |
-    (.tasks[] | select(.id == 2) | .gh_state) = "open" |
-    (.tasks[] | select(.id == 2) | .gh_url) = "https://github.com/org/repo/issues/99"' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
+  tdb "UPDATE tasks SET status = 'done', agent = 'claude', gh_issue_number = 99, gh_state = 'open', gh_url = 'https://github.com/org/repo/issues/99' WHERE id = 2;"
 
   # Set repo config
   run yq -i '.gh.repo = "testowner/testrepo"' "$CONFIG_PATH"
@@ -3510,12 +3397,12 @@ SH
   [ "$status" -eq 0 ]
 
   # Task should now be routed (not done)
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "routed" ]
 
   # Agent should be preserved
-  run yq -r '.tasks[] | select(.id == 2) | .agent' "$TASKS_PATH"
+  run tdb_field 2 agent
   [ "$status" -eq 0 ]
   [ "$output" = "claude" ]
 }
@@ -3525,11 +3412,7 @@ SH
   run "${REPO_DIR}/scripts/add_task.sh" "Running Task" "Body" ""
   [ "$status" -eq 0 ]
 
-  run yq -i '(.tasks[] | select(.id == 2) | .status) = "in_progress" |
-    (.tasks[] | select(.id == 2) | .agent) = "claude" |
-    (.tasks[] | select(.id == 2) | .gh_issue_number) = 88 |
-    (.tasks[] | select(.id == 2) | .gh_state) = "open"' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
+  tdb "UPDATE tasks SET status = 'in_progress', agent = 'claude', gh_issue_number = 88, gh_state = 'open' WHERE id = 2;"
 
   run yq -i '.gh.repo = "testowner/testrepo" | .workflow.review_owner = "testowner"' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
@@ -3560,7 +3443,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Task should still be in_progress
-  run yq -r '.tasks[] | select(.id == 2) | .status' "$TASKS_PATH"
+  run tdb_field 2 status
   [ "$status" -eq 0 ]
   [ "$output" = "in_progress" ]
 }
@@ -3706,7 +3589,7 @@ YAML
   "${REPO_DIR}/scripts/add_task.sh" "Bare Repo Task" "Test body" "" >/dev/null
 
   # Verify task dir
-  run yq -r '.tasks[1].dir' "$TASKS_PATH"
+  run tdb_field 2 dir
   [ "$status" -eq 0 ]
   [ "$output" = "$BARE_DIR" ]
 
@@ -3730,7 +3613,7 @@ SH
   chmod +x "$GH_STUB"
 
   # Route the task first
-  yq -i '(.tasks[] | select(.id == 2) | .agent) = "claude" | (.tasks[] | select(.id == 2) | .status) = "routed"' "$TASKS_PATH"
+  tdb "UPDATE tasks SET agent = 'claude', status = 'routed', updated_at = datetime('now') WHERE id = 2;"
 
   run env PATH="${TMP_DIR}:${PATH}" \
     TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
@@ -3739,7 +3622,7 @@ SH
     bash "${REPO_DIR}/scripts/run_task.sh" 2
 
   # Task should have a worktree set
-  run yq -r '.tasks[] | select(.id == 2) | .worktree' "$TASKS_PATH"
+  run tdb_field 2 worktree
   [ "$status" -eq 0 ]
   [ "$output" != "null" ]
   [ -n "$output" ]
@@ -3811,11 +3694,8 @@ SH
   create_task_entry 2 "Sync test task" "" ""
   release_lock
 
-  # Set gh_issue_number, status, and an old updated_at
-  yq -i '(.tasks[] | select(.id == 2)).gh_issue_number = 10' "$TASKS_PATH"
-  yq -i '(.tasks[] | select(.id == 2)).status = "needs_review"' "$TASKS_PATH"
-  yq -i '(.tasks[] | select(.id == 2)).updated_at = "2026-01-01T00:00:00Z"' "$TASKS_PATH"
-  yq -i '(.tasks[] | select(.id == 2)).dir = env(PROJECT_DIR)' "$TASKS_PATH"
+  # Set gh_issue_number, status, and an old updated_at so GH appears newer
+  tdb "UPDATE tasks SET gh_issue_number = 10, status = 'needs_review', dir = '$PROJECT_DIR', updated_at = '2026-01-01T00:00:00Z' WHERE id = 2;"
 
   # Stub gh to return issue #10 with status:new label and a newer updated_at
   GH_STUB="${TMP_DIR}/gh"
@@ -3850,7 +3730,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Verify status was synced from GH
-  local_status=$(yq -r '.tasks[] | select(.gh_issue_number == 10) | .status' "$TASKS_PATH")
+  local_status=$(tdb "SELECT status FROM tasks WHERE gh_issue_number = 10;")
   [ "$local_status" = "new" ]
   [[ "$output" == *"status synced from GH: needs_review"* ]]
 }
@@ -4213,14 +4093,446 @@ SH
 }
 
 @test "poll.sh skips tasks with no-agent label" {
-  # Create a task with no-agent label
-  run yq -i '.tasks += [{"id": 99, "title": "No agent task", "body": "", "labels": ["no-agent"], "status": "new", "agent": null, "agent_model": null, "agent_profile": null, "selected_skills": [], "parent_id": null, "children": [], "route_reason": null, "route_warning": null, "summary": null, "reason": null, "accomplished": [], "remaining": [], "blockers": [], "files_changed": [], "needs_help": false, "attempts": 0, "last_error": null, "retry_at": null, "review_decision": null, "review_notes": null, "history": [], "dir": "'"$TMP_DIR"'", "created_at": "2026-01-01", "updated_at": "2026-01-01"}]' "$TASKS_PATH"
-  [ "$status" -eq 0 ]
+  # Create a task with no-agent label via SQLite
+  tdb "INSERT INTO tasks (title, body, status, dir, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
+    VALUES ('No agent task', '', 'new', '$TMP_DIR', 0, 0, 0, 0, '2026-01-01', '2026-01-01');"
+  local new_id
+  new_id=$(tdb "SELECT id FROM tasks ORDER BY id DESC LIMIT 1;")
+  tdb "INSERT INTO task_labels (task_id, label) VALUES ($new_id, 'no-agent');"
 
   # Verify the filter expression works — should NOT match no-agent tasks
-  run yq -r '.tasks[] | select((.status == "new" or .status == "routed") and (.labels // [] | map(select(. == "no-agent")) | length == 0)) | .id' "$TASKS_PATH"
+  run tdb "SELECT t.id FROM tasks t
+    WHERE t.status IN ('new', 'routed')
+      AND t.id NOT IN (SELECT task_id FROM task_labels WHERE label = 'no-agent')
+    ORDER BY t.id;"
   [ "$status" -eq 0 ]
-  # Should only have task 1 (Init from setup), not 99
+  # Should only have task 1 (Init from setup), not the no-agent task
   [[ "$output" == *"1"* ]]
-  [[ "$output" != *"99"* ]]
+  [[ "$output" != *"$new_id"* ]]
+}
+
+# --- SQLite db.sh tests ---
+
+@test "schema.sql creates all expected tables" {
+  local db="${TMP_DIR}/test.db"
+  run sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql"
+  [ "$status" -eq 0 ]
+
+  # Check all tables exist
+  for table in tasks task_labels task_history task_files task_children task_accomplished task_remaining task_blockers task_selected_skills jobs; do
+    run sqlite3 "$db" "SELECT name FROM sqlite_master WHERE type='table' AND name='$table';"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$table" ]
+  done
+}
+
+@test "db_task_field reads a single field" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_task_field 1 status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  run db_task_field 1 title
+  [ "$status" -eq 0 ]
+  [ "$output" = "Test" ]
+}
+
+@test "db_task_set updates field and bumps updated_at" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  db_task_set 1 status "in_progress"
+  run db_task_field 1 status
+  [ "$output" = "in_progress" ]
+
+  # updated_at should be newer than 2026-01-01
+  run db_task_field 1 updated_at
+  [[ "$output" > "2026-01-01" ]]
+}
+
+@test "db_task_claim is atomic — rejects wrong from_status" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'done', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  # Trying to claim from 'new' should fail because status is 'done'
+  run db_task_claim 1 "new" "in_progress"
+  [ "$status" -ne 0 ]
+
+  # Status should still be 'done'
+  run db_task_field 1 status
+  [ "$output" = "done" ]
+}
+
+@test "db_task_claim succeeds with correct from_status" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_task_claim 1 "new" "in_progress"
+  [ "$status" -eq 0 ]
+
+  run db_task_field 1 status
+  [ "$output" = "in_progress" ]
+}
+
+@test "db_task_count counts by status" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'A', 'new', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (2, 'B', 'done', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (3, 'C', 'done', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_task_count "new"
+  [ "$output" = "1" ]
+
+  run db_task_count "done"
+  [ "$output" = "2" ]
+
+  run db_task_count
+  [ "$output" = "3" ]
+}
+
+@test "db_create_task creates task with labels" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+
+  export DB_PATH="$db" PROJECT_DIR="$TMP_DIR"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  NEW_ID=$(db_create_task "My task" "Some body" "$TMP_DIR" "bug,priority:high")
+  [ "$NEW_ID" = "1" ]
+
+  run db_task_field 1 title
+  [ "$output" = "My task" ]
+
+  run db_task_field 1 status
+  [ "$output" = "new" ]
+
+  run db_task_labels_csv 1
+  [ "$output" = "bug,priority:high" ]
+}
+
+@test "db_append_history adds entries" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  db_append_history 1 "routed" "routed to claude"
+  db_append_history 1 "in_progress" "started attempt 1"
+
+  run sqlite3 "$db" "SELECT COUNT(*) FROM task_history WHERE task_id = 1;"
+  [ "$output" = "2" ]
+
+  run sqlite3 "$db" "SELECT note FROM task_history WHERE task_id = 1 ORDER BY id LIMIT 1;"
+  [ "$output" = "routed to claude" ]
+}
+
+@test "db_set_labels replaces existing labels" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (1, 'old-label');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  db_set_labels 1 "new-a,new-b"
+  run db_task_labels_csv 1
+  [ "$output" = "new-a,new-b" ]
+
+  # Old label should be gone
+  run sqlite3 "$db" "SELECT COUNT(*) FROM task_labels WHERE task_id = 1 AND label = 'old-label';"
+  [ "$output" = "0" ]
+}
+
+@test "db_task_update updates multiple fields at once" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'Test', 'new', '2026-01-01', '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  db_task_update 1 status=done agent=claude summary="Complete"
+  run db_task_field 1 status
+  [ "$output" = "done" ]
+  run db_task_field 1 agent
+  [ "$output" = "claude" ]
+  run db_task_field 1 summary
+  [ "$output" = "Complete" ]
+}
+
+@test "db_task_ids_by_status excludes tasks with label" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (1, 'A', 'new', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES (2, 'B', 'new', '2026-01-01', '2026-01-01');"
+  sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (2, 'no-agent');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_task_ids_by_status "new" "no-agent"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"1"* ]]
+  [[ "$output" != *"2"* ]]
+}
+
+@test "migrate_to_sqlite.sh creates database from YAML" {
+  # Create a minimal tasks.yml
+  cat > "$TASKS_PATH" <<'YAML'
+tasks:
+  - id: 1
+    title: "Test task"
+    body: "Test body"
+    labels: ["bug", "p1"]
+    status: "done"
+    agent: "claude"
+    agent_model: null
+    agent_profile: null
+    complexity: null
+    selected_skills: []
+    parent_id: null
+    children: []
+    route_reason: null
+    route_warning: null
+    summary: "completed"
+    reason: null
+    accomplished: ["item1"]
+    remaining: []
+    blockers: []
+    files_changed: ["a.sh"]
+    needs_help: false
+    attempts: 2
+    last_error: null
+    prompt_hash: null
+    last_comment_hash: null
+    retry_at: null
+    review_decision: null
+    review_notes: null
+    history:
+      - ts: "2026-01-01T00:00:00Z"
+        status: "new"
+        note: "created"
+      - ts: "2026-01-01T01:00:00Z"
+        status: "done"
+        note: "completed"
+    dir: "/tmp"
+    created_at: "2026-01-01"
+    updated_at: "2026-01-01"
+    gh_last_feedback_at: null
+YAML
+
+  # Create a minimal jobs.yml
+  export JOBS_PATH="${ORCH_HOME}/jobs.yml"
+  cat > "$JOBS_PATH" <<'YAML'
+jobs:
+  - id: test-job
+    type: task
+    schedule: "0 9 * * 1"
+    task:
+      title: "Weekly review"
+      body: "Review code"
+      labels: ["review"]
+    command: null
+    dir: /tmp
+    enabled: true
+    last_run: null
+    last_task_status: null
+    active_task_id: null
+YAML
+
+  local db="${ORCH_HOME}/orchestrator.db"
+  # Remove the DB created by setup() so migration can create a fresh one
+  rm -f "$db" "${db}-wal" "${db}-shm"
+  run env DB_PATH="$db" TASKS_PATH="$TASKS_PATH" JOBS_PATH="$JOBS_PATH" SCHEMA_PATH="$SCHEMA_PATH" "${REPO_DIR}/scripts/migrate_to_sqlite.sh"
+  [ "$status" -eq 0 ]
+  [ -f "$db" ]
+
+  # Verify task
+  run sqlite3 "$db" "SELECT title FROM tasks WHERE id = 1;"
+  [ "$output" = "Test task" ]
+
+  # Verify labels
+  run sqlite3 "$db" "SELECT COUNT(*) FROM task_labels WHERE task_id = 1;"
+  [ "$output" = "2" ]
+
+  # Verify history
+  run sqlite3 "$db" "SELECT COUNT(*) FROM task_history WHERE task_id = 1;"
+  [ "$output" = "2" ]
+
+  # Verify files
+  run sqlite3 "$db" "SELECT file_path FROM task_files WHERE task_id = 1;"
+  [ "$output" = "a.sh" ]
+
+  # Verify accomplished
+  run sqlite3 "$db" "SELECT item FROM task_accomplished WHERE task_id = 1;"
+  [ "$output" = "item1" ]
+
+  # Verify job
+  run sqlite3 "$db" "SELECT title FROM jobs WHERE id = 'test-job';"
+  [ "$output" = "Weekly review" ]
+}
+
+@test "db_job_field and db_job_set work correctly" {
+  local db="${TMP_DIR}/test.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO jobs (id, title, schedule, type, enabled, created_at) VALUES ('j1', 'Job', '0 9 * * *', 'task', 1, '2026-01-01');"
+
+  export DB_PATH="$db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run db_job_field j1 schedule
+  [ "$output" = "0 9 * * *" ]
+
+  db_job_set j1 enabled 0
+  run db_job_field j1 enabled
+  [ "$output" = "0" ]
+}
+
+@test "sql_escape handles single quotes" {
+  export DB_PATH="${TMP_DIR}/test.db"
+  source "${REPO_DIR}/scripts/db.sh"
+
+  run sql_escape "it's a test"
+  [ "$output" = "it''s a test" ]
+
+  run sql_escape "no quotes"
+  [ "$output" = "no quotes" ]
+}
+
+# --- SQLite routing tests (lib.sh dual-mode) ---
+
+# Helper: set up a SQLite db and source lib.sh so _use_sqlite returns true
+_setup_sqlite_env() {
+  local db="${TMP_DIR}/orch.db"
+  sqlite3 "$db" < "${REPO_DIR}/scripts/schema.sql" >/dev/null
+  sqlite3 "$db" "INSERT INTO tasks (id, title, body, status, agent, dir, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
+    VALUES (1, 'Test Task', 'body', 'new', 'claude', '${TMP_DIR}', 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
+  sqlite3 "$db" "INSERT INTO task_labels (task_id, label) VALUES (1, 'bug');"
+  export DB_PATH="$db"
+  # Re-source lib.sh to pick up the new DB_PATH
+  source "${REPO_DIR}/scripts/lib.sh"
+}
+
+@test "task_field routes to SQLite when db exists" {
+  _setup_sqlite_env
+  run task_field 1 .status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  run task_field 1 .title
+  [ "$output" = "Test Task" ]
+}
+
+@test "task_set routes to SQLite when db exists" {
+  _setup_sqlite_env
+  task_set 1 .status "done"
+  run task_field 1 .status
+  [ "$output" = "done" ]
+}
+
+@test "task_count routes to SQLite when db exists" {
+  _setup_sqlite_env
+  run task_count "new"
+  [ "$status" -eq 0 ]
+  # Should count at least the 1 task we inserted (+ the init task from setup)
+  [ "$output" -ge 1 ]
+}
+
+@test "append_history routes to SQLite when db exists" {
+  _setup_sqlite_env
+  append_history 1 "routed" "test note"
+  run db_scalar "SELECT COUNT(*) FROM task_history WHERE task_id = 1;"
+  [ "$output" -ge 1 ]
+  run db_scalar "SELECT note FROM task_history WHERE task_id = 1 ORDER BY id DESC LIMIT 1;"
+  [ "$output" = "test note" ]
+}
+
+@test "mark_needs_review routes to SQLite when db exists" {
+  _setup_sqlite_env
+  mark_needs_review 1 0 "test error" "test note"
+  run task_field 1 .status
+  [ "$output" = "needs_review" ]
+  run task_field 1 .last_error
+  [ "$output" = "test error" ]
+}
+
+@test "acquire_lock is no-op with SQLite" {
+  _setup_sqlite_env
+  # Should not create lock dir
+  acquire_lock
+  [ ! -d "$LOCK_PATH" ]
+}
+
+@test "with_lock runs command directly with SQLite" {
+  _setup_sqlite_env
+  # Should succeed without touching lock dir
+  run with_lock echo "hello"
+  [ "$status" -eq 0 ]
+  [ "$output" = "hello" ]
+  [ ! -d "$LOCK_PATH" ]
+}
+
+@test "poll.sh works with SQLite backend" {
+  _setup_sqlite_env
+  # Add a task with status 'new' and no-agent label — should be skipped
+  sqlite3 "$DB_PATH" "INSERT INTO tasks (id, title, status, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
+    VALUES (99, 'Skip Me', 'new', 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
+  sqlite3 "$DB_PATH" "INSERT INTO task_labels (task_id, label) VALUES (99, 'no-agent');"
+
+  # Set task 1 to 'done' so poll doesn't try to run it
+  sqlite3 "$DB_PATH" "UPDATE tasks SET status = 'done' WHERE id = 1;"
+
+  # Add a parent with in_progress child that's already done → should unblock
+  sqlite3 "$DB_PATH" "INSERT INTO tasks (id, title, status, parent_id, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
+    VALUES (100, 'Child Done', 'done', 99, 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
+
+  # Create a mock gh that does nothing
+  gh() { return 0; }
+  export -f gh
+
+  # Run poll.sh — should succeed (no tasks to run, no-agent skipped)
+  run "${REPO_DIR}/scripts/poll.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "add_task.sh uses SQLite when db exists" {
+  _setup_sqlite_env
+  run "${REPO_DIR}/scripts/add_task.sh" "SQLite Task" "SQLite Body" "feat,test"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Added task" ]]
+
+  # Verify the task is in SQLite
+  local count
+  count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM tasks WHERE title = 'SQLite Task';")
+  [ "$count" -eq 1 ]
+
+  # Verify labels
+  local label_count
+  label_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM task_labels WHERE task_id = (SELECT id FROM tasks WHERE title = 'SQLite Task');")
+  [ "$label_count" -eq 2 ]
 }

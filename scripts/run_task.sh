@@ -3,7 +3,6 @@
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 source "$SCRIPT_DIR/lib.sh"
-require_yq
 require_jq
 require_rg
 init_config_file
@@ -29,9 +28,9 @@ load_project_config
 
 TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
-  TASK_ID=$(yq -r '.tasks[] | select(.status == "new") | .id' "$TASKS_PATH" | head -n1)
+  TASK_ID=$(db_scalar "SELECT id FROM tasks WHERE status = 'new' ORDER BY id LIMIT 1;" 2>/dev/null || true)
   if [ -z "$TASK_ID" ]; then
-    TASK_ID=$(yq -r '.tasks[] | select(.status == "routed") | .id' "$TASKS_PATH" | head -n1)
+    TASK_ID=$(db_scalar "SELECT id FROM tasks WHERE status = 'routed' ORDER BY id LIMIT 1;" 2>/dev/null || true)
   fi
   if [ -z "$TASK_ID" ]; then
     log_err "No runnable tasks found"
@@ -66,47 +65,38 @@ TASK_LOCK_OWNED=true
 echo "$$" > "$TASK_LOCK/pid"
 
 # Combined cleanup: recover crashed tasks AND release per-task lock.
-# Must be a single trap because bash replaces previous EXIT traps.
 _run_task_cleanup() {
   local exit_code=$?
 
-  # Only release lock if we own it
   if [ "$TASK_LOCK_OWNED" = true ]; then
     rm -f "$TASK_LOCK/pid"
     rmdir "$TASK_LOCK" 2>/dev/null || true
   fi
 
-  # Recover crashed tasks so they don't stay in_progress forever
   if [ $exit_code -ne 0 ] && [ "$TASK_LOCK_OWNED" = true ]; then
     log_err "[run] task=$TASK_ID crashed (exit=$exit_code) at line ${BASH_LINENO[0]:-?}"
     local current_status
-    current_status=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .status" "$TASKS_PATH" 2>/dev/null || true)
+    current_status=$(db_task_field "$TASK_ID" "status" 2>/dev/null || true)
     if [ "$current_status" = "routed" ] || [ "$current_status" = "in_progress" ] || [ "$current_status" = "new" ]; then
-      local now
-      now=$(now_iso 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")
-      export now
-      yq -i \
-        "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
-         (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"run_task crashed (exit $exit_code)\" | \
-         (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(now)" \
-        "$TASKS_PATH" 2>/dev/null || true
+      db_task_update "$TASK_ID" \
+        "status=needs_review" \
+        "last_error=run_task crashed (exit $exit_code)" 2>/dev/null || true
     fi
   fi
 }
 trap '_run_task_cleanup' EXIT
 
 # Read task's dir field and override PROJECT_DIR if set
-TASK_DIR=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .dir // \"\"" "$TASKS_PATH")
-if [ -n "$TASK_DIR" ] && [ "$TASK_DIR" != "null" ]; then
-  if [ -d "$TASK_DIR" ]; then
-    PROJECT_DIR="$TASK_DIR"
+TASK_DIR_VAL=$(db_task_field "$TASK_ID" "dir")
+if [ -n "$TASK_DIR_VAL" ] && [ "$TASK_DIR_VAL" != "null" ]; then
+  if [ -d "$TASK_DIR_VAL" ]; then
+    PROJECT_DIR="$TASK_DIR_VAL"
     export PROJECT_DIR
     load_project_config
   else
-    log_err "[run] task=$TASK_ID dir=$TASK_DIR does not exist"
-    append_history "$TASK_ID" "blocked" "task dir does not exist: $TASK_DIR"
-    task_set "$TASK_ID" ".status" "blocked"
-    task_set "$TASK_ID" ".last_error" "task dir does not exist: $TASK_DIR"
+    log_err "[run] task=$TASK_ID dir=$TASK_DIR_VAL does not exist"
+    append_history "$TASK_ID" "blocked" "task dir does not exist: $TASK_DIR_VAL"
+    db_task_update "$TASK_ID" "status=blocked" "last_error=task dir does not exist: $TASK_DIR_VAL"
     exit 0
   fi
 fi
@@ -150,21 +140,20 @@ if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_I
   fi
 fi
 
-# Save the main project dir before worktree override — used for sandbox restrictions
+# Save the main project dir before worktree override
 MAIN_PROJECT_DIR="$PROJECT_DIR"
 export MAIN_PROJECT_DIR
 
-# Set up worktree for coding tasks — orchestrator creates it, not the agent
+# Set up worktree for coding tasks
 export WORKTREE_DIR=""
-DECOMPOSE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .decompose // false" "$TASKS_PATH")
-if [ "$DECOMPOSE" = "true" ]; then
+DECOMPOSE_VAL=$(db_task_field "$TASK_ID" "decompose")
+if [ "$DECOMPOSE_VAL" = "1" ] || [ "$DECOMPOSE_VAL" = "true" ]; then
   log_err "[run] task=$TASK_ID decompose=true (planning task)"
 fi
 
 # Always create a worktree — never work in the main project dir
-# Reuse existing branch/worktree from task if already set (deterministic across retries)
-SAVED_BRANCH=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .branch // \"\"" "$TASKS_PATH")
-SAVED_WORKTREE=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .worktree // \"\"" "$TASKS_PATH")
+SAVED_BRANCH="$TASK_BRANCH"
+SAVED_WORKTREE="$TASK_WORKTREE"
 PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 
 if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
@@ -204,7 +193,6 @@ DEFAULT_BRANCH=$(git -C "$PROJECT_DIR" symbolic-ref --short HEAD 2>/dev/null || 
 
 if [ ! -d "$WORKTREE_DIR" ]; then
   log_err "[run] task=$TASK_ID creating worktree at $WORKTREE_DIR"
-  # Bare repos: fetch latest before creating worktree; skip gh issue develop (requires working tree)
   if is_bare_repo "$PROJECT_DIR"; then
     git -C "$PROJECT_DIR" fetch --all --prune 2>/dev/null || true
   elif [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
@@ -219,10 +207,7 @@ if [ -d "$WORKTREE_DIR" ]; then
   PROJECT_DIR="$WORKTREE_DIR"
   export PROJECT_DIR
   export WORKTREE_DIR BRANCH_NAME
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .worktree) = strenv(WORKTREE_DIR) |
-     (.tasks[] | select(.id == $TASK_ID) | .branch) = strenv(BRANCH_NAME)" \
-    "$TASKS_PATH"
+  db_task_update "$TASK_ID" "worktree=$WORKTREE_DIR" "branch=$BRANCH_NAME"
   log_err "[run] task=$TASK_ID agent will run in worktree $WORKTREE_DIR"
 else
   # Retry: prune and recreate
@@ -235,26 +220,21 @@ else
     PROJECT_DIR="$WORKTREE_DIR"
     export PROJECT_DIR
     export WORKTREE_DIR BRANCH_NAME
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $TASK_ID) | .worktree) = strenv(WORKTREE_DIR) |
-       (.tasks[] | select(.id == $TASK_ID) | .branch) = strenv(BRANCH_NAME)" \
-      "$TASKS_PATH"
+    db_task_update "$TASK_ID" "worktree=$WORKTREE_DIR" "branch=$BRANCH_NAME"
     log_err "[run] task=$TASK_ID worktree created on retry: $WORKTREE_DIR"
   else
     log_err "[run] task=$TASK_ID worktree creation failed, blocking task"
     append_history "$TASK_ID" "blocked" "worktree creation failed for $WORKTREE_DIR"
-    task_set "$TASK_ID" ".status" "blocked"
-    task_set "$TASK_ID" ".last_error" "worktree creation failed: $WORKTREE_DIR"
+    db_task_update "$TASK_ID" "status=blocked" "last_error=worktree creation failed: $WORKTREE_DIR"
     exit 0
   fi
 fi
 
 # Extract error history and last_error for agent context
 export TASK_HISTORY=""
-TASK_HISTORY=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |
-  .[-5:] | .[] | \"[\(.ts)] \(.status): \(.note)\"" "$TASKS_PATH" 2>/dev/null || true)
-export TASK_LAST_ERROR=""
-TASK_LAST_ERROR=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .last_error // \"\"" "$TASKS_PATH")
+TASK_HISTORY=$(db_task_history_formatted "$TASK_ID" 5 2>/dev/null || true)
+export TASK_LAST_ERROR
+TASK_LAST_ERROR=$(db_task_field "$TASK_ID" "last_error")
 
 # Merge required skills into selected skills
 REQUIRED_SKILLS_CSV=$(config_get '.workflow.required_skills // [] | join(",")')
@@ -284,7 +264,7 @@ else
   GIT_DIFF=""
 fi
 
-# Output file for agentic mode — inside .orchestrator/ in the project dir
+# Output file for agentic mode
 mkdir -p "${PROJECT_DIR}/.orchestrator"
 OUTPUT_FILE="${PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json"
 rm -f "$OUTPUT_FILE"
@@ -299,10 +279,12 @@ MAX=$(max_attempts)
 
 # Detect retry loops: if 4+ attempts and last 3 blocked entries have identical notes, stop
 if [ "$ATTEMPTS" -ge 4 ]; then
-  BLOCKED_NOTES=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |
-    map(select(.status == \"blocked\")) | .[-3:] | map(.note) | unique | length" "$TASKS_PATH" 2>/dev/null || echo "0")
-  BLOCKED_COUNT=$(yq -r ".tasks[] | select(.id == $TASK_ID) | .history // [] |
-    map(select(.status == \"blocked\")) | .[-3:] | length" "$TASKS_PATH" 2>/dev/null || echo "0")
+  BLOCKED_NOTES=$(db_scalar "SELECT COUNT(DISTINCT note) FROM (
+    SELECT note FROM task_history WHERE task_id = $TASK_ID AND status = 'blocked'
+    ORDER BY id DESC LIMIT 3);" 2>/dev/null || echo "0")
+  BLOCKED_COUNT=$(db_scalar "SELECT COUNT(*) FROM (
+    SELECT id FROM task_history WHERE task_id = $TASK_ID AND status = 'blocked'
+    ORDER BY id DESC LIMIT 3);" 2>/dev/null || echo "0")
   if [ "$BLOCKED_COUNT" -ge 3 ] && [ "$BLOCKED_NOTES" -eq 1 ]; then
     error_log "[run] task=$TASK_ID retry loop detected (same error 3x)"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
@@ -312,22 +294,15 @@ fi
 
 if [ "$ATTEMPTS" -gt "$MAX" ]; then
   log_err "[run] task=$TASK_ID exceeded max attempts ($MAX)"
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"needs_review\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .reason) = \"exceeded max attempts ($MAX)\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"max attempts exceeded\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
-    "$TASKS_PATH"
+  db_task_update "$TASK_ID" \
+    "status=needs_review" \
+    "reason=exceeded max attempts ($MAX)" \
+    "last_error=max attempts exceeded"
   append_history "$TASK_ID" "needs_review" "exceeded max attempts ($MAX)"
   exit 0
 fi
 
-with_lock yq -i \
-  "(.tasks[] | select(.id == $TASK_ID) | .status) = \"in_progress\" | \
-   (.tasks[] | select(.id == $TASK_ID) | .attempts) = (env(ATTEMPTS) | tonumber) | \
-   (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
-  "$TASKS_PATH"
-
+db_task_update "$TASK_ID" "status=in_progress" "attempts=$ATTEMPTS"
 append_history "$TASK_ID" "in_progress" "started attempt $ATTEMPTS"
 
 # Detect decompose/plan mode
@@ -351,7 +326,7 @@ require_agent "$TASK_AGENT"
 # Build disallowed tools list
 DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash(rm -*)"] | join(",")')
 
-# Sandbox: block agent access to the main project directory (agent should only work in worktree)
+# Sandbox: block agent access to the main project directory
 SANDBOX_ENABLED=$(config_get '.workflow.sandbox // true')
 if [ "$SANDBOX_ENABLED" = "true" ] && [ -n "$MAIN_PROJECT_DIR" ] && [ "$PROJECT_DIR" != "$MAIN_PROJECT_DIR" ]; then
   SANDBOX_PATTERNS="Bash(cd ${MAIN_PROJECT_DIR}*),Read(${MAIN_PROJECT_DIR}/*),Write(${MAIN_PROJECT_DIR}/*),Edit(${MAIN_PROJECT_DIR}/*)"
@@ -371,9 +346,7 @@ PROMPT_FILE="${STATE_DIR}/${FILE_PREFIX}-prompt-${ATTEMPTS}.txt"
 printf '=== SYSTEM PROMPT ===\n%s\n\n=== AGENT MESSAGE ===\n%s\n' "$SYSTEM_PROMPT" "$AGENT_MESSAGE" > "$PROMPT_FILE"
 PROMPT_HASH=$(shasum -a 256 "$PROMPT_FILE" | cut -c1-8)
 export PROMPT_HASH
-with_lock yq -i \
-  "(.tasks[] | select(.id == $TASK_ID) | .prompt_hash) = strenv(PROMPT_HASH)" \
-  "$TASKS_PATH"
+db_task_set "$TASK_ID" "prompt_hash" "$PROMPT_HASH"
 log_err "[run] task=$TASK_ID prompt saved to $PROMPT_FILE (hash=$PROMPT_HASH)"
 log_err "[run] task=$TASK_ID agent=$TASK_AGENT model=${AGENT_MODEL:-default} attempt=$ATTEMPTS project=$PROJECT_DIR"
 log_err "[run] task=$TASK_ID skills=${SELECTED_SKILLS:-none} issue=${GH_ISSUE_REF:-none}"
@@ -385,7 +358,7 @@ RESPONSE=""
 STDERR_FILE="${STATE_DIR}/${FILE_PREFIX}-stderr-${ATTEMPTS}.txt"
 : > "$STDERR_FILE"
 
-# Monitor stderr in background for stuck agent indicators (1Password, passphrase, etc.)
+# Monitor stderr in background for stuck agent indicators
 MONITOR_PID=""
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 (
@@ -486,7 +459,6 @@ esac
 stop_spinner
 cleanup_monitor
 AGENT_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Calculate duration in seconds (macOS and Linux compatible)
 AGENT_START_EPOCH=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$AGENT_START" +%s 2>/dev/null || date -d "$AGENT_START" +%s 2>/dev/null || echo 0)
 AGENT_END_EPOCH=$(date +%s)
 AGENT_DURATION=$((AGENT_END_EPOCH - AGENT_START_EPOCH))
@@ -499,7 +471,7 @@ printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
 RESPONSE_LEN=${#RESPONSE}
 log_err "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)"
 
-# Extract tool history from agent response (for debugging and retry context)
+# Extract tool history from agent response
 TOOL_SUMMARY=$(RAW_RESPONSE="$RESPONSE" python3 "$SCRIPT_DIR/normalize_json.py" --tool-summary 2>/dev/null || true)
 TOOL_COUNT=0
 if [ -n "$TOOL_SUMMARY" ]; then
@@ -518,7 +490,7 @@ if [ -n "$USAGE_JSON" ]; then
   OUTPUT_TOKENS=$(printf '%s' "$USAGE_JSON" | jq -r '.output_tokens // 0')
 fi
 
-# Log stderr even on success (agents may print warnings)
+# Log stderr even on success
 AGENT_STDERR=""
 if [ -f "$STDERR_FILE" ] && [ -s "$STDERR_FILE" ]; then
   AGENT_STDERR=$(cat "$STDERR_FILE")
@@ -529,9 +501,7 @@ fi
 if [ "$CMD_STATUS" -ne 0 ]; then
   COMBINED_OUTPUT="${RESPONSE}${AGENT_STDERR}"
 
-  # Detect timeout first — exit code 124 is definitive
   if [ "$CMD_STATUS" -eq 124 ]; then
-    # Check if timeout was caused by interactive approval prompt
     TIMEOUT_REASON="agent timed out (exit 124)"
     if [ -f "$STDERR_FILE" ] && rg -qi 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
       TIMEOUT_REASON="agent stuck waiting for interactive approval (1Password/SSH/passphrase) — configure headless auth"
@@ -543,7 +513,6 @@ if [ "$CMD_STATUS" -ne 0 ]; then
     exit 0
   fi
 
-  # Detect auth/token/billing errors — try switching to another agent
   if printf '%s' "$COMBINED_OUTPUT" | rg -qi 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required'; then
     error_log "[run] task=$TASK_ID AUTH/BILLING ERROR for agent=$TASK_AGENT"
     AVAILABLE=$(available_agents)
@@ -557,16 +526,12 @@ if [ "$CMD_STATUS" -ne 0 ]; then
     done
     if [ -n "$NEXT_AGENT" ]; then
       log_err "[run] task=$TASK_ID switching from $TASK_AGENT to $NEXT_AGENT (auth/billing error)"
-      NOW=$(now_iso)
       PREV_ATTEMPTS=$((ATTEMPTS - 1))
-      export NOW NEXT_AGENT PREV_ATTEMPTS
-      with_lock yq -i \
-        "(.tasks[] | select(.id == $TASK_ID) | .agent) = strenv(NEXT_AGENT) |
-         (.tasks[] | select(.id == $TASK_ID) | .status) = \"new\" |
-         (.tasks[] | select(.id == $TASK_ID) | .attempts) = (env(PREV_ATTEMPTS) | tonumber) |
-         (.tasks[] | select(.id == $TASK_ID) | .last_error) = \"$TASK_AGENT auth/billing error, switched to $NEXT_AGENT\" |
-         (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
-        "$TASKS_PATH"
+      db_task_update "$TASK_ID" \
+        "agent=$NEXT_AGENT" \
+        "status=new" \
+        "attempts=$PREV_ATTEMPTS" \
+        "last_error=$TASK_AGENT auth/billing error, switched to $NEXT_AGENT"
       append_history "$TASK_ID" "new" "$TASK_AGENT auth/billing error — switched to $NEXT_AGENT"
       STDERR_SNIPPET=$(printf '%s' "$COMBINED_OUTPUT" | tail -c 300)
       comment_on_issue "$TASK_ID" "⚠️ **Agent switch**: \`$TASK_AGENT\` failed with auth/billing error. Switching to \`$NEXT_AGENT\`.
@@ -590,10 +555,9 @@ fi
 RESPONSE_JSON=""
 if [ -f "$OUTPUT_FILE" ]; then
   RESPONSE_JSON=$(cat "$OUTPUT_FILE")
-  rm -f "$OUTPUT_FILE"  # Clean up so it doesn't get committed
+  rm -f "$OUTPUT_FILE"
   log_err "[run] read output from $OUTPUT_FILE"
 else
-  # Check common fallback locations where codex might write
   for _alt in "${STATE_DIR}/output-${TASK_ID}.json" \
               "${PROJECT_DIR}/.orchestrator-output-${TASK_ID}.json" \
               "/tmp/output-${TASK_ID}.json"; do
@@ -649,31 +613,17 @@ export AGENT_STATUS SUMMARY NEEDS_HELP NOW FILES_CHANGED_STR ACCOMPLISHED_STR RE
 # Store agent metadata
 RESP_AGENT=$(printf '%s' "$RESPONSE_JSON" | jq -r '.agent // ""')
 RESP_MODEL=$(printf '%s' "$RESPONSE_JSON" | jq -r '.model // ""')
-export RESP_MODEL
 STDERR_SNIPPET=""
 if [ -n "$AGENT_STDERR" ]; then
   STDERR_SNIPPET=$(printf '%s' "$AGENT_STDERR" | tail -c 500)
 fi
-export STDERR_SNIPPET
 
-with_lock yq -i \
-  "(.tasks[] | select(.id == $TASK_ID) | .status) = strenv(AGENT_STATUS) | \
-   (.tasks[] | select(.id == $TASK_ID) | .summary) = strenv(SUMMARY) | \
-   (.tasks[] | select(.id == $TASK_ID) | .reason) = strenv(REASON) | \
-   (.tasks[] | select(.id == $TASK_ID) | .accomplished) = (strenv(ACCOMPLISHED_STR) | split(\"\\n\") | map(select(length > 0))) | \
-   (.tasks[] | select(.id == $TASK_ID) | .remaining) = (strenv(REMAINING_STR) | split(\"\\n\") | map(select(length > 0))) | \
-   (.tasks[] | select(.id == $TASK_ID) | .blockers) = (strenv(BLOCKERS_STR) | split(\"\\n\") | map(select(length > 0))) | \
-   (.tasks[] | select(.id == $TASK_ID) | .files_changed) = (strenv(FILES_CHANGED_STR) | split(\"\\n\") | map(select(length > 0))) | \
-   (.tasks[] | select(.id == $TASK_ID) | .needs_help) = (strenv(NEEDS_HELP) == \"true\") | \
-   (.tasks[] | select(.id == $TASK_ID) | .last_error) = null | \
-   (.tasks[] | select(.id == $TASK_ID) | .retry_at) = null | \
-   (.tasks[] | select(.id == $TASK_ID) | .duration) = $AGENT_DURATION | \
-   (.tasks[] | select(.id == $TASK_ID) | .input_tokens) = $INPUT_TOKENS | \
-   (.tasks[] | select(.id == $TASK_ID) | .output_tokens) = $OUTPUT_TOKENS | \
-   (.tasks[] | select(.id == $TASK_ID) | .agent_model) = strenv(RESP_MODEL) | \
-   (.tasks[] | select(.id == $TASK_ID) | .stderr_snippet) = strenv(STDERR_SNIPPET) | \
-   (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
-  "$TASKS_PATH"
+# Store all response data in SQLite
+db_store_agent_response "$TASK_ID" "$AGENT_STATUS" "$SUMMARY" "$REASON" \
+  "$NEEDS_HELP" "$RESP_MODEL" "$AGENT_DURATION" "$INPUT_TOKENS" "$OUTPUT_TOKENS" \
+  "$STDERR_SNIPPET" "$PROMPT_HASH"
+
+db_store_agent_arrays "$TASK_ID" "$ACCOMPLISHED_STR" "$REMAINING_STR" "$BLOCKERS_STR" "$FILES_CHANGED_STR"
 
 # Fallback: auto-commit any uncommitted changes the agent left behind
 if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
@@ -698,15 +648,12 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
   if [ -d "$PROJECT_DIR" ] && (cd "$PROJECT_DIR" && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
     CURRENT_BRANCH=$(cd "$PROJECT_DIR" && git branch --show-current 2>/dev/null || true)
     if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "main" ] && [ "$CURRENT_BRANCH" != "master" ]; then
-      # Check for unpushed commits: remote branch may not exist yet
       HAS_UNPUSHED=false
       if (cd "$PROJECT_DIR" && git rev-parse "origin/${CURRENT_BRANCH}" >/dev/null 2>&1); then
-        # Remote branch exists — check for new commits beyond it
         if (cd "$PROJECT_DIR" && git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null | rg -q .); then
           HAS_UNPUSHED=true
         fi
       else
-        # Remote branch doesn't exist — check for any commits beyond default branch
         if (cd "$PROJECT_DIR" && git log "${DEFAULT_BRANCH}..HEAD" --oneline 2>/dev/null | rg -q .); then
           HAS_UNPUSHED=true
         fi
@@ -714,14 +661,12 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
 
       if [ "$HAS_UNPUSHED" = true ]; then
         log_err "[run] task=$TASK_ID pushing branch $CURRENT_BRANCH"
-        # Use HTTPS rewrite to avoid SSH/1Password interactive prompts
         if ! (cd "$PROJECT_DIR" && git \
           -c "url.https://github.com/.insteadOf=git@github.com:" \
           push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
           error_log "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
         fi
 
-        # Create PR if branch was pushed and no PR exists yet
         if command -v gh >/dev/null 2>&1; then
           EXISTING_PR=$(cd "$PROJECT_DIR" && gh pr list --head "$CURRENT_BRANCH" --json number -q '.[0].number' 2>/dev/null || true)
           if [ -z "$EXISTING_PR" ]; then
@@ -729,7 +674,6 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
             PR_BODY="## Summary
 
 ${SUMMARY:-$TASK_TITLE}"
-            # Add accomplished items
             if [ -n "$ACCOMPLISHED_STR" ]; then
               PR_BODY="${PR_BODY}
 
@@ -737,7 +681,6 @@ ${SUMMARY:-$TASK_TITLE}"
 
 $(printf '%s\n' "$ACCOMPLISHED_STR" | sed 's/^/- /')"
             fi
-            # Add remaining items
             if [ -n "$REMAINING_STR" ]; then
               PR_BODY="${PR_BODY}
 
@@ -745,7 +688,6 @@ $(printf '%s\n' "$ACCOMPLISHED_STR" | sed 's/^/- /')"
 
 $(printf '%s\n' "$REMAINING_STR" | sed 's/^/- /')"
             fi
-            # Add files changed
             if [ -n "$FILES_CHANGED_STR" ]; then
               PR_BODY="${PR_BODY}
 
@@ -775,8 +717,7 @@ ${GH_ISSUE_NUMBER:+Closes #${GH_ISSUE_NUMBER}}
   fi
 fi
 
-# Override "done" → "in_review" when there's an open PR.
-# Tasks should only reach "done" when the PR is merged (GitHub auto-closes the issue).
+# Override "done" → "in_review" when there's an open PR
 if [ "$AGENT_STATUS" = "done" ]; then
   PR_NUMBER=""
   if [ -n "${BRANCH_NAME:-}" ] && [ "$BRANCH_NAME" != "main" ] && [ "$BRANCH_NAME" != "master" ]; then
@@ -787,10 +728,7 @@ if [ "$AGENT_STATUS" = "done" ]; then
   if [ -n "$PR_NUMBER" ]; then
     log_err "[run] task=$TASK_ID overriding done → in_review (PR #$PR_NUMBER open)"
     AGENT_STATUS="in_review"
-    export AGENT_STATUS
-    with_lock yq -i \
-      "(.tasks[] | select(.id == $TASK_ID) | .status) = \"in_review\"" \
-      "$TASKS_PATH"
+    db_task_set "$TASK_ID" "status" "in_review"
   fi
 fi
 
@@ -811,7 +749,6 @@ REVIEW_AGENT=${REVIEW_AGENT:-$(opposite_agent "$TASK_AGENT")}
 if [ "$AGENT_STATUS" = "in_review" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ] && [ -n "$PR_NUMBER" ]; then
   FILES_CHANGED=$(printf '%s' "$RESPONSE_JSON" | jq -r '.files_changed | join(", ")')
 
-  # Get the actual PR diff (truncated to 500 lines)
   export TASK_SUMMARY="$SUMMARY"
   export TASK_FILES_CHANGED="$FILES_CHANGED"
   export GIT_DIFF PR_NUMBER
@@ -845,38 +782,31 @@ if [ "$AGENT_STATUS" = "in_review" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ] && [
     exit 0
   fi
 
-  REVIEW_DECISION=$(printf '%s' "$REVIEW_RESPONSE" | yq -r '.decision // ""')
-  REVIEW_NOTES=$(printf '%s' "$REVIEW_RESPONSE" | yq -r '.notes // ""')
+  REVIEW_DECISION=$(printf '%s' "$REVIEW_RESPONSE" | jq -r '.decision // ""')
+  REVIEW_NOTES_VAL=$(printf '%s' "$REVIEW_RESPONSE" | jq -r '.notes // ""')
 
-  # Post real GitHub PR review
   if [ "$REVIEW_DECISION" = "approve" ]; then
-    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --approve --body "${REVIEW_NOTES:-Approved by $REVIEW_AGENT review agent}" 2>/dev/null) || true
+    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --approve --body "${REVIEW_NOTES_VAL:-Approved by $REVIEW_AGENT review agent}" 2>/dev/null) || true
     log_err "[run] task=$TASK_ID review approved PR #$PR_NUMBER"
   elif [ "$REVIEW_DECISION" = "request_changes" ]; then
-    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --request-changes --body "${REVIEW_NOTES:-Changes requested by $REVIEW_AGENT review agent}" 2>/dev/null) || true
+    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --request-changes --body "${REVIEW_NOTES_VAL:-Changes requested by $REVIEW_AGENT review agent}" 2>/dev/null) || true
     log_err "[run] task=$TASK_ID review requested changes on PR #$PR_NUMBER"
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review requested changes: ${REVIEW_NOTES:-}"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review requested changes: ${REVIEW_NOTES_VAL:-}"
     exit 0
   elif [ "$REVIEW_DECISION" = "reject" ]; then
     log_err "[run] task=$TASK_ID review rejected — closing PR #$PR_NUMBER"
-    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --request-changes --body "Rejected by $REVIEW_AGENT: ${REVIEW_NOTES:-no notes}" 2>/dev/null) || true
-    (cd "$PROJECT_DIR" && gh pr close "$PR_NUMBER" --comment "Rejected by review agent: ${REVIEW_NOTES:-no notes}" 2>/dev/null) || true
+    (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --request-changes --body "Rejected by $REVIEW_AGENT: ${REVIEW_NOTES_VAL:-no notes}" 2>/dev/null) || true
+    (cd "$PROJECT_DIR" && gh pr close "$PR_NUMBER" --comment "Rejected by review agent: ${REVIEW_NOTES_VAL:-no notes}" 2>/dev/null) || true
     log_err "[run] task=$TASK_ID closed PR #$PR_NUMBER"
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review rejected: ${REVIEW_NOTES:-hallucination or broken changes}"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "review rejected: ${REVIEW_NOTES_VAL:-hallucination or broken changes}"
     exit 0
   fi
 
-  NOW=$(now_iso)
-  export NOW REVIEW_NOTES
-  with_lock yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .review_decision) = \"approve\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .review_notes) = strenv(REVIEW_NOTES) | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
-    "$TASKS_PATH"
+  db_task_update "$TASK_ID" "review_decision=approve" "review_notes=$REVIEW_NOTES_VAL"
   append_history "$TASK_ID" "done" "review approved by $REVIEW_AGENT"
 fi
 
-# Only allow delegations from plan/decompose tasks — agents should do the work, not create subtasks
+# Only allow delegations from plan/decompose tasks
 DELEG_COUNT=0
 if [ "$DECOMPOSE" = true ]; then
   DELEG_COUNT=$(printf '%s' "$DELEGATIONS_JSON" | jq -r 'length')
@@ -888,9 +818,6 @@ else
 fi
 
 if [ "$DELEG_COUNT" -gt 0 ]; then
-  acquire_lock
-
-  MAX_ID=$(yq -r '(.tasks | map(.id) | max) // 0' "$TASKS_PATH")
   CHILD_IDS=()
   for i in $(seq 0 $((DELEG_COUNT - 1))); do
     D_TITLE=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].title // \"\"")
@@ -898,28 +825,11 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
     D_LABELS=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].labels // [] | join(\",\")")
     D_AGENT=$(printf '%s' "$DELEGATIONS_JSON" | jq -r ".[$i].suggested_agent // \"\"")
 
-    MAX_ID=$((MAX_ID + 1))
-    NOW=$(now_iso)
-    export NOW PROJECT_DIR
-
-    create_task_entry "$MAX_ID" "$D_TITLE" "$D_BODY" "$D_LABELS" "$TASK_ID" "$D_AGENT"
-
-    yq -i \
-      "(.tasks[] | select(.id == $TASK_ID) | .children) += [$MAX_ID]" \
-      "$TASKS_PATH"
-
-    CHILD_IDS+=("$MAX_ID")
+    NEW_ID=$(db_create_task "$D_TITLE" "$D_BODY" "$PROJECT_DIR" "$D_LABELS" "$TASK_ID" "$D_AGENT")
+    CHILD_IDS+=("$NEW_ID")
   done
 
-  NOW=$(now_iso)
-  export NOW
-  yq -i \
-    "(.tasks[] | select(.id == $TASK_ID) | .status) = \"blocked\" | \
-     (.tasks[] | select(.id == $TASK_ID) | .updated_at) = strenv(NOW)" \
-    "$TASKS_PATH"
-
-  release_lock
-
+  db_task_set "$TASK_ID" "status" "blocked"
   printf 'Spawned children: %s\n' "${CHILD_IDS[*]}"
   append_history "$TASK_ID" "blocked" "spawned children: ${CHILD_IDS[*]}"
 fi
