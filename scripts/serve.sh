@@ -8,15 +8,20 @@ PID_FILE=${PID_FILE:-"${STATE_DIR}/orchestrator.pid"}
 LOG_FILE=${LOG_FILE:-"${STATE_DIR}/orchestrator.log"}
 ARCHIVE_LOG=${ARCHIVE_LOG:-"${STATE_DIR}/orchestrator.archive.log"}
 INTERVAL=${INTERVAL:-10}
-GH_PULL_INTERVAL=${GH_PULL_INTERVAL:-60}
+GH_PULL_INTERVAL=${GH_PULL_INTERVAL:-120}
 CONFIG_PATH=${CONFIG_PATH:-"${ROOT_DIR}/config.yml"}
 SERVE_LOCK=${SERVE_LOCK:-"${STATE_DIR}/serve.lock"}
 TAIL_PID_FILE=${TAIL_PID_FILE:-"${STATE_DIR}/tail.pid"}
 RESTARTING=${RESTARTING:-0}
+_stopping=false
 
 mkdir -p "$STATE_DIR"
 
-_log() { echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $*"; }
+# Source lib.sh for gh_backoff_active() and log helpers
+source "$SCRIPT_DIR/lib.sh"
+
+export ORCH_VERSION="${ORCH_VERSION:-$(git describe --tags --always 2>/dev/null || echo unknown)}"
+_log() { echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [v${ORCH_VERSION}] $*"; }
 
 # Single ownership check: PID file takes precedence over lock dir.
 if [ "$RESTARTING" != "1" ]; then
@@ -67,6 +72,12 @@ fi
 
 echo $$ > "$PID_FILE"
 
+_on_signal() {
+  _stopping=true
+  # Kill the backgrounded sleep if any, so the loop unblocks immediately
+  [ -n "${_sleep_pid:-}" ] && kill "$_sleep_pid" >/dev/null 2>&1 || true
+}
+
 cleanup() {
   rm -f "$PID_FILE"
   rm -rf "$SERVE_LOCK"
@@ -81,7 +92,8 @@ cleanup() {
     kill "$TAIL_PID" >/dev/null 2>&1 || true
   fi
 }
-trap cleanup EXIT INT TERM
+trap '_on_signal; cleanup' INT TERM
+trap cleanup EXIT
 
 # Rotate log on start
 if [ -f "$LOG_FILE" ]; then
@@ -159,7 +171,6 @@ LAST_GH_PULL=0
 # Sync skills on start
 "$SCRIPT_DIR/skills_sync.sh" >> "$LOG_FILE" 2>&1 || true
 
-ORCH_VERSION="${ORCH_VERSION:-$(git describe --tags --always 2>/dev/null || echo unknown)}"
 _log "[serve] starting v${ORCH_VERSION} with interval=${INTERVAL}s" >> "$LOG_FILE"
 
 echo "Orchestrator v${ORCH_VERSION} started, listening to tasks and delegating agents." \
@@ -182,31 +193,41 @@ if [ "${TAIL_LOG:-0}" = "1" ]; then
 fi
 
 while true; do
+  $_stopping && { _log "[serve] shutting down gracefully" >> "$LOG_FILE"; break; }
   _log "[serve] tick" >> "$LOG_FILE"
   clear_stale_task_lock
   "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
+  $_stopping && break
   "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
+  $_stopping && break
   NOW_EPOCH=$(date +%s)
   if [ $((NOW_EPOCH - LAST_GH_PULL)) -ge "$GH_PULL_INTERVAL" ]; then
-    # Run gh_sync for each unique project dir
-    TASKS_FILE="${TASKS_PATH:-tasks.yml}"
-    if [ -f "$TASKS_FILE" ]; then
-      DIRS=$(yq -r '[.tasks[].dir // ""] | unique | .[]' "$TASKS_FILE" 2>/dev/null || true)
-      SYNCED_DEFAULT=false
-      for dir in $DIRS; do
-        if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
-          PROJECT_DIR="$dir" "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
-          SYNCED_DEFAULT=true
+    # Skip sync if GitHub API backoff is active
+    if _remaining=$(gh_backoff_active 2>/dev/null); then
+      _log "[serve] gh backoff active (${_remaining}s remaining), skipping sync" >> "$LOG_FILE"
+    else
+      # Run gh_sync for each unique project dir
+      TASKS_FILE="${TASKS_PATH:-tasks.yml}"
+      if [ -f "$TASKS_FILE" ]; then
+        DIRS=$(yq -r '[.tasks[].dir // ""] | unique | .[]' "$TASKS_FILE" 2>/dev/null || true)
+        SYNCED_DEFAULT=false
+        for dir in $DIRS; do
+          $_stopping && break
+          if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
+            PROJECT_DIR="$dir" "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+            SYNCED_DEFAULT=true
+          fi
+        done
+        if [ "$SYNCED_DEFAULT" = false ]; then
+          "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
         fi
-      done
-      if [ "$SYNCED_DEFAULT" = false ]; then
+      else
         "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
       fi
-    else
-      "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
     fi
     LAST_GH_PULL=$NOW_EPOCH
   fi
+  $_stopping && break
 
   CURRENT_MTIME=$(lock_mtime "$CONFIG_PATH")
   if [ "$CURRENT_MTIME" -ne "$LAST_CONFIG_MTIME" ]; then
@@ -228,5 +249,9 @@ while true; do
     exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
   fi
 
-  sleep "$INTERVAL"
+  # Interruptible sleep: background sleep so SIGTERM wakes us immediately
+  sleep "$INTERVAL" &
+  _sleep_pid=$!
+  wait "$_sleep_pid" 2>/dev/null || true
+  _sleep_pid=""
 done
