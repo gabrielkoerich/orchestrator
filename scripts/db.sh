@@ -438,7 +438,10 @@ db_load_task() {
     COALESCE(decompose, 0)
     FROM tasks WHERE id = $id;")
   [ -z "$row" ] && return 1
-  IFS=$'\x1f' read -r _t_title _t_body _t_status _t_agent _t_agent_model _t_complexity \
+  # Use -d '' to read until NUL so that newlines inside fields (e.g. body)
+  # don't truncate the remaining variables.  read returns non-zero at EOF
+  # without NUL, so || true is required.
+  IFS=$'\x1f' read -r -d '' _t_title _t_body _t_status _t_agent _t_agent_model _t_complexity \
     _t_agent_profile _t_attempts _t_parent_id _t_gh_issue _t_dir _t_branch \
     _t_worktree _t_summary _t_reason _t_last_error _t_prompt_hash _t_updated_at \
     _t_gh_synced_at _t_gh_state _t_gh_url _t_gh_updated_at _t_gh_last_feedback_at \
@@ -446,7 +449,7 @@ db_load_task() {
     _t_review_decision _t_review_notes _t_retry_at _t_created_at \
     _t_worktree_cleaned _t_route_reason _t_route_warning \
     _t_duration _t_input_tokens _t_output_tokens \
-    _t_stderr_snippet _t_gh_synced_status _t_decompose <<< "$row"
+    _t_stderr_snippet _t_gh_synced_status _t_decompose <<< "$row" || true
 
   export TASK_TITLE="$_t_title"
   export TASK_BODY="$_t_body"

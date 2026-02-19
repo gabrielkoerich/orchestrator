@@ -2596,6 +2596,75 @@ JSON
   [ "$output" = "failed" ]
 }
 
+# --- jobs_tick.sh catch-up ---
+
+@test "jobs_tick.sh catches up missed job after downtime" {
+  # Create a job scheduled for a specific hour that has already passed today
+  # Use last_run from 6 hours ago so the scheduled time was missed
+  LAST_RUN=$(date -u -v-6H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '6 hours ago' +"%Y-%m-%dT%H:%M:%SZ")
+  # Schedule for 3 hours ago (definitely between last_run and now)
+  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
+
+  tdb "INSERT INTO jobs (id, title, schedule, type, body, labels, enabled, last_run, created_at) VALUES ('test-catchup', 'Catch Up Job', '0 ${MISSED_HOUR} * * *', 'task', 'Missed job body', 'test', 1, '${LAST_RUN}', datetime('now'));"
+
+  run "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  # Should have created a task for the missed job
+  run tdb "SELECT status FROM tasks WHERE title = 'Catch Up Job';"
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+}
+
+@test "jobs_tick.sh does not catch up if last_run is after scheduled time" {
+  # last_run is 1 hour ago, schedule is for 3 hours ago — already ran
+  LAST_RUN=$(date -u -v-1H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '1 hour ago' +"%Y-%m-%dT%H:%M:%SZ")
+  PAST_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
+
+  tdb "INSERT INTO jobs (id, title, schedule, type, body, labels, enabled, last_run, created_at) VALUES ('test-no-catchup', 'No Catch Up', '0 ${PAST_HOUR} * * *', 'task', 'Already ran', 'test', 1, '${LAST_RUN}', datetime('now'));"
+
+  TASK_COUNT_BEFORE=$(tdb_count)
+
+  run "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  TASK_COUNT_AFTER=$(tdb_count)
+  [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
+}
+
+@test "cron_match.py --since detects missed occurrence" {
+  # 9am schedule, last_run at 6am — 9am was missed
+  run python3 "${REPO_DIR}/scripts/cron_match.py" "0 9 * * *" --since "$(date -u +%Y-%m-%d)T06:00:00Z"
+  [ "$status" -eq 0 ]
+}
+
+@test "cron_match.py --since no match when already past" {
+  # 9am schedule, last_run at 10am — 9am already passed after last_run
+  run python3 "${REPO_DIR}/scripts/cron_match.py" "0 9 * * *" --since "$(date -u +%Y-%m-%d)T10:00:00Z"
+  [ "$status" -eq 1 ]
+}
+
+@test "jobs_tick.sh catches up missed bash job" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_jobs_file
+
+  LAST_RUN=$(date -u -v-6H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '6 hours ago' +"%Y-%m-%dT%H:%M:%SZ")
+  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
+
+  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo caught-up" "0 ${MISSED_HOUR} * * *" "Bash Catch Up" >/dev/null
+
+  # Set last_run to 6 hours ago so the 3-hours-ago occurrence was missed
+  tdb "UPDATE jobs SET last_run = '${LAST_RUN}';"
+
+  run "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  # Should have run and recorded last_run
+  run tdb "SELECT last_task_status FROM jobs ORDER BY rowid LIMIT 1 OFFSET 0;"
+  [ "$output" = "done" ]
+}
+
 # --- status.sh ---
 
 @test "status.sh shows counts table" {
@@ -4617,4 +4686,60 @@ _setup_sqlite_env() {
   local label_count
   label_count=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM task_labels WHERE task_id = (SELECT id FROM tasks WHERE title = 'SQLite Task');")
   [ "$label_count" -eq 2 ]
+}
+
+@test "db_load_task handles multiline body without truncating fields" {
+  source "${REPO_DIR}/scripts/lib.sh"
+
+  # Create a task with a multiline body containing newlines
+  local multiline_body
+  multiline_body=$(printf 'Line 1\nLine 2\nLine 3\n\nLine 5 with context')
+  local task_id
+  task_id=$(db_scalar "INSERT INTO tasks (title, body, status, dir, gh_issue_number, created_at, updated_at)
+    VALUES ('Multiline Test', '$(sql_escape "$multiline_body")', 'new', '/tmp/test-project', 42, datetime('now'), datetime('now'))
+    RETURNING id;")
+
+  # Load the task
+  db_load_task "$task_id"
+
+  # Verify fields AFTER body are not empty (the bug would make them empty)
+  [ "$TASK_STATUS" = "new" ]
+  [ "$TASK_DIR" = "/tmp/test-project" ]
+  [ "$GH_ISSUE_NUMBER" = "42" ]
+  [ "$TASK_TITLE" = "Multiline Test" ]
+
+  # Verify body contains all lines (not truncated at first newline)
+  local body_lines
+  body_lines=$(printf '%s' "$TASK_BODY" | wc -l | tr -d ' ')
+  [ "$body_lines" -ge 4 ]
+}
+
+@test "gh_push.sh skips tasks from other projects (cross-project guard)" {
+  source "${REPO_DIR}/scripts/lib.sh"
+
+  # Create a task with a multiline body AND a different dir
+  local multiline_body
+  multiline_body=$(printf 'Context\nThis task belongs to another project\nShould not be pushed here')
+  db "INSERT INTO tasks (title, body, status, dir, gh_issue_number, created_at, updated_at)
+    VALUES ('Foreign Task', '$(sql_escape "$multiline_body")', 'new', '/tmp/other-project', '', datetime('now'), datetime('now'));"
+
+  # Load it and verify the cross-project guard would work
+  local foreign_id
+  foreign_id=$(db_scalar "SELECT id FROM tasks WHERE title = 'Foreign Task';")
+  db_load_task "$foreign_id"
+
+  # Key assertion: dir must be loaded correctly even with multiline body
+  [ "$TASK_DIR" = "/tmp/other-project" ]
+  [ "$TASK_STATUS" = "new" ]
+
+  # Simulate the cross-project guard from gh_push.sh
+  local PROJECT_DIR="${TMP_DIR}"
+  local TASK_DIR_VAL="$TASK_DIR"
+  if [ -n "$TASK_DIR_VAL" ] && [ "$TASK_DIR_VAL" != "null" ] && [ "$TASK_DIR_VAL" != "$PROJECT_DIR" ]; then
+    # Guard triggered — task would be skipped (correct behavior)
+    true
+  else
+    # Guard NOT triggered — task would be pushed to wrong repo (BUG)
+    false
+  fi
 }

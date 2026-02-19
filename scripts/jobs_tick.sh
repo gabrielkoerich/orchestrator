@@ -42,18 +42,25 @@ while IFS=$'\x1f' read -r JOB_ID SCHEDULE JOB_TYPE JOB_CMD JOB_TITLE JOB_BODY JO
     fi
   fi
 
-  # Check if schedule matches current minute
-  if ! python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE"; then
-    continue
-  fi
-
-  # Prevent duplicate creation if tick runs multiple times in the same minute
+  # Schedule matching with catch-up for missed runs during downtime
   if [ -n "$LAST_RUN" ] && [ "$LAST_RUN" != "null" ]; then
+    # Prevent duplicate creation if tick runs multiple times in the same minute
     LAST_RUN_MINUTE=$(printf '%s' "$LAST_RUN" | cut -c1-16)
     NOW_MINUTE_CMP=$(date -u +"%Y-%m-%dT%H:%M")
     if [ "$LAST_RUN_MINUTE" = "$NOW_MINUTE_CMP" ]; then
       continue
     fi
+
+    if python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE"; then
+      : # Current minute matches — proceed to execution
+    elif python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE" --since "$LAST_RUN"; then
+      job_log "[jobs] job=$JOB_ID catch-up: missed run since $LAST_RUN"
+    else
+      continue
+    fi
+  elif ! python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE"; then
+    # No last_run and current minute doesn't match — skip
+    continue
   fi
 
   if [ "$JOB_TYPE" = "bash" ]; then
