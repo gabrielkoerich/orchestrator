@@ -3621,3 +3621,56 @@ SH
   [ "$status" -eq 0 ]
   [[ "$output" == *"bareowner/barerepo"* ]]
 }
+
+@test "gh_pull.sh syncs status from GH labels when GH updated more recently" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  init_tasks_file
+
+  # Create a task linked to GH issue #10, local status=needs_review, old updated_at
+  acquire_lock
+  create_task_entry 2 "Sync test task" "" ""
+  release_lock
+
+  # Set gh_issue_number, status, and an old updated_at
+  yq -i '(.tasks[] | select(.id == 2)).gh_issue_number = 10' "$TASKS_PATH"
+  yq -i '(.tasks[] | select(.id == 2)).status = "needs_review"' "$TASKS_PATH"
+  yq -i '(.tasks[] | select(.id == 2)).updated_at = "2026-01-01T00:00:00Z"' "$TASKS_PATH"
+  yq -i '(.tasks[] | select(.id == 2)).dir = env(PROJECT_DIR)' "$TASKS_PATH"
+
+  # Stub gh to return issue #10 with status:new label and a newer updated_at
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
+  cat <<JSON
+[{
+  "number": 10,
+  "title": "Sync test task",
+  "body": "",
+  "labels": [{"name": "status:new"}],
+  "state": "open",
+  "html_url": "https://github.com/test/repo/issues/10",
+  "updated_at": "2026-02-01T00:00:00Z",
+  "pull_request": null
+}]
+JSON
+elif [[ "$*" == *"graphql"* ]]; then
+  echo '{"data":{"repository":{}}}'
+else
+  echo "[]"
+fi
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    TASKS_PATH="$TASKS_PATH" CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$PROJECT_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    bash "${REPO_DIR}/scripts/gh_pull.sh"
+  [ "$status" -eq 0 ]
+
+  # Verify status was synced from GH
+  local_status=$(yq -r '.tasks[] | select(.gh_issue_number == 10) | .status' "$TASKS_PATH")
+  [ "$local_status" = "new" ]
+  [[ "$output" == *"status synced from GH: needs_review"* ]]
+}

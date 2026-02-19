@@ -119,6 +119,34 @@ for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
        (.tasks[] | select(.gh_issue_number == $NUM) | .gh_updated_at) = strenv(UPDATED)" \
       "$TASKS_PATH"
 
+    # 2-way status sync: if GH was updated after local, derive status from labels
+    LOCAL_UPDATED=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .updated_at // \"\"" "$TASKS_PATH")
+    if [ -n "$UPDATED" ] && [ -n "$LOCAL_UPDATED" ] && [[ "$UPDATED" > "$LOCAL_UPDATED" ]]; then
+      GH_STATUS=""
+      for _label in $(printf '%s' "$LABELS_CSV" | tr ',' '\n'); do
+        case "$_label" in
+          status:new)           GH_STATUS="new" ;;
+          status:routed)        GH_STATUS="routed" ;;
+          status:in_progress)   GH_STATUS="in_progress" ;;
+          status:needs_review)  GH_STATUS="needs_review" ;;
+          status:blocked)       GH_STATUS="blocked" ;;
+          status:done)          GH_STATUS="done" ;;
+        esac
+      done
+      if [ -n "$GH_STATUS" ]; then
+        LOCAL_STATUS=$(yq -r ".tasks[] | select(.gh_issue_number == $NUM) | .status" "$TASKS_PATH")
+        if [ "$GH_STATUS" != "$LOCAL_STATUS" ]; then
+          NOW=$(now_iso)
+          export NOW GH_STATUS
+          yq -i \
+            "(.tasks[] | select(.gh_issue_number == $NUM) | .status) = strenv(GH_STATUS) | \
+             (.tasks[] | select(.gh_issue_number == $NUM) | .updated_at) = strenv(NOW)" \
+            "$TASKS_PATH"
+          log "[gh_pull] [$PROJECT_NAME] issue #$NUM status synced from GH: $LOCAL_STATUS → $GH_STATUS"
+        fi
+      fi
+    fi
+
   else
     NEXT_ID=$(yq -r '((.tasks | map(.id) | max) // 0) + 1' "$TASKS_PATH")
     NOW=$(now_iso)
