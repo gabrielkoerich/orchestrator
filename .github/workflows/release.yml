@@ -117,26 +117,12 @@ jobs:
             COMMITS=$(git log --pretty=format:"%s")
           fi
 
-          # Default to patch bump
+          # Determine bump from commit prefixes: breaking: → major, feat: → minor, everything else → patch
           BUMP="patch"
-
-          # Look for conventional commit feat: prefix → minor
-          if echo "$COMMITS" | grep -qiE '^feat(\(.*\))?!?:'; then
+          if echo "$COMMITS" | grep -qE '^feat(\(.*\))?:'; then
             BUMP="minor"
           fi
-
-          # Look for breaking change signals → major
-          # Only match conventional commit markers: "feat!:", "fix!:", or "BREAKING CHANGE:" footer
-          HAS_BREAKING=false
-          if echo "$COMMITS" | grep -qE '^[a-z]+(\(.*\))?!:'; then
-            HAS_BREAKING=true
-          fi
-          if [ -n "$LAST_TAG" ]; then
-            if git log "$LAST_TAG"..HEAD --pretty=format:"%b" | grep -qE '^BREAKING CHANGE:'; then
-              HAS_BREAKING=true
-            fi
-          fi
-          if [ "$HAS_BREAKING" = true ]; then
+          if echo "$COMMITS" | grep -qE '^breaking(\(.*\))?:'; then
             BUMP="major"
           fi
 
@@ -178,11 +164,11 @@ jobs:
           while IFS='|' read -r msg hash; do
             [ -n "$msg" ] || continue
             entry="- ${msg} (${hash})"
-            if echo "$msg" | grep -qE '^[a-z]+(\(.*\))?!:'; then
+            if echo "$msg" | grep -qE '^breaking(\(.*\))?:'; then
               BREAKING+="${entry}"$'\n'
-            elif echo "$msg" | grep -qiE '^feat(\(.*\))?!?:'; then
+            elif echo "$msg" | grep -qE '^feat(\(.*\))?:'; then
               FEATURES+="${entry}"$'\n'
-            elif echo "$msg" | grep -qiE '\bfix(ed|es)?\b|\bbug\b|\bhotfix\b'; then
+            elif echo "$msg" | grep -qE '^fix(\(.*\))?:'; then
               FIXES+="${entry}"$'\n'
             else
               OTHER+="${entry}"$'\n'
