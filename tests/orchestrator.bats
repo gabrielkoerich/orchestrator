@@ -4,7 +4,9 @@ setup() {
   export REPO_DIR="${BATS_TEST_DIRNAME}/.."
   export PATH="${REPO_DIR}/scripts:${PATH}"
 
-  TMP_DIR=$(mktemp -d)
+  # Use ~/.orchestrator/.tmp to avoid macOS /tmp → /private/tmp symlink issues
+  mkdir -p "${HOME}/.orchestrator/.tmp"
+  TMP_DIR=$(mktemp -d "${HOME}/.orchestrator/.tmp/test.XXXXXX")
   export STATE_DIR="${TMP_DIR}/.orchestrator"
   mkdir -p "$STATE_DIR"
   export ORCH_HOME="${TMP_DIR}/orch_home"
@@ -1425,7 +1427,7 @@ YAML
   fi
 }
 
-@test "gh_push.sh skips archiving for done tasks not yet closed" {
+@test "gh_push.sh archives done tasks even with stale gh_state=open" {
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
 #!/usr/bin/env bash
@@ -1447,10 +1449,10 @@ gh:
 YAML
 
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  tdb "UPDATE tasks SET gh_issue_number = 1, gh_state = 'open', status = 'done', gh_project_item_id = 'PVTI_item1', gh_archived = 0, updated_at = '$NOW', gh_synced_at = '$NOW' WHERE id = 1;"
+  tdb "UPDATE tasks SET gh_issue_number = 1, gh_state = 'open', status = 'done', gh_project_item_id = 'PVTI_item1', gh_archived = 0, updated_at = '$NOW', gh_synced_at = '' WHERE id = 1;"
 
   run env PATH="${TMP_DIR}:${PATH}" \
-    TASKS_PATH="$TASKS_PATH" \
+    DB_PATH="$DB_PATH" ORCH_HOME="$ORCH_HOME" \
     CONFIG_PATH="$CONFIG_PATH" \
     PROJECT_DIR="$TMP_DIR" \
     STATE_DIR="$STATE_DIR" \
@@ -1458,11 +1460,9 @@ YAML
     "${REPO_DIR}/scripts/gh_push.sh"
   [ "$status" -eq 0 ]
 
-  if [ -f "${STATE_DIR}/gh_calls" ]; then
-    run cat "${STATE_DIR}/gh_calls"
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"archive_called"* ]]
-  fi
+  # Done tasks should now be archived regardless of gh_state
+  [ -f "${STATE_DIR}/gh_calls" ]
+  grep -q "archive_called" "${STATE_DIR}/gh_calls"
 }
 
 @test "plan_chat.sh cleans up history on exit" {
@@ -2036,6 +2036,88 @@ SH
   run grep -c 'db_task_set_synced' "${REPO_DIR}/scripts/gh_push.sh"
   [ "$status" -eq 0 ]
   [ "$output" -ge 2 ]
+}
+
+@test "gh_push.sh skips tasks from different projects" {
+  # A task with dir=/other/project should be skipped when gh_push runs for PROJECT_DIR=$TMP_DIR
+  "${REPO_DIR}/scripts/add_task.sh" "Other project task" "Body" "" >/dev/null
+  tdb "UPDATE tasks SET status = 'new', dir = '/other/project', gh_issue_number = NULL WHERE id = 2;"
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "gh_called" >> "${STATE_DIR}/gh_push_calls"
+echo '{"number":99,"html_url":"https://github.com/test/repo/issues/99","state":"open"}'
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    DB_PATH="$DB_PATH" ORCH_HOME="$ORCH_HOME" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_push.sh"
+  [ "$status" -eq 0 ]
+
+  # Task 2 should NOT have gotten an issue (it belongs to a different project)
+  TASK2_GH=$(tdb "SELECT gh_issue_number FROM tasks WHERE id = 2;")
+  [ -z "$TASK2_GH" ] || [ "$TASK2_GH" = "NULL" ]
+}
+
+@test "gh_push.sh never creates issues for done tasks" {
+  # A done task without a gh_issue_number should NOT get a new issue created
+  "${REPO_DIR}/scripts/add_task.sh" "Done task" "Body" "" >/dev/null
+  tdb "UPDATE tasks SET status = 'done', gh_issue_number = NULL WHERE id = 2;"
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "FAIL: gh was called to create issue for done task" >&2
+echo '{"number":99,"html_url":"https://github.com/test/repo/issues/99","state":"open"}'
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    DB_PATH="$DB_PATH" ORCH_HOME="$ORCH_HOME" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_push.sh"
+  [ "$status" -eq 0 ]
+
+  # Task 2 should still have no issue number
+  TASK2_GH=$(tdb "SELECT gh_issue_number FROM tasks WHERE id = 2;")
+  [ -z "$TASK2_GH" ] || [ "$TASK2_GH" = "NULL" ]
+}
+
+@test "gh_push.sh skips done tasks even with stale gh_state=open" {
+  # Bug: done tasks with gh_state=open used to fall through and get synced/duplicated
+  # Create a second task, then mark both as done with issue numbers
+  "${REPO_DIR}/scripts/add_task.sh" "Second task" "Body" "" >/dev/null
+  tdb "UPDATE tasks SET status = 'done', gh_issue_number = 99, gh_state = 'closed' WHERE id = 1;"
+  tdb "UPDATE tasks SET status = 'done', gh_issue_number = 10, gh_state = 'open' WHERE id = 2;"
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{}'
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" \
+    DB_PATH="$DB_PATH" ORCH_HOME="$ORCH_HOME" \
+    CONFIG_PATH="$CONFIG_PATH" \
+    PROJECT_DIR="$TMP_DIR" \
+    STATE_DIR="$STATE_DIR" \
+    GITHUB_REPO="test/repo" \
+    "${REPO_DIR}/scripts/gh_push.sh"
+  [ "$status" -eq 0 ]
+
+  # Task should still have issue #10 (not a new number)
+  TASK2_GH=$(tdb "SELECT gh_issue_number FROM tasks WHERE id = 2;")
+  [ "$TASK2_GH" = "10" ]
 }
 
 @test "skills_sync.sh uses ORCH_HOME paths" {

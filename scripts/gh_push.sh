@@ -260,23 +260,20 @@ while IFS= read -r ID; do
   # Get labels as JSON array for GitHub API
   LABELS_JSON=$(db_task_labels_json "$ID")
 
-  # Reload project config if task belongs to a different project
+  # Only sync tasks that belong to the current project.
+  # Tasks from other projects (different dir) are handled when gh_push runs for that project.
   if [ -n "$TASK_DIR_VAL" ] && [ "$TASK_DIR_VAL" != "null" ] && [ "$TASK_DIR_VAL" != "$PROJECT_DIR" ]; then
-    PROJECT_DIR="$TASK_DIR_VAL"
-    export PROJECT_DIR
-    PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
-    CONFIG_PATH="$GLOBAL_CONFIG_PATH"
-    load_project_config
-    REPO=$(config_get '.gh.repo // ""')
-    PROJECT_ID=$(config_get '.gh.project_id // ""')
-    PROJECT_STATUS_FIELD_ID=$(config_get '.gh.project_status_field_id // ""')
-    PROJECT_STATUS_MAP_JSON=$(config_get '.gh.project_status_map // {}' | jq -c '.' 2>/dev/null || echo '{}')
+    # Check if this task's dir is under the current project (worktree)
+    TASK_PROJECT_DIR=$(cd "$TASK_DIR_VAL" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/.git$||' || echo "$TASK_DIR_VAL")
+    if [ "$TASK_PROJECT_DIR" != "$PROJECT_DIR" ]; then
+      continue
+    fi
   fi
 
   log "[gh_push] [$PROJECT_NAME] task id=$ID status=$STATUS title=$(printf '%s' "$TITLE" | head -c 80)"
 
-  # Skip done tasks that already have a closed GitHub issue — nothing to sync
-  if [ "$STATUS" = "done" ] && [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ] && [ "$GH_STATE" = "closed" ]; then
+  # Skip done tasks that already have a GitHub issue — nothing to create or update
+  if [ "$STATUS" = "done" ] && [ -n "$GH_NUM" ] && [ "$GH_NUM" != "null" ]; then
     if [ "${GH_ARCHIVED:-0}" != "1" ] && [ -n "${GH_PROJECT_ITEM_ID:-}" ] && [ "$GH_PROJECT_ITEM_ID" != "null" ] && [ -n "${PROJECT_ID:-}" ]; then
       archive_project_item "$PROJECT_ID" "$GH_PROJECT_ITEM_ID"
       db_task_set "$ID" "gh_archived" "1"
@@ -331,6 +328,11 @@ while IFS= read -r ID; do
   if [ -z "$GH_NUM" ] || [ "$GH_NUM" = "null" ]; then
     if [ -z "$TITLE" ] || [ "$TITLE" = "null" ]; then
       log_err "Skipping task $ID: missing title; cannot create GitHub issue." >&2
+      continue
+    fi
+    # Never create new issues for already-done tasks
+    if [ "$STATUS" = "done" ]; then
+      db_task_set_synced "$ID" "$STATUS"
       continue
     fi
     # Create issue
