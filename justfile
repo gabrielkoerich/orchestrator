@@ -127,7 +127,7 @@ _task_retry id:
 
 [private]
 _task_unblock id:
-    {{ if id == "all" { "yq -r '.tasks[] | select(.status == \"blocked\") | .id' \"${TASKS_PATH:-tasks.yml}\" | xargs -n1 scripts/retry_task.sh" } else { "scripts/retry_task.sh " + id } }}
+    {{ if id == "all" { "scripts/unblock_all.sh" } else { "scripts/retry_task.sh " + id } }}
 
 [private]
 _task_agent id agent:
@@ -315,11 +315,11 @@ _job_remove id:
 
 [private]
 _job_enable id:
-    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = true' "${JOBS_PATH:-jobs.yml}" && echo "Enabled job '{{ id }}'"
+    @scripts/jobs_enable.sh "{{ id }}"
 
 [private]
 _job_disable id:
-    @yq -i '(.jobs[] | select(.id == "{{ id }}") | .enabled) = false' "${JOBS_PATH:-jobs.yml}" && echo "Disabled job '{{ id }}'"
+    @scripts/jobs_disable.sh "{{ id }}"
 
 [private]
 _job_tick:
@@ -353,6 +353,11 @@ start:
 [group('service')]
 restart:
     @just service restart
+
+# Show orchestrator service status
+[group('service')]
+status:
+    @just service info
 
 [private]
 info:
