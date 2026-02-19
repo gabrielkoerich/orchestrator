@@ -162,18 +162,50 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           LAST_TAG="${{ steps.check.outputs.last_tag }}"
 
+          # Try GitHub's auto-generated notes first
           if [ -n "$LAST_TAG" ]; then
             gh release create "$VERSION" \
               --title "$VERSION" \
               --generate-notes \
-              --notes-start-tag "$LAST_TAG"
+              --notes-start-tag "$LAST_TAG" 2>/dev/null && { echo "Created release $VERSION"; exit 0; }
           else
             gh release create "$VERSION" \
               --title "$VERSION" \
-              --generate-notes
+              --generate-notes 2>/dev/null && { echo "Created release $VERSION"; exit 0; }
           fi
 
-          echo "Created release $VERSION"
+          # Fallback: generate changelog from commit subjects
+          echo "GitHub generate-notes failed, building changelog from commits"
+          if [ -n "$LAST_TAG" ]; then
+            RAW=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s (%h)")
+          else
+            RAW=$(git log --pretty=format:"%s (%h)")
+          fi
+
+          FEATURES=""
+          FIXES=""
+          OTHER=""
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            if echo "$line" | grep -qE '^feat(\(.*\))?:'; then
+              FEATURES+="- ${line}"$'\n'
+            elif echo "$line" | grep -qE '^fix(\(.*\))?:'; then
+              FIXES+="- ${line}"$'\n'
+            else
+              OTHER+="- ${line}"$'\n'
+            fi
+          done <<< "$RAW"
+
+          BODY=""
+          [ -n "$FEATURES" ] && BODY+="### Features"$'\n'"${FEATURES}"$'\n'
+          [ -n "$FIXES" ] && BODY+="### Bug Fixes"$'\n'"${FIXES}"$'\n'
+          [ -n "$OTHER" ] && BODY+="### Other"$'\n'"${OTHER}"$'\n'
+
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "$BODY"
+
+          echo "Created release $VERSION (fallback changelog)"
 
       - name: Update Homebrew formula
         if: steps.check.outputs.skip == 'false'
