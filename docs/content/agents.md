@@ -30,6 +30,36 @@ The agent writes a JSON file to `.orchestrator/output-{task_id}.json`:
 }
 ```
 
+## PATH Configuration
+
+When orchestrator runs as a service (e.g. via `brew services`), agents start with a minimal PATH that may not include tools like `bun`, `anchor`, `cargo`, or `solana`. There are two ways to fix this:
+
+**Option 1: Create `~/.path` (recommended)**
+
+Create a `~/.path` file that exports your development tool paths:
+
+```bash
+# ~/.path
+export PATH="/opt/homebrew/bin:$PATH"
+export PATH="$HOME/.bun/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$PATH"
+export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Orchestrator sources this file before launching agents, so any tool on your PATH will be available to agents.
+
+**Option 2: Default fallback**
+
+If `~/.path` doesn't exist, orchestrator automatically adds common paths:
+
+- `$HOME/.bun/bin`
+- `$HOME/.cargo/bin`
+- `$HOME/.local/share/solana/install/active_release/bin`
+- `$HOME/.local/bin`
+- `/opt/homebrew/bin`
+- `/usr/local/bin`
+
 ## Safety Rules
 
 Agents are constrained by rules in the system prompt:
