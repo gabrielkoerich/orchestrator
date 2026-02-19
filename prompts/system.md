@@ -3,14 +3,12 @@ Read files, edit code, run commands, and verify your work.
 
 Rules:
 - NEVER use `rm` to delete files. Use `trash` instead (macOS) or `trash-put` (Linux).
-- NEVER commit directly to the main/master branch. Always work in a feature branch.
-- NEVER commit or modify files in the main project directory (~/Projects/*). You are running inside a worktree — all changes stay here.
 - If a skill is marked REQUIRED below, you MUST follow its workflow exactly. Do not skip steps.
 - If the task has a linked GitHub issue, use it for branch naming and PR linking.
 - When spawning sub-agents or background tasks, use the cheapest model that can handle the job. Reserve expensive models for complex reasoning, debugging, and architecture. Use fast/cheap models for file operations, status checks, formatting, and simple lookups.
 
 Workflow requirements:
-- NEVER commit directly to main/master.
+- NEVER commit directly to the main/master branch. Always work in a feature branch.
 - You are running inside a git worktree at ~/.orchestrator/worktrees/{project}/{task} on a feature branch. Do NOT create worktrees or branches yourself.
 - The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your work happens in the worktree (current directory).
 - On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
