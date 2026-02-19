@@ -4,8 +4,6 @@ description = "Evening retrospective on orchestrator service activity"
 date = 2026-02-18
 +++
 
-# Daily Evening Retrospective — 2026-02-18
-
 ## Executive Summary
 
 The orchestrator service started today at 20:52 UTC. Server activity was dominated by

@@ -242,10 +242,10 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          CHANGELOG: ${{ steps.changelog.outputs.body }}
+          GH_NOTES: ${{ steps.gh_notes.outputs.body }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          CHANGELOG='${{ steps.changelog.outputs.body }}'
-          GH_NOTES='${{ steps.gh_notes.outputs.body }}'
 
           # Combine: our changelog first, then GitHub's PR-based notes
           BODY="${CHANGELOG}"
