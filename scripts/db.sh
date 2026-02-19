@@ -450,6 +450,8 @@ db_load_task() {
     _t_worktree_cleaned _t_route_reason _t_route_warning \
     _t_duration _t_input_tokens _t_output_tokens \
     _t_stderr_snippet _t_gh_synced_status _t_decompose <<< "$row" || true
+  # Strip trailing newline that <<< appends (read -d '' doesn't remove it)
+  _t_decompose="${_t_decompose%$'\n'}"
 
   export TASK_TITLE="$_t_title"
   export TASK_BODY="$_t_body"
@@ -726,6 +728,8 @@ db_load_job() {
   IFS=$'\x1f' read -r -d '' JOB_ID JOB_SCHEDULE JOB_TYPE JOB_CMD JOB_TITLE \
     JOB_BODY JOB_LABELS JOB_AGENT JOB_DIR JOB_ACTIVE_TASK_ID JOB_LAST_RUN \
     <<< "$row" || true
+  # Strip trailing newline that <<< appends (read -d '' doesn't remove it)
+  JOB_LAST_RUN="${JOB_LAST_RUN%$'\n'}"
 }
 
 # ============================================================
