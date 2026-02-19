@@ -11,10 +11,19 @@ init_config_file
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 export PROJECT_DIR
 
-# Augment PATH with common dev tool locations (brew services starts with minimal PATH)
-for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
-  [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
-done
+# Augment PATH (brew services / launchd start with minimal PATH)
+# If $HOME/.path exists, source it to pick up user-configured paths;
+# otherwise fall back to common dev tool locations.
+if [[ -f "$HOME/.path" ]]; then
+  _OLD_PATH="$PATH"
+  source "$HOME/.path" >/dev/null 2>&1
+  # Preserve any paths that were already at the front (e.g. test mocks)
+  export PATH="${_OLD_PATH}:${PATH}"
+else
+  for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.local/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
+    [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
+  done
+fi
 
 load_project_config
 
