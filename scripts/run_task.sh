@@ -593,12 +593,12 @@ if [ "$CMD_STATUS" -ne 0 ]; then
         fi
       fi
       log_err "[run] task=$TASK_ID switching from $TASK_AGENT to $NEXT_AGENT${NEXT_MODEL:+ (model=$NEXT_MODEL)} (auth/billing error)"
-      PREV_ATTEMPTS=$((ATTEMPTS - 1))
+      # Always reset agent_model — let model_for_complexity resolve the correct one for the new agent
+      # Keep attempt count so max_attempts guard still works (prevents infinite reroute loops)
       db_task_update "$TASK_ID" \
         "agent=$NEXT_AGENT" \
-        ${NEXT_MODEL:+"agent_model=$NEXT_MODEL"} \
+        "agent_model=${NEXT_MODEL:-}" \
         "status=new" \
-        "attempts=$PREV_ATTEMPTS" \
         "last_error=$TASK_AGENT auth/billing error, switched to $NEXT_AGENT"
       append_history "$TASK_ID" "new" "$TASK_AGENT auth/billing error — switched to $NEXT_AGENT${NEXT_MODEL:+ (model=$NEXT_MODEL)}"
       STDERR_SNIPPET=$(printf '%s' "$COMBINED_OUTPUT" | tail -c 300)
@@ -617,12 +617,10 @@ ${STDERR_SNIPPET}
           if [ ${#_fm[@]} -gt 0 ]; then
             FREE_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
             log_err "[run] task=$TASK_ID all agents exhausted, trying opencode with free model: $FREE_MODEL"
-            PREV_ATTEMPTS=$((ATTEMPTS - 1))
             db_task_update "$TASK_ID" \
               "agent=opencode" \
               "agent_model=$FREE_MODEL" \
               "status=new" \
-              "attempts=$PREV_ATTEMPTS" \
               "last_error=all agents hit limits, free model fallback: $FREE_MODEL"
             append_history "$TASK_ID" "new" "free model fallback — opencode with $FREE_MODEL"
             comment_on_issue "$TASK_ID" "⚠️ **All agents at limit**: falling back to \`opencode\` with free model \`$FREE_MODEL\`."

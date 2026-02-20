@@ -89,6 +89,10 @@ _task_status *args:
     @scripts/status.sh "$@"
 
 [private]
+_task_report *args:
+    @scripts/progress_report.sh "$@"
+
+[private]
 _task_list:
     @scripts/list_tasks.sh
 
