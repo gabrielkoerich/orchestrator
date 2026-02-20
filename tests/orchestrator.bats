@@ -2633,8 +2633,9 @@ JSON
 }
 
 @test "cron_match.py --since detects missed occurrence" {
-  # 9am schedule, last_run at 6am — 9am was missed
-  run python3 "${REPO_DIR}/scripts/cron_match.py" "0 9 * * *" --since "$(date -u +%Y-%m-%d)T06:00:00Z"
+  # 9am schedule, last_run yesterday at 6am — 9am was missed
+  YESTERDAY=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)
+  run python3 "${REPO_DIR}/scripts/cron_match.py" "0 9 * * *" --since "${YESTERDAY}T06:00:00Z"
   [ "$status" -eq 0 ]
 }
 
