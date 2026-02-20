@@ -31,7 +31,11 @@ if [ -n "$IN_PROGRESS_IDS" ]; then
     if [ ! -d "$TASK_LOCK" ]; then
       UPDATED_AT=$(db_task_field "$sid" "updated_at")
       if [ -n "$UPDATED_AT" ] && [ "$UPDATED_AT" != "null" ]; then
-        UPDATED_EPOCH=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$UPDATED_AT" +%s 2>/dev/null || date -d "$UPDATED_AT" +%s 2>/dev/null || echo 0)
+        # SQLite datetime() produces "YYYY-MM-DD HH:MM:SS", not ISO 8601
+        UPDATED_EPOCH=$(date -u -jf "%Y-%m-%d %H:%M:%S" "$UPDATED_AT" +%s 2>/dev/null \
+          || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$UPDATED_AT" +%s 2>/dev/null \
+          || date -d "$UPDATED_AT" +%s 2>/dev/null \
+          || echo 0)
         ELAPSED=$((NOW_EPOCH - UPDATED_EPOCH))
         if [ "$ELAPSED" -ge "$STUCK_TIMEOUT" ]; then
           log "[poll] task=$sid stuck in_progress for ${ELAPSED}s (no lock held), recovering"
