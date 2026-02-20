@@ -4790,3 +4790,86 @@ _setup_sqlite_env() {
     false
   fi
 }
+
+# ─── build_git_diff tests ───
+
+@test "build_git_diff shows stat for uncommitted changes" {
+  # Create a tracked file, then modify it
+  echo "hello" > "${PROJECT_DIR}/file.txt"
+  git -C "$PROJECT_DIR" add file.txt
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "add file" --quiet
+
+  echo "world" >> "${PROJECT_DIR}/file.txt"
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && build_git_diff '$PROJECT_DIR' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Uncommitted changes:"* ]]
+  [[ "$output" == *"file.txt"* ]]
+}
+
+@test "build_git_diff shows diff against base branch" {
+  # Create a feature branch with a commit
+  git -C "$PROJECT_DIR" checkout -b feature-test --quiet
+  echo "new content" > "${PROJECT_DIR}/feature.txt"
+  git -C "$PROJECT_DIR" add feature.txt
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "add feature" --quiet
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && build_git_diff '$PROJECT_DIR' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Diff against main:"* ]]
+  [[ "$output" == *"new content"* ]]
+}
+
+@test "build_git_diff shows commit log since base branch" {
+  git -C "$PROJECT_DIR" checkout -b log-test --quiet
+  echo "log content" > "${PROJECT_DIR}/log.txt"
+  git -C "$PROJECT_DIR" add log.txt
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "add log file" --quiet
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && build_git_diff '$PROJECT_DIR' main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Commits since main:"* ]]
+  [[ "$output" == *"add log file"* ]]
+}
+
+@test "build_git_diff returns empty for no changes" {
+  # On main with no changes — no diff, no commits
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && build_git_diff '$PROJECT_DIR' main"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "build_git_diff truncates diff to 200 lines" {
+  git -C "$PROJECT_DIR" checkout -b trunc-test --quiet
+  # Generate a file with 300 lines to produce a diff > 200 lines
+  for i in $(seq 1 300); do echo "line $i"; done > "${PROJECT_DIR}/big.txt"
+  git -C "$PROJECT_DIR" add big.txt
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "add big file" --quiet
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && build_git_diff '$PROJECT_DIR' main"
+  [ "$status" -eq 0 ]
+  # Count diff lines (between "Diff against" header and next section or end)
+  local diff_lines
+  diff_lines=$(echo "$output" | sed -n '/^Diff against/,/^$/p' | wc -l)
+  # The diff output section should be at most ~202 lines (header + 200 content + blank)
+  [ "$diff_lines" -le 203 ]
+}
+
+@test "build_git_diff accepts custom base branch" {
+  git -C "$PROJECT_DIR" checkout -b develop --quiet
+  echo "develop content" > "${PROJECT_DIR}/dev.txt"
+  git -C "$PROJECT_DIR" add dev.txt
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "add dev" --quiet
+
+  git -C "$PROJECT_DIR" checkout -b feature-from-develop --quiet
+  echo "feature content" > "${PROJECT_DIR}/feat.txt"
+  git -C "$PROJECT_DIR" add feat.txt
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "add feat" --quiet
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && build_git_diff '$PROJECT_DIR' develop"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Diff against develop:"* ]]
+  [[ "$output" == *"feature content"* ]]
+  [[ "$output" == *"Commits since develop:"* ]]
+  [[ "$output" == *"add feat"* ]]
+}

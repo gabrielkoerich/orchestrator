@@ -275,7 +275,7 @@ export REPO_TREE
 REPO_TREE=$(build_repo_tree "$PROJECT_DIR")
 export GIT_DIFF
 if [ "$ATTEMPTS" -gt 0 ]; then
-  GIT_DIFF=$(build_git_diff "$PROJECT_DIR")
+  GIT_DIFF=$(build_git_diff "$PROJECT_DIR" "$DEFAULT_BRANCH")
 else
   GIT_DIFF=""
 fi
