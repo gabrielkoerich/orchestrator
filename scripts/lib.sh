@@ -661,8 +661,33 @@ build_parent_context() {
 
 build_git_diff() {
   local dir="${1:-$PROJECT_DIR}"
+  local base="${2:-main}"
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then return; fi
-  (cd "$dir" && git diff --stat HEAD 2>/dev/null | head -50) || true
+
+  local stat diff_content log_content
+
+  # Always show stat of uncommitted changes
+  stat=$(cd "$dir" && git diff --stat HEAD 2>/dev/null | head -50) || true
+  if [ -n "$stat" ]; then
+    printf '%s\n' "Uncommitted changes:"
+    printf '%s\n' "$stat"
+    printf '%s\n' ""
+  fi
+
+  # Show diff against base branch (truncated to 200 lines)
+  diff_content=$(cd "$dir" && git diff "$base"...HEAD 2>/dev/null | head -200) || true
+  if [ -n "$diff_content" ]; then
+    printf '%s\n' "Diff against $base:"
+    printf '%s\n' "$diff_content"
+    printf '%s\n' ""
+  fi
+
+  # Show commit log since base branch
+  log_content=$(cd "$dir" && git log "$base"..HEAD --oneline 2>/dev/null | head -20) || true
+  if [ -n "$log_content" ]; then
+    printf '%s\n' "Commits since $base:"
+    printf '%s\n' "$log_content"
+  fi
 }
 
 load_task() {

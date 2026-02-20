@@ -48,6 +48,6 @@ Repository structure:
 {{REPO_TREE}}
 
 {{#if GIT_DIFF}}
-Git diff (current changes):
+Git diff (prior progress from previous attempts):
 {{GIT_DIFF}}
 {{/if}}
