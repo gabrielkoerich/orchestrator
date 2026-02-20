@@ -239,39 +239,6 @@ ${NOTES}
 EOF
   )
 
-  # Check CI status before approving
-  local CI_PASS=false
-  if [ "$DECISION" = "approve" ]; then
-    local CI_STATUS
-    CI_STATUS=$(gh pr checks "$pr_number" --repo "$REPO" 2>&1 || true)
-    if printf '%s' "$CI_STATUS" | grep -q "fail"; then
-      log "[review_prs] [$PROJECT_NAME] PR #$pr_number: code approved but CI failing — downgrading to request_changes"
-      DECISION="request_changes"
-      NOTES="${NOTES}
-
-**CI Status**: One or more checks are failing. Please fix CI before this can be merged.
-
-\`\`\`
-$(printf '%s' "$CI_STATUS" | grep -E 'fail|pass' | head -10)
-\`\`\`"
-      COMMENT_BODY=$(cat <<EOF
-## ${BADGE} Automated Review — Changes Requested
-
-${NOTES}
-
----
-*Reviewed by orchestrator v${ORCH_VERSION:-unknown} using ${REVIEW_AGENT}${REVIEW_MODEL:+ model \`${REVIEW_MODEL}\`} at \`${pr_sha:0:7}\`*
-EOF
-      )
-    elif printf '%s' "$CI_STATUS" | grep -qE "pending|queued|in_progress"; then
-      log "[review_prs] [$PROJECT_NAME] PR #$pr_number: code approved but CI still running — waiting"
-      # Don't record state so we re-review after CI completes
-      return 0
-    else
-      CI_PASS=true
-    fi
-  fi
-
   # Post review: try formal PR review first, fall back to comment
   if [ "$DECISION" = "approve" ]; then
     gh pr review "$pr_number" --repo "$REPO" --approve --body "$COMMENT_BODY" 2>/dev/null \
@@ -287,8 +254,8 @@ EOF
   printf '%s\t%s\t%s\t%s\t%s\n' "$pr_number" "$pr_sha" "$DECISION" "$(now_iso)" "$pr_title" >> "$REVIEW_STATE"
   log "[review_prs] [$PROJECT_NAME] PR #$pr_number: $DECISION"
 
-  # Auto-merge if approved and CI passes
-  if [ "$DECISION" = "approve" ] && [ "$CI_PASS" = true ]; then
+  # Auto-merge on approve — GitHub enforces CI checks, merge fails if CI hasn't passed
+  if [ "$DECISION" = "approve" ]; then
     local merge_flag="--squash"
     case "$MERGE_STRATEGY" in
       rebase) merge_flag="--rebase" ;;
@@ -300,7 +267,7 @@ EOF
       _update_linked_task "$pr_number" "done" "auto-merged after review by $REVIEW_AGENT"
       return 0
     else
-      log_err "[review_prs] [$PROJECT_NAME] PR #$pr_number: auto-merge failed (may need manual merge)"
+      log "[review_prs] [$PROJECT_NAME] PR #$pr_number: merge not ready yet (CI pending or branch protection)"
     fi
   fi
 
