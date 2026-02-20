@@ -882,6 +882,108 @@ This means:
 - `available_agents()` checks if the CLI for each agent is installed
 - Per-project config can override: `agents.kimi.allowed_tools: [...]`
 
+### 4.13 Lifecycle Hooks (inspired by dmux)
+
+The orchestrator should expose lifecycle hooks at key points in the task/agent lifecycle. Hooks are shell commands configured per-project in `.orchestrator.yml` or globally in `config.yml`.
+
+```yaml
+# .orchestrator.yml or config.yml
+hooks:
+  # Task lifecycle
+  on_task_created: "scripts/notify.sh created"
+  on_task_routed: ""
+  on_task_started: ""           # Agent session about to start
+  on_task_completed: ""         # Agent finished successfully
+  on_task_failed: ""            # Agent failed / needs_review
+  on_task_blocked: ""           # Task blocked (deps or max_attempts)
+
+  # Agent session lifecycle
+  on_agent_session_start: ""    # tmux session created, agent about to run
+  on_agent_session_end: ""      # tmux session ended (success or failure)
+  on_agent_idle: ""             # Agent appears idle (future: status detection)
+
+  # Git/PR lifecycle
+  on_worktree_created: ""       # Worktree just created for a task
+  on_branch_pushed: ""          # Agent's branch pushed to remote
+  on_pr_created: ""             # PR created for a task
+  on_pr_merged: ""              # PR merged
+  on_pr_review_requested: ""    # Review agent assigned
+
+  # Service lifecycle
+  on_service_start: ""          # Orchestrator daemon started
+  on_service_stop: ""           # Orchestrator daemon stopping
+  on_job_fired: ""              # Cron job triggered
+```
+
+Hook execution:
+
+```bash
+# scripts/hooks.sh
+run_hook() {
+  local hook_name="$1"; shift
+  local cmd
+  cmd=$(config_get ".hooks.${hook_name} // \"\"")
+  [ -z "$cmd" ] || [ "$cmd" = "null" ] && return 0
+
+  # Export context as env vars
+  export ORCH_HOOK="$hook_name"
+  export ORCH_TASK_ID="${TASK_ID:-}"
+  export ORCH_TASK_TITLE="${TASK_TITLE:-}"
+  export ORCH_TASK_AGENT="${TASK_AGENT:-}"
+  export ORCH_TASK_STATUS="${AGENT_STATUS:-}"
+  export ORCH_PROJECT_DIR="${PROJECT_DIR:-}"
+  export ORCH_WORKTREE_DIR="${WORKTREE_DIR:-}"
+  export ORCH_BRANCH="${BRANCH_NAME:-}"
+  export ORCH_PR_URL="${PR_URL:-}"
+  export ORCH_TMUX_SESSION="${TMUX_SESSION:-}"
+
+  # Run async (don't block the main flow)
+  (eval "$cmd" "$@" &>/dev/null &) || true
+}
+```
+
+Call sites in existing scripts:
+
+| Script | Hook |
+|--------|------|
+| `add_task.sh` | `run_hook on_task_created` |
+| `route_task.sh` | `run_hook on_task_routed` |
+| `run_task.sh` (pre-agent) | `run_hook on_task_started`, `run_hook on_agent_session_start` |
+| `run_task.sh` (post-agent) | `run_hook on_agent_session_end`, `run_hook on_task_completed` or `on_task_failed` |
+| `run_task.sh` (worktree) | `run_hook on_worktree_created` |
+| `run_task.sh` (push) | `run_hook on_branch_pushed` |
+| `run_task.sh` (PR) | `run_hook on_pr_created` |
+| `review_prs.sh` | `run_hook on_pr_review_requested` |
+| `serve.sh` | `run_hook on_service_start`, `on_service_stop` |
+| `jobs_tick.sh` | `run_hook on_job_fired` |
+
+### 4.14 Agent Observability (Web Dashboard — future)
+
+Phase 1 (current): tmux sessions for live terminal attachment (`orch task attach <id>`, `orch task live`).
+
+Phase 2 (future, inspired by dmux's Vue 3 dashboard):
+
+- **SSE endpoint**: `serve.sh` exposes an HTTP endpoint (via `socat` or `ncat`) that streams task events as Server-Sent Events
+- **Terminal capture**: Periodically dump tmux pane content via `tmux capture-pane -p -t orch-$ID` for web display
+- **Dashboard**: Simple HTML page (no build step) that connects to SSE and shows:
+  - Active agent sessions with live terminal output
+  - Task queue (pending, in_progress, blocked)
+  - Recent history (done, needs_review)
+  - Service health (uptime, last poll, last sync)
+
+This is a separate feature and should NOT block the beads migration. Track as a future issue.
+
+### 4.15 A/B Agent Comparison (future)
+
+Run two agents on the same task in parallel, compare results:
+
+```bash
+# orch task ab <id> claude codex
+# Creates two worktrees, two tmux sessions, compares outputs
+```
+
+Useful for evaluating agent quality on real tasks. Track as a future issue.
+
 ---
 
 ## 8. Open Questions

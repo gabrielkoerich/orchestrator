@@ -121,6 +121,8 @@ for JOB_ID in $JOB_IDS; do
   NOW=$(now_iso)
   db "UPDATE jobs SET last_run = '$NOW', active_task_id = $NEW_TASK_ID WHERE id = '$(sql_escape "$JOB_ID")';"
 
+  export TASK_ID="$NEW_TASK_ID"
+  run_hook on_job_fired
   job_log "[jobs] job=$JOB_ID created task $NEW_TASK_ID"
   CREATED=$((CREATED + 1))
 done

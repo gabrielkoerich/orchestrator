@@ -228,6 +228,7 @@ if [ ! -d "$WORKTREE_DIR" ]; then
   cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" "$DEFAULT_BRANCH" 2>/dev/null || true
   mkdir -p "$(dirname "$WORKTREE_DIR")"
   cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
+  run_hook on_worktree_created
 fi
 
 if [ -d "$WORKTREE_DIR" ]; then
@@ -378,6 +379,7 @@ log_err "[run] task=$TASK_ID prompt saved to $PROMPT_FILE (hash=$PROMPT_HASH)"
 log_err "[run] task=$TASK_ID agent=$TASK_AGENT model=${AGENT_MODEL:-default} attempt=$ATTEMPTS project=$PROJECT_DIR"
 log_err "[run] task=$TASK_ID skills=${SELECTED_SKILLS:-none} issue=${GH_ISSUE_REF:-none}"
 
+run_hook on_task_started
 start_spinner "Running task $TASK_ID ($TASK_AGENT)"
 AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -474,11 +476,13 @@ RUNNER_EOF
       # Start tmux session with the runner
       tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
       log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
+      run_hook on_agent_session_start
 
       # Wait for the session to complete
       while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
         sleep 5
       done
+      run_hook on_agent_session_end
 
       # Read response from file
       if [ -f "$TMUX_RESPONSE_FILE" ]; then
@@ -887,9 +891,11 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
 
       if [ "$HAS_UNPUSHED" = true ]; then
         log_err "[run] task=$TASK_ID pushing branch $CURRENT_BRANCH"
-        if ! (cd "$PROJECT_DIR" && git \
+        if (cd "$PROJECT_DIR" && git \
           -c "url.https://github.com/.insteadOf=git@github.com:" \
           push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
+          run_hook on_branch_pushed
+        else
           error_log "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
         fi
 
@@ -933,6 +939,7 @@ ${GH_ISSUE_NUMBER:+Closes #${GH_ISSUE_NUMBER}}
               --head "$CURRENT_BRANCH" 2>>"$STDERR_FILE" || true)
             if [ -n "$PR_URL" ]; then
               log_err "[run] task=$TASK_ID created PR: $PR_URL"
+              run_hook on_pr_created
             else
               log_err "[run] task=$TASK_ID failed to create PR for $CURRENT_BRANCH"
             fi
@@ -1061,3 +1068,11 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
 fi
 
 log_err "[run] task=$TASK_ID DONE status=$AGENT_STATUS agent=$TASK_AGENT model=${RESP_MODEL:-${AGENT_MODEL:-default}} attempt=$ATTEMPTS duration=$(duration_fmt $AGENT_DURATION) tokens=${INPUT_TOKENS}in/${OUTPUT_TOKENS}out tools=$TOOL_COUNT"
+
+# Fire completion hooks
+case "$AGENT_STATUS" in
+  done|in_review) run_hook on_task_completed ;;
+  blocked)        run_hook on_task_blocked ;;
+  needs_review)   run_hook on_task_failed ;;
+  *)              run_hook on_task_completed ;;
+esac

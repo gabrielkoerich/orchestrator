@@ -74,5 +74,7 @@ NOW=$(now_iso)
 export NOW PROJECT_DIR
 
 NEXT_ID=$(db_create_task "$TITLE" "$BODY" "${PROJECT_DIR:-}" "$LABELS" "" "")
+export TASK_ID="$NEXT_ID" TASK_TITLE="$TITLE"
+run_hook on_task_created
 
 echo "Added task $NEXT_ID: $TITLE"

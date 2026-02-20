@@ -159,6 +159,7 @@ LAST_GH_PULL=0
 "$SCRIPT_DIR/skills_sync.sh" >> "$LOG_FILE" 2>&1 || true
 
 _log "[serve] starting v${ORCH_VERSION} with interval=${INTERVAL}s" >> "$LOG_FILE"
+run_hook on_service_start
 
 echo "Orchestrator v${ORCH_VERSION} started, listening to tasks and delegating agents." \
   "(pid $(cat "$PID_FILE"), interval ${INTERVAL}s)"
@@ -180,7 +181,7 @@ if [ "${TAIL_LOG:-0}" = "1" ]; then
 fi
 
 while true; do
-  $_stopping && { _log "[serve] shutting down gracefully" >> "$LOG_FILE"; break; }
+  $_stopping && { _log "[serve] shutting down gracefully" >> "$LOG_FILE"; run_hook on_service_stop; break; }
   _log "[serve] tick" >> "$LOG_FILE"
   "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
   $_stopping && break

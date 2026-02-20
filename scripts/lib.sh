@@ -445,6 +445,33 @@ config_get() {
   fi
 }
 
+# Lifecycle hooks: run user-defined commands at key points
+# Usage: run_hook <hook_name> [extra_args...]
+# Hooks are configured in config.yml under 'hooks:' key.
+# Hook commands run async (non-blocking) with ORCH_* env vars for context.
+run_hook() {
+  local hook_name="${1:-}"; shift 2>/dev/null || true
+  local cmd
+  cmd=$(config_get ".hooks.${hook_name} // \"\"" 2>/dev/null || true)
+  [ -z "$cmd" ] || [ "$cmd" = "null" ] && return 0
+
+  # Export context env vars for the hook
+  export ORCH_HOOK="$hook_name"
+  export ORCH_TASK_ID="${TASK_ID:-}"
+  export ORCH_TASK_TITLE="${TASK_TITLE:-}"
+  export ORCH_TASK_AGENT="${TASK_AGENT:-}"
+  export ORCH_TASK_STATUS="${AGENT_STATUS:-}"
+  export ORCH_PROJECT_DIR="${PROJECT_DIR:-}"
+  export ORCH_WORKTREE_DIR="${WORKTREE_DIR:-}"
+  export ORCH_BRANCH="${BRANCH_NAME:-}"
+  export ORCH_PR_URL="${PR_URL:-}"
+  export ORCH_TMUX_SESSION="${TMUX_SESSION:-}"
+  export ORCH_GH_ISSUE="${GH_ISSUE_NUMBER:-}"
+
+  # Run async — don't block the main flow
+  (eval "$cmd" "$@" >>"${STATE_DIR:-/tmp}/hooks.log" 2>&1 &) || true
+}
+
 repo_owner() {
   local repo="${1:-}"
   if [ -z "$repo" ]; then

@@ -252,5 +252,7 @@ fi
 append_history "$TASK_ID" "routed" "$NOTE"
 
 log_err "[route] task=$TASK_ID routed to ${ROUTED_AGENT:-unknown}"
+export TASK_AGENT="$ROUTED_AGENT"
+run_hook on_task_routed
 
 echo "$ROUTED_AGENT"
