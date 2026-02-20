@@ -262,12 +262,11 @@ EOF
       merge)  merge_flag="--merge" ;;
       *)      merge_flag="--squash" ;;
     esac
-    if gh pr merge "$pr_number" --repo "$REPO" "$merge_flag" --delete-branch 2>/dev/null; then
-      log "[review_prs] [$PROJECT_NAME] PR #$pr_number auto-merged ($MERGE_STRATEGY)"
-      _update_linked_task "$pr_number" "done" "auto-merged after review by $REVIEW_AGENT"
-      return 0
+    # Use --auto so GitHub merges only after CI passes (doesn't bypass branch protection)
+    if gh pr merge "$pr_number" --repo "$REPO" "$merge_flag" --auto --delete-branch 2>/dev/null; then
+      log "[review_prs] [$PROJECT_NAME] PR #$pr_number auto-merge enabled ($MERGE_STRATEGY) — will merge when CI passes"
     else
-      log "[review_prs] [$PROJECT_NAME] PR #$pr_number: merge not ready yet (CI pending or branch protection)"
+      log "[review_prs] [$PROJECT_NAME] PR #$pr_number: auto-merge could not be enabled"
     fi
   fi
 
