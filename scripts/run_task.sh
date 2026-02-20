@@ -197,6 +197,13 @@ else
 fi
 export BRANCH_NAME
 
+# Guard: never create a worktree with an empty branch name
+if [ -z "$BRANCH_NAME" ]; then
+  log_err "[run] task=$TASK_ID ERROR: empty branch name, cannot create worktree"
+  mark_needs_review "$TASK_ID" "$ATTEMPTS" "empty branch name — cannot create worktree"
+  exit 0
+fi
+
 # Detect default branch (bare repos may use a different name)
 DEFAULT_BRANCH=$(git -C "$PROJECT_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "main")
 
