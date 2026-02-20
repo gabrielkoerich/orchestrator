@@ -458,8 +458,8 @@ cd "$PROJECT_DIR"
 claude -p \
   ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
   --permission-mode bypassPermissions \
-  $(printf '%s ' "${ALLOW_ARGS[@]}") \
-  $(printf '%s ' "${DISALLOW_ARGS[@]}") \
+  $(printf '%s ' ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}) \
+  $(printf '%s ' ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}) \
   --output-format json \
   --append-system-prompt "$(printf '%s' "$SYSTEM_PROMPT" | sed "s/'/'\\\\''/g")" \
   "$(printf '%s' "$AGENT_MESSAGE" | sed "s/'/'\\\\''/g")" \
@@ -492,8 +492,8 @@ RUNNER_EOF
       RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
         ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
         --permission-mode bypassPermissions \
-        "${ALLOW_ARGS[@]}" \
-        "${DISALLOW_ARGS[@]}" \
+        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
+        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
         --output-format json \
         --append-system-prompt "$SYSTEM_PROMPT" \
         "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
@@ -541,7 +541,7 @@ export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
 cd "$PROJECT_DIR"
 cat "$PROMPT_INPUT_FILE" | codex exec \
   ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-  $(printf '%s ' "${CODEX_ARGS[@]}") \
+  $(printf '%s ' ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"}) \
   --json \
   - > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
 echo \$? > "$TMUX_STATUS_FILE"
@@ -560,7 +560,7 @@ RUNNER_EOF
     else
       RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
         ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-        "${CODEX_ARGS[@]}" \
+        ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"} \
         --json \
         - 2>"$STDERR_FILE") || CMD_STATUS=$?
     fi

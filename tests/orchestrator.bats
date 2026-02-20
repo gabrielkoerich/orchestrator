@@ -23,6 +23,7 @@ setup() {
   git -C "$PROJECT_DIR" init -b main --quiet 2>/dev/null || true
   git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet 2>/dev/null || true
   export MONITOR_INTERVAL=0.1
+  export USE_TMUX=false
   cat > "$CONFIG_PATH" <<'YAML'
 router:
   agent: "codex"
@@ -51,7 +52,11 @@ tdb_job_field() { sqlite3 "$DB_PATH" "SELECT $2 FROM jobs WHERE id = '$1';"; }
 tdb_job_count() { sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM jobs;"; }
 
 teardown() {
-  # Clean up worktrees created by tests (they live outside TMP_DIR)
+  # Clean up project-local worktrees (new location: inside PROJECT_DIR/.orchestrator/worktrees)
+  if [ -d "${TMP_DIR}/.orchestrator/worktrees" ]; then
+    (cd "$TMP_DIR" && git worktree prune 2>/dev/null) || true
+  fi
+  # Clean up global worktrees (legacy location)
   PROJECT_NAME=$(basename "$TMP_DIR")
   WORKTREE_BASE="${ORCH_HOME}/worktrees/${PROJECT_NAME}"
   if [ -d "$WORKTREE_BASE" ]; then
@@ -3109,8 +3114,8 @@ STUB
     "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  # Verify worktree was created
-  WORKTREE_DIR="${ORCH_HOME}/worktrees/$(basename "$PROJECT_DIR" .git)/gh-task-42-add-readme"
+  # Verify worktree was created (project-local location)
+  WORKTREE_DIR="${PROJECT_DIR}/.orchestrator/worktrees/gh-task-42-add-readme"
   [ -d "$WORKTREE_DIR" ]
 
   # Verify worktree info saved to task
@@ -3191,8 +3196,8 @@ STUB
     "${REPO_DIR}/scripts/run_task.sh" 2
   [ "$status" -eq 0 ]
 
-  # Verify worktree was created
-  WORKTREE_DIR="${ORCH_HOME}/worktrees/$(basename "$PROJECT_DIR" .git)/gh-task-55-add-license"
+  # Verify worktree was created (project-local location)
+  WORKTREE_DIR="${PROJECT_DIR}/.orchestrator/worktrees/gh-task-55-add-license"
   [ -d "$WORKTREE_DIR" ]
 
   # Verify orchestrator auto-committed the changes
