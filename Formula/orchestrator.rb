@@ -13,6 +13,7 @@ class Orchestrator < Formula
   depends_on "ripgrep"
   depends_on "fd"
   depends_on "sqlite"
+  depends_on "beads"
 
   def install
     libexec.install "scripts", "prompts", "justfile"

@@ -75,20 +75,22 @@ else
   done <<< "$PROJECTS"
 fi
 
-# Show active worktrees
+# Show active worktrees (project-local + legacy global)
 section "Worktrees:"
-WORKTREE_BASE="${ORCH_WORKTREES}"
-if [ -d "$WORKTREE_BASE" ]; then
-  WORKTREES=$(fd --min-depth 2 --max-depth 2 --type d . "$WORKTREE_BASE" 2>/dev/null || true)
-  if [ -z "$WORKTREES" ]; then
-    echo "  (none)"
-  else
-    while IFS= read -r wt; do
-      [ -n "$wt" ] || continue
-      branch=$(cd "$wt" && git branch --show-current 2>/dev/null || echo "?")
-      printf '  %s (%s)\n' "$wt" "$branch"
-    done <<< "$WORKTREES"
-  fi
-else
+_WT_FOUND=false
+# Check project-local worktrees for each managed project
+for _wt_dir in "${PROJECT_DIR:-.}/.orchestrator/worktrees" "${ORCH_WORKTREES}"; do
+  [ -d "$_wt_dir" ] || continue
+  _WTS=$(fd --min-depth 1 --max-depth 2 --type d . "$_wt_dir" 2>/dev/null || true)
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    # Only show directories that are actual git worktrees
+    [ -f "$wt/.git" ] || continue
+    branch=$(cd "$wt" && git branch --show-current 2>/dev/null || echo "?")
+    printf '  %s (%s)\n' "$wt" "$branch"
+    _WT_FOUND=true
+  done <<< "$_WTS"
+done
+if [ "$_WT_FOUND" = false ]; then
   echo "  (none)"
 fi

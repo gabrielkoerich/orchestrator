@@ -165,21 +165,32 @@ SAVED_BRANCH="$TASK_BRANCH"
 SAVED_WORKTREE="$TASK_WORKTREE"
 PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 
+# Project-local worktrees: stored inside the project at .orchestrator/worktrees/
+# Falls back to the old global location for backward compatibility
+WORKTREES_BASE="${MAIN_PROJECT_DIR}/.orchestrator/worktrees"
+mkdir -p "$WORKTREES_BASE"
+
 if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
   BRANCH_NAME="$SAVED_BRANCH"
-  WORKTREE_DIR="${SAVED_WORKTREE:-${ORCH_WORKTREES}/${PROJECT_NAME}/${BRANCH_NAME}}"
+  if [ -n "$SAVED_WORKTREE" ] && [ "$SAVED_WORKTREE" != "null" ] && [ -d "$SAVED_WORKTREE" ]; then
+    WORKTREE_DIR="$SAVED_WORKTREE"
+  else
+    WORKTREE_DIR="${WORKTREES_BASE}/${BRANCH_NAME}"
+  fi
 else
   # Try to find an existing worktree by issue/task prefix
   EXISTING_WT=""
-  WORKTREES_BASE="${ORCH_WORKTREES}/${PROJECT_NAME}"
-  if [ -d "$WORKTREES_BASE" ]; then
+  # Check project-local location first, then fall back to old global location
+  for _wt_search in "$WORKTREES_BASE" "${ORCH_WORKTREES}/${PROJECT_NAME}"; do
+    [ -d "$_wt_search" ] || continue
     if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1)
+      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1)
     fi
     if [ -z "$EXISTING_WT" ]; then
-      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1)
+      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1)
     fi
-  fi
+    [ -n "$EXISTING_WT" ] && break
+  done
 
   if [ -n "$EXISTING_WT" ]; then
     BRANCH_NAME=$(basename "$EXISTING_WT")
@@ -192,7 +203,7 @@ else
     else
       BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
     fi
-    WORKTREE_DIR="${ORCH_WORKTREES}/${PROJECT_NAME}/${BRANCH_NAME}"
+    WORKTREE_DIR="${WORKTREES_BASE}/${BRANCH_NAME}"
   fi
 fi
 export BRANCH_NAME
@@ -405,6 +416,14 @@ if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
 fi
 
 CMD_STATUS=0
+TMUX_RESPONSE_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-response-${ATTEMPTS}.txt"
+TMUX_STATUS_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-status-${ATTEMPTS}.txt"
+TMUX_SESSION="orch-${TASK_ID}"
+USE_TMUX=${USE_TMUX:-$(config_get '.workflow.use_tmux // "true"')}
+
+# Build agent command into a runner script for tmux
+RUNNER_SCRIPT="${STATE_DIR}/${FILE_PREFIX}-runner-${ATTEMPTS}.sh"
+
 case "$TASK_AGENT" in
   claude)
     log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
@@ -423,14 +442,62 @@ case "$TASK_AGENT" in
         ALLOW_ARGS+=(--allowedTools "$_t")
       done
     fi
-    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
-      ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
-      --permission-mode bypassPermissions \
-      "${ALLOW_ARGS[@]}" \
-      "${DISALLOW_ARGS[@]}" \
-      --output-format json \
-      --append-system-prompt "$SYSTEM_PROMPT" \
-      "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      # Write agent command as a runner script (avoids shell escaping issues in tmux)
+      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+export ORCH_HOME="$ORCH_HOME"
+cd "$PROJECT_DIR"
+claude -p \
+  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+  --permission-mode bypassPermissions \
+  $(printf '%s ' "${ALLOW_ARGS[@]}") \
+  $(printf '%s ' "${DISALLOW_ARGS[@]}") \
+  --output-format json \
+  --append-system-prompt "$(printf '%s' "$SYSTEM_PROMPT" | sed "s/'/'\\\\''/g")" \
+  "$(printf '%s' "$AGENT_MESSAGE" | sed "s/'/'\\\\''/g")" \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_EOF
+      chmod +x "$RUNNER_SCRIPT"
+
+      # Kill any existing session for this task
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+      # Start tmux session with the runner
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
+
+      # Wait for the session to complete
+      while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
+        sleep 5
+      done
+
+      # Read response from file
+      if [ -f "$TMUX_RESPONSE_FILE" ]; then
+        RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
+      fi
+      if [ -f "$TMUX_STATUS_FILE" ]; then
+        CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
+      fi
+    else
+      # No tmux — run directly (original behavior)
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
+        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+        --permission-mode bypassPermissions \
+        "${ALLOW_ARGS[@]}" \
+        "${DISALLOW_ARGS[@]}" \
+        --output-format json \
+        --append-system-prompt "$SYSTEM_PROMPT" \
+        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
     ;;
   codex)
     log_err "[run] cmd: codex exec ${AGENT_MODEL:+-m $AGENT_MODEL} --full-auto --json <stdin>"
@@ -459,21 +526,86 @@ ${AGENT_MESSAGE}"
         CODEX_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
         ;;
     esac
-    RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
-      ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-      "${CODEX_ARGS[@]}" \
-      --json \
-      - 2>"$STDERR_FILE") || CMD_STATUS=$?
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_INPUT_FILE="${STATE_DIR}/${FILE_PREFIX}-codex-input-${ATTEMPTS}.txt"
+      printf '%s' "$FULL_MESSAGE" > "$PROMPT_INPUT_FILE"
+      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+cd "$PROJECT_DIR"
+cat "$PROMPT_INPUT_FILE" | codex exec \
+  ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+  $(printf '%s ' "${CODEX_ARGS[@]}") \
+  --json \
+  - > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_EOF
+      chmod +x "$RUNNER_SCRIPT"
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
+
+      while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
+        sleep 5
+      done
+
+      [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
+      [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
+        ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+        "${CODEX_ARGS[@]}" \
+        --json \
+        - 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
     ;;
   opencode)
     log_err "[run] cmd: opencode run ${AGENT_MODEL:+-m $AGENT_MODEL} --format json <message>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
-    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
-      ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-      --format json \
-      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_INPUT_FILE="${STATE_DIR}/${FILE_PREFIX}-opencode-input-${ATTEMPTS}.txt"
+      printf '%s' "$FULL_MESSAGE" > "$PROMPT_INPUT_FILE"
+      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+cd "$PROJECT_DIR"
+opencode run \
+  ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+  --format json \
+  "\$(cat "$PROMPT_INPUT_FILE")" > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_EOF
+      chmod +x "$RUNNER_SCRIPT"
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
+
+      while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
+        sleep 5
+      done
+
+      [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
+      [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
+        ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+        --format json \
+        "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
     ;;
   *)
     log_err "[run] task=$TASK_ID unknown agent: $TASK_AGENT"
