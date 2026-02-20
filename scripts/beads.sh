@@ -299,17 +299,16 @@ bd_gh_issue() {
 # Project Registry
 # ---------------------------------------------------------------------------
 
-PROJECTS_FILE="${ORCH_HOME}/projects.yml"
-
 # List all registered project paths
 # Usage: bd_project_paths
 bd_project_paths() {
-  if [ ! -f "$PROJECTS_FILE" ]; then
+  local projects_file="${ORCH_HOME:-$HOME/.orchestrator}/projects.yml"
+  if [ ! -f "$projects_file" ]; then
     # Fallback: just the current PROJECT_DIR
     echo "${PROJECT_DIR:-.}"
     return
   fi
-  yq -r '.projects[].path' "$PROJECTS_FILE" 2>/dev/null
+  yq -r '.projects[].path' "$projects_file" 2>/dev/null
 }
 
 # Get project config value

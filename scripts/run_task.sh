@@ -423,6 +423,25 @@ TMUX_STATUS_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-status-${ATTEMPTS}.txt"
 TMUX_SESSION="orch-${TASK_ID}"
 USE_TMUX=${USE_TMUX:-$(config_get '.workflow.use_tmux // "true"')}
 
+# Wait for tmux session to finish with a timeout
+# Usage: tmux_wait <session_name> <timeout_seconds>
+tmux_wait() {
+  local session="$1"
+  local timeout="${2:-${AGENT_TIMEOUT_SECONDS:-900}}"
+  local elapsed=0
+  while tmux has-session -t "$session" 2>/dev/null; do
+    sleep 5
+    elapsed=$((elapsed + 5))
+    if [ "$elapsed" -ge "$timeout" ]; then
+      log_err "[run] task=$TASK_ID tmux session timed out after ${timeout}s"
+      tmux kill-session -t "$session" 2>/dev/null || true
+      CMD_STATUS=124
+      return 1
+    fi
+  done
+  return 0
+}
+
 # Build agent command into a runner script for tmux
 RUNNER_SCRIPT="${STATE_DIR}/${FILE_PREFIX}-runner-${ATTEMPTS}.sh"
 
@@ -446,10 +465,25 @@ case "$TASK_AGENT" in
     fi
 
     if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
-      # Write agent command as a runner script (avoids shell escaping issues in tmux)
-      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
+      # Write prompt content to temp files to avoid shell injection from task data
+      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
+      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
+      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
+      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
+      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
+      # Write tool args one per line for safe reading
+      {
+        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
+        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
+      } > "$TOOL_ARGS_FILE"
+
+      # Use quoted heredoc to prevent variable expansion in the script body
+      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+RUNNER_EOF
+      # Append environment setup (safe values only — no user-controlled data)
+      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
 export PATH="$PATH"
 export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
@@ -457,17 +491,20 @@ export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
 export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
 export ORCH_HOME="$ORCH_HOME"
 cd "$PROJECT_DIR"
+TOOL_ARGS=()
+while IFS= read -r arg; do
+  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
+done < "$TOOL_ARGS_FILE"
 claude -p \
   ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
   --permission-mode bypassPermissions \
-  $(printf '%s ' ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}) \
-  $(printf '%s ' ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}) \
+  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
   --output-format json \
-  --append-system-prompt "$(printf '%s' "$SYSTEM_PROMPT" | sed "s/'/'\\\\''/g")" \
-  "$(printf '%s' "$AGENT_MESSAGE" | sed "s/'/'\\\\''/g")" \
+  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
+  "\$(cat "$PROMPT_MSG_FILE")" \
   > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
 echo \$? > "$TMUX_STATUS_FILE"
-RUNNER_EOF
+RUNNER_ENV
       chmod +x "$RUNNER_SCRIPT"
 
       # Kill any existing session for this task
@@ -478,10 +515,8 @@ RUNNER_EOF
       log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
       run_hook on_agent_session_start
 
-      # Wait for the session to complete
-      while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
-        sleep 5
-      done
+      # Wait for the session to complete (with timeout)
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
       run_hook on_agent_session_end
 
       # Read response from file
@@ -555,9 +590,7 @@ RUNNER_EOF
       tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
       log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
 
-      while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
-        sleep 5
-      done
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
 
       [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
       [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
@@ -598,9 +631,7 @@ RUNNER_EOF
       tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
       log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
 
-      while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
-        sleep 5
-      done
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
 
       [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
       [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
