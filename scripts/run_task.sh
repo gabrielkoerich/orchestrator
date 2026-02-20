@@ -140,6 +140,15 @@ if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_I
   fi
 fi
 
+# Resolve PROJECT_DIR to the main repo if it's inside a worktree
+# This prevents nested worktrees when subtasks inherit parent's worktree dir
+_MAIN_WT=$(git -C "$PROJECT_DIR" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //' || true)
+if [ -n "$_MAIN_WT" ] && [ "$_MAIN_WT" != "$PROJECT_DIR" ]; then
+  log_err "[run] task=$TASK_ID resolving worktree dir to main repo: $PROJECT_DIR → $_MAIN_WT"
+  PROJECT_DIR="$_MAIN_WT"
+  export PROJECT_DIR
+fi
+
 # Save the main project dir before worktree override
 MAIN_PROJECT_DIR="$PROJECT_DIR"
 export MAIN_PROJECT_DIR
@@ -450,11 +459,12 @@ ${AGENT_MESSAGE}"
       - 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
   opencode)
-    log_err "[run] cmd: opencode run --format json <message>"
+    log_err "[run] cmd: opencode run ${AGENT_MODEL:+-m $AGENT_MODEL} --format json <message>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
     RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
+      ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
       --format json \
       "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     ;;
@@ -479,21 +489,34 @@ printf '%s' "$RESPONSE" > "$RESPONSE_FILE"
 RESPONSE_LEN=${#RESPONSE}
 log_err "[run] task=$TASK_ID response saved to $RESPONSE_FILE (${RESPONSE_LEN} bytes)"
 
-# Extract permission denials from claude response
-if [ "$TASK_AGENT" = "claude" ]; then
-  DENIALS=$(printf '%s' "$RESPONSE" | jq -r '.permission_denials[]? | "\(.tool_name)(\(.tool_input.command // .tool_input | tostring | .[0:80]))"' 2>/dev/null || true)
-  if [ -n "$DENIALS" ]; then
-    DENIAL_COUNT=$(printf '%s\n' "$DENIALS" | wc -l | tr -d ' ')
-    log_err "[run] task=$TASK_ID permission_denials ($DENIAL_COUNT):"
-    printf '%s\n' "$DENIALS" | while IFS= read -r _d; do
-      log_err "[run]   denied: $_d"
-    done
-    # Append to persistent denial log for review
-    DENIAL_LOG="${STATE_DIR}/permission-denials.log"
-    printf '%s\n' "$DENIALS" | while IFS= read -r _d; do
-      printf '%s task=%s agent=%s %s\n' "$(now_iso)" "$TASK_ID" "$TASK_AGENT" "$_d" >> "$DENIAL_LOG"
-    done
-  fi
+# Extract permission denials / errors from agent response
+DENIAL_LOG="${STATE_DIR}/permission-denials.log"
+case "$TASK_AGENT" in
+  claude)
+    DENIALS=$(printf '%s' "$RESPONSE" | jq -r '.permission_denials[]? | "\(.tool_name)(\(.tool_input.command // .tool_input | tostring | .[0:80]))"' 2>/dev/null || true)
+    ;;
+  codex)
+    # Codex JSONL: extract sandbox/permission errors from failed commands and turn.failed events
+    DENIALS=$(printf '%s' "$RESPONSE" | jq -r 'select(.type == "turn.failed") | .error.message // empty' 2>/dev/null || true)
+    SANDBOX_ERRORS=$(printf '%s' "$RESPONSE" | jq -r 'select(.type == "item.completed" and .item.type == "command_execution" and .item.exit_code != 0) | select(.item.aggregated_output | test("permission denied|sandbox|not allowed|EPERM"; "i")) | "Bash(\(.item.command | .[0:80]))"' 2>/dev/null || true)
+    if [ -n "$SANDBOX_ERRORS" ]; then
+      DENIALS=$(printf '%s\n%s' "$DENIALS" "$SANDBOX_ERRORS" | sed '/^$/d')
+    fi
+    ;;
+  opencode)
+    # OpenCode JSON: extract errors from failed events
+    DENIALS=$(printf '%s' "$RESPONSE" | jq -r 'select(.type == "error") | .message // empty' 2>/dev/null || true)
+    ;;
+esac
+if [ -n "$DENIALS" ]; then
+  DENIAL_COUNT=$(printf '%s\n' "$DENIALS" | wc -l | tr -d ' ')
+  log_err "[run] task=$TASK_ID permission_denials ($DENIAL_COUNT):"
+  printf '%s\n' "$DENIALS" | while IFS= read -r _d; do
+    log_err "[run]   denied: $_d"
+  done
+  printf '%s\n' "$DENIALS" | while IFS= read -r _d; do
+    printf '%s task=%s agent=%s %s\n' "$(now_iso)" "$TASK_ID" "$TASK_AGENT" "$_d" >> "$DENIAL_LOG"
+  done
 fi
 
 # Extract tool history from agent response
@@ -550,23 +573,64 @@ if [ "$CMD_STATUS" -ne 0 ]; then
       fi
     done
     if [ -n "$NEXT_AGENT" ]; then
-      log_err "[run] task=$TASK_ID switching from $TASK_AGENT to $NEXT_AGENT (auth/billing error)"
+      # If switching to opencode, pick a free model via round-robin
+      NEXT_MODEL=""
+      if [ "$NEXT_AGENT" = "opencode" ]; then
+        FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
+        if [ -n "$FREE_MODELS" ]; then
+          FREE_IDX=$(db_scalar "SELECT COUNT(*) FROM task_history WHERE task_id = $TASK_ID AND note LIKE '%switched to opencode%';" 2>/dev/null || echo "0")
+          IFS=',' read -ra _fm <<< "$FREE_MODELS"
+          if [ ${#_fm[@]} -gt 0 ]; then
+            NEXT_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
+          fi
+        fi
+      fi
+      log_err "[run] task=$TASK_ID switching from $TASK_AGENT to $NEXT_AGENT${NEXT_MODEL:+ (model=$NEXT_MODEL)} (auth/billing error)"
       PREV_ATTEMPTS=$((ATTEMPTS - 1))
       db_task_update "$TASK_ID" \
         "agent=$NEXT_AGENT" \
+        ${NEXT_MODEL:+"agent_model=$NEXT_MODEL"} \
         "status=new" \
         "attempts=$PREV_ATTEMPTS" \
         "last_error=$TASK_AGENT auth/billing error, switched to $NEXT_AGENT"
-      append_history "$TASK_ID" "new" "$TASK_AGENT auth/billing error — switched to $NEXT_AGENT"
+      append_history "$TASK_ID" "new" "$TASK_AGENT auth/billing error — switched to $NEXT_AGENT${NEXT_MODEL:+ (model=$NEXT_MODEL)}"
       STDERR_SNIPPET=$(printf '%s' "$COMBINED_OUTPUT" | tail -c 300)
-      comment_on_issue "$TASK_ID" "⚠️ **Agent switch**: \`$TASK_AGENT\` failed with auth/billing error. Switching to \`$NEXT_AGENT\`.
+      comment_on_issue "$TASK_ID" "⚠️ **Agent switch**: \`$TASK_AGENT\` failed with auth/billing error. Switching to \`$NEXT_AGENT\`${NEXT_MODEL:+ with model \`$NEXT_MODEL\`}.
 
 \`\`\`
 ${STDERR_SNIPPET}
 \`\`\`"
     else
-      mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — no other agents available"
-      comment_on_issue "$TASK_ID" "🚨 **Auth/billing error**: \`$TASK_AGENT\` failed and no other agents are available. Manual intervention needed."
+      # All agents exhausted — try opencode with free models as last resort
+      if command -v opencode >/dev/null 2>&1; then
+        FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
+        if [ -n "$FREE_MODELS" ]; then
+          FREE_IDX=$(db_scalar "SELECT COUNT(*) FROM task_history WHERE task_id = $TASK_ID AND note LIKE '%free model fallback%';" 2>/dev/null || echo "0")
+          IFS=',' read -ra _fm <<< "$FREE_MODELS"
+          if [ ${#_fm[@]} -gt 0 ]; then
+            FREE_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
+            log_err "[run] task=$TASK_ID all agents exhausted, trying opencode with free model: $FREE_MODEL"
+            PREV_ATTEMPTS=$((ATTEMPTS - 1))
+            db_task_update "$TASK_ID" \
+              "agent=opencode" \
+              "agent_model=$FREE_MODEL" \
+              "status=new" \
+              "attempts=$PREV_ATTEMPTS" \
+              "last_error=all agents hit limits, free model fallback: $FREE_MODEL"
+            append_history "$TASK_ID" "new" "free model fallback — opencode with $FREE_MODEL"
+            comment_on_issue "$TASK_ID" "⚠️ **All agents at limit**: falling back to \`opencode\` with free model \`$FREE_MODEL\`."
+          else
+            mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — no agents or free models available"
+            comment_on_issue "$TASK_ID" "🚨 **Auth/billing error**: \`$TASK_AGENT\` failed and no other agents or free models are available."
+          fi
+        else
+          mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — no other agents available"
+          comment_on_issue "$TASK_ID" "🚨 **Auth/billing error**: \`$TASK_AGENT\` failed and no other agents are available. Manual intervention needed."
+        fi
+      else
+        mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT — no other agents available"
+        comment_on_issue "$TASK_ID" "🚨 **Auth/billing error**: \`$TASK_AGENT\` failed and no other agents are available. Manual intervention needed."
+      fi
     fi
     exit 0
   fi

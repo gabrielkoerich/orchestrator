@@ -6,7 +6,7 @@ Installed executors (only pick from these):
 Executor descriptions:
 - claude: best for complex coding, Solana/Anchor programs, architecture changes, cross-system debugging, analysis, planning, and writing. Prefer claude for tasks requiring anchor, solana-test-validator, or deep multi-file reasoning.
 - codex: best for coding, repo changes, automation, tooling, shell scripts, frontend, and general feature work. Fast and efficient for most standard development tasks.
-- opencode: best for lightweight coding and quick iterations.
+- opencode: lightweight agent with access to multiple model providers (GitHub Copilot, Kimi, MiniMax). Good for quick iterations, simple features, docs, and as fallback when other agents hit usage limits.
 
 If only one executor is installed, always use it.
 

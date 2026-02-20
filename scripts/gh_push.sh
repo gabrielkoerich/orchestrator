@@ -569,10 +569,14 @@ ${PROMPT_CONTENT}
       fi
 
       AGENT_NAME="${AGENT:-orchestrator}"
+      MODEL_SUFFIX=""
+      if [ -n "$AGENT_MODEL_VAL" ] && [ "$AGENT_MODEL_VAL" != "null" ]; then
+        MODEL_SUFFIX=" using model \`${AGENT_MODEL_VAL}\`"
+      fi
       COMMENT="${COMMENT}
 
 ---
-*Commented by ${AGENT_NAME}[bot] via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*"
+*By ${AGENT_NAME}[bot]${MODEL_SUFFIX} via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*"
 
       if ! db_should_skip_comment "$ID" "$COMMENT"; then
         gh_api "repos/$REPO/issues/$GH_NUM/comments" -f body="$COMMENT" >/dev/null

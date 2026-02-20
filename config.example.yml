@@ -30,15 +30,24 @@ model_map:
   simple:
     claude: haiku
     codex: gpt-5.1-codex-mini
+    opencode: github-copilot/gpt-5-mini
   medium:
     claude: sonnet
     codex: gpt-5.2
+    opencode: github-copilot/gpt-5.1-codex
   complex:
     claude: opus
     codex: gpt-5.3-codex
+    opencode: github-copilot/claude-opus-4.5
   review:
     claude: sonnet
     codex: gpt-5.2
+    opencode: github-copilot/gpt-5.1-codex
+  # Free models used as fallback when hitting usage limits (round-robin)
+  free:
+    - opencode/glm-5-free
+    - opencode/minimax-m2.5-free
+    - opencode/trinity-large-preview-free
 llm:
   input_format: ""
   output_format: "json"
