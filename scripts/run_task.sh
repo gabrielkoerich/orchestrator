@@ -184,10 +184,10 @@ else
   for _wt_search in "$WORKTREES_BASE" "${ORCH_WORKTREES}/${PROJECT_NAME}"; do
     [ -d "$_wt_search" ] || continue
     if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1)
+      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1 || true)
     fi
     if [ -z "$EXISTING_WT" ]; then
-      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1)
+      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1 || true)
     fi
     [ -n "$EXISTING_WT" ] && break
   done

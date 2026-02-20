@@ -17,7 +17,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bats jq ripgrep bsdmainutils
+          sudo apt-get install -y bats jq ripgrep bsdmainutils fd-find
+          # fd-find installs as 'fdfind' on Debian/Ubuntu — symlink to 'fd'
+          sudo ln -sf "$(which fdfind)" /usr/local/bin/fd
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
