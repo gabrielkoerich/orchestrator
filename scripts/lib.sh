@@ -971,7 +971,7 @@ process_owner_feedback() {
 }
 
 run_with_timeout() {
-  local timeout_seconds=${AGENT_TIMEOUT_SECONDS:-900}
+  local timeout_seconds=${AGENT_TIMEOUT_SECONDS:-1800}
   if [ -z "$timeout_seconds" ] || [ "$timeout_seconds" = "0" ]; then
     "$@"
     return $?

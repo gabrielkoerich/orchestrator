@@ -161,6 +161,15 @@ if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
   exit 1
 fi
 
+# Ensure TASK_STATUS is set before checking it (some backends may not export it)
+TASK_STATUS="${TASK_STATUS:-$(db_task_field "$TASK_ID" "status" 2>/dev/null || true)}"
+
+# Guard: never re-run tasks that need human review
+if [ "$TASK_STATUS" = "needs_review" ]; then
+  log_err "[run] task=$TASK_ID status=needs_review, skipping (requires human review before retry)"
+  exit 0
+fi
+
 if [ -z "$TASK_AGENT" ] || [ "$TASK_AGENT" = "null" ]; then
   TASK_AGENT=$("$(dirname "$0")/route_task.sh" "$TASK_ID")
   load_task "$TASK_ID"
@@ -523,7 +532,7 @@ USE_TMUX=${USE_TMUX:-$(config_get '.workflow.use_tmux // "true"')}
 # Usage: tmux_wait <session_name> <timeout_seconds>
 tmux_wait() {
   local session="$1"
-  local timeout="${2:-${AGENT_TIMEOUT_SECONDS:-900}}"
+  local timeout="${2:-${AGENT_TIMEOUT_SECONDS:-1800}}"
   local elapsed=0
   while tmux has-session -t "$session" 2>/dev/null; do
     sleep 5
@@ -614,7 +623,7 @@ RUNNER_ENV
       run_hook on_agent_session_start
 
       # Wait for the session to complete (with timeout)
-      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
       run_hook on_agent_session_end
 
       # Read response from file
@@ -691,7 +700,7 @@ RUNNER_EOF
       tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
       log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
 
-      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
 
       [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
       [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
@@ -732,7 +741,7 @@ RUNNER_EOF
       tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
       log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
 
-      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
 
       [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
       [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")

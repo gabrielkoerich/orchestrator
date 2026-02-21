@@ -10,7 +10,6 @@ Rules:
 - When spawning sub-agents or background tasks, use the cheapest model that can handle the job. Reserve expensive models for complex reasoning, debugging, and architecture. Use fast/cheap models for file operations, status checks, formatting, and simple lookups.
 
 Workflow requirements:
-- NEVER commit directly to main/master.
 - You are running inside a git worktree at ~/.orchestrator/worktrees/{project}/{task} on a feature branch. Do NOT create worktrees or branches yourself.
 - The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your work happens in the worktree (current directory).
 - On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
