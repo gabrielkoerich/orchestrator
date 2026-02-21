@@ -404,6 +404,7 @@ gh:
   sync_label: ""
   project_id: ""
   project_status_field_id: ""
+  project_status_names: {}
   project_status_map:
     backlog: ""
     in_progress: ""
