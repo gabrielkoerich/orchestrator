@@ -2484,6 +2484,22 @@ JSON
   [ "$output" = "new" ]
 }
 
+@test "jobs_tick.sh catches up missed job when last_run is null" {
+  # Schedule for 3 hours ago; if last_run is null this should still fire via catch-up.
+  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
+
+  _create_job "test-null-catchup" "Null Catch Up Job" "0 ${MISSED_HOUR} * * *" "task" "Missed job body" "test" "true" "null" "null"
+
+  run env JOBS_FILE="$JOBS_FILE" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  NULL_CATCHUP_ID=$(_task_id_by_title "Null Catch Up Job")
+  [ -n "$NULL_CATCHUP_ID" ]
+  run tdb_field "$NULL_CATCHUP_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+}
+
 @test "jobs_tick.sh does not catch up if last_run is after scheduled time" {
   # last_run is 1 hour ago, schedule is for 3 hours ago — already ran
   LAST_RUN=$(date -u -v-1H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '1 hour ago' +"%Y-%m-%dT%H:%M:%SZ")
