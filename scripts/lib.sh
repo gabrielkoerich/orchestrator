@@ -929,8 +929,246 @@ fetch_owner_feedback() {
 
   printf '%s' "$raw" | jq -c \
     --arg owner "$owner_login" --arg since "${since:-}" \
-    '[.[] | select(.user.login == $owner and (.body | test("via \\[Orchestrator\\]") | not) and ($since == "" or .created_at > $since)) | {login: .user.login, created_at: .created_at, body: .body}]' \
+    '[.[] 
+      | select(.user.login == $owner)
+      # Exclude orchestrator-generated comments (agent response, acks, etc.)
+      | select((.body | test("via \\[Orchestrator\\]")) | not)
+      | select((.body | contains("<!-- orch:")) | not)
+      # Exclude lightweight history entries appended by orchestrator (avoid feedback loops)
+      | select((.body | test("^\\[\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z\\] ")) | not)
+      | select($since == "" or .created_at > $since)
+      | {login: .user.login, created_at: .created_at, body: .body}
+    ]' \
     2>/dev/null || echo "[]"
+}
+
+# Parse a slash command from the first line of a comment body.
+# Returns 0 if the first line is a slash command and echoes:
+#   line1: command (lowercased, without leading "/")
+#   line2: raw args from the first line (original casing/spacing preserved)
+# Usage: _parse_owner_slash_command "$body" && read -r cmd; read -r args
+_parse_owner_slash_command() {
+  local body="${1:-}"
+  local first_line trimmed lower cmd args
+  first_line=$(printf '%s' "$body" | head -n 1 | tr -d '\r')
+  trimmed=$(printf '%s' "$first_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ -n "$trimmed" ] || return 1
+  [[ "$trimmed" == /* ]] || return 1
+
+  lower=$(printf '%s' "$trimmed" | tr '[:upper:]' '[:lower:]')
+  cmd="${lower%%[[:space:]]*}"
+  cmd="${cmd#/}"
+
+  # Extract args from original trimmed line (not lowercased)
+  args=$(printf '%s' "$trimmed" | sed -E 's#^/[[:alnum:]_-]+[[:space:]]*##')
+
+  printf '%s\n' "$cmd"
+  printf '%s\n' "$args"
+  return 0
+}
+
+# Process a single owner comment object {login, created_at, body} for a task.
+# Supports slash commands; non-commands fall back to process_owner_feedback().
+# Usage: process_owner_comment TASK_ID REPO COMMENT_JSON
+process_owner_comment() {
+  local task_id="$1" repo="$2" comment_json="$3"
+
+  local login created_at body
+  login=$(printf '%s' "$comment_json" | jq -r '.login // ""' 2>/dev/null || true)
+  created_at=$(printf '%s' "$comment_json" | jq -r '.created_at // ""' 2>/dev/null || true)
+  body=$(printf '%s' "$comment_json" | jq -r '.body // ""' 2>/dev/null || true)
+
+  [ -n "$task_id" ] || return 0
+  [ -n "$repo" ] || return 0
+  [ -n "$created_at" ] || created_at="$(now_iso)"
+
+  local cmd args
+  local parsed=""
+  if parsed=$(_parse_owner_slash_command "$body" 2>/dev/null); then
+    cmd=$(printf '%s' "$parsed" | sed -n '1p' 2>/dev/null || true)
+    args=$(printf '%s' "$parsed" | sed -n '2p' 2>/dev/null || true)
+  else
+    cmd=""
+    args=""
+  fi
+
+  # Helper: post an acknowledgement comment (excluded from feedback scans)
+  _owner_cmd_ack() {
+    local msg="$1"
+    local ack_body
+    ack_body=$(printf '%s\n%s\n\n---\n*By Orchestrator via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*' \
+      "<!-- orch:owner-command -->" \
+      "${msg}")
+    gh_api "repos/${repo}/issues/${task_id}/comments" \
+      -f body="$ack_body" \
+      >/dev/null 2>&1 || true
+  }
+
+  # Helper: optional trailing context (lines after first line)
+  _trailing_context() {
+    printf '%s' "$body" | tail -n +2 | sed 's/\r$//' || true
+  }
+
+  # Always advance last feedback timestamp to avoid re-processing/spam.
+  # Command handlers may overwrite status, but should not change created_at tracking.
+  local advance_ts="gh_last_feedback_at=$created_at"
+
+  if [ -z "$cmd" ]; then
+    # Non-command: preserve existing behavior.
+    local single
+    single=$(jq -nc --arg login "$login" --arg created_at "$created_at" --arg body "$body" \
+      '[{login: $login, created_at: $created_at, body: $body}]')
+    process_owner_feedback "$task_id" "$single"
+    return 0
+  fi
+
+  case "$cmd" in
+    retry)
+      local extra
+      extra=$(_trailing_context)
+      if [ -n "$extra" ]; then
+        append_task_context "$task_id" "### Owner context (${login:-owner} ${created_at})"$'\n'"${extra}"$'\n---\n'
+      fi
+      db_task_update "$task_id" \
+        "status=new" \
+        "agent=NULL" \
+        "attempts=0" \
+        "needs_help=0" \
+        "reason=NULL" \
+        "last_error=NULL" \
+        "$advance_ts"
+      append_history "$task_id" "new" "owner command: /retry"
+      _owner_cmd_ack "✅ Applied `/retry` — reset task to `status:new` (agent cleared, attempts reset)."
+      ;;
+    assign)
+      local agent
+      agent=$(printf '%s' "$args" | awk '{print $1}' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z]//g')
+      case "$agent" in
+        claude|codex|opencode)
+          db_task_update "$task_id" \
+            "agent=$agent" \
+            "status=routed" \
+            "attempts=0" \
+            "needs_help=0" \
+            "reason=NULL" \
+            "last_error=NULL" \
+            "$advance_ts"
+          append_history "$task_id" "routed" "owner command: /assign $agent"
+          _owner_cmd_ack "✅ Applied `/assign ${agent}` — set agent and moved task to `status:routed`."
+          ;;
+        *)
+          db_task_update "$task_id" "$advance_ts"
+          _owner_cmd_ack "❌ Invalid agent for `/assign`: \`${agent:-}\`. Allowed: \`claude\`, \`codex\`, \`opencode\`."
+          ;;
+      esac
+      ;;
+    unblock)
+      db_task_update "$task_id" \
+        "status=new" \
+        "attempts=0" \
+        "needs_help=0" \
+        "reason=NULL" \
+        "last_error=NULL" \
+        "$advance_ts"
+      append_history "$task_id" "new" "owner command: /unblock"
+      _owner_cmd_ack "✅ Applied `/unblock` — reset task to `status:new`."
+      ;;
+    close)
+      db_task_update "$task_id" \
+        "status=done" \
+        "needs_help=0" \
+        "reason=NULL" \
+        "last_error=NULL" \
+        "$advance_ts"
+      gh_api "repos/${repo}/issues/${task_id}" -X PATCH -f state=closed >/dev/null 2>&1 || true
+      append_history "$task_id" "done" "owner command: /close"
+      _owner_cmd_ack "✅ Applied `/close` — marked `status:done` and closed the issue."
+      ;;
+    context)
+      local ctx
+      ctx=$(printf '%s' "$args" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      if [ -z "$ctx" ]; then
+        ctx=$(_trailing_context)
+      fi
+      if [ -z "$ctx" ]; then
+        db_task_update "$task_id" "$advance_ts"
+        _owner_cmd_ack "❌ Missing text for `/context`. Usage: `/context <text>` (or put text on following lines)."
+      else
+        local snip
+        snip=$(printf '%s' "$ctx" | tr '\r\n' '  ' | head -c 200)
+        append_task_context "$task_id" "### Owner context (${login:-owner} ${created_at})"$'\n'"${ctx}"$'\n---\n'
+        db_task_update "$task_id" \
+          "status=routed" \
+          "needs_help=0" \
+          "last_error=$snip" \
+          "$advance_ts"
+        append_history "$task_id" "routed" "owner command: /context"
+        _owner_cmd_ack "✅ Applied `/context` — appended text to task context and moved task to `status:routed`."
+      fi
+      ;;
+    priority)
+      local prio complexity
+      prio=$(printf '%s' "$args" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+      complexity="$prio"
+      case "$prio" in
+        high) complexity="complex" ;;
+        med|medium) complexity="medium" ;;
+        low) complexity="simple" ;;
+      esac
+      case "$complexity" in
+        simple|medium|complex)
+          db_task_update "$task_id" \
+            "complexity=$complexity" \
+            "status=routed" \
+            "attempts=0" \
+            "needs_help=0" \
+            "reason=NULL" \
+            "$advance_ts"
+          append_history "$task_id" "routed" "owner command: /priority $complexity"
+          _owner_cmd_ack "✅ Applied `/priority ${prio}` — set complexity to \`${complexity}\` and moved task to `status:routed`."
+          ;;
+        *)
+          db_task_update "$task_id" "$advance_ts"
+          _owner_cmd_ack "❌ Invalid value for `/priority`: \`${prio:-}\`. Allowed: \`low\`, \`medium\`, \`high\` (or \`simple|medium|complex\`)."
+          ;;
+      esac
+      ;;
+    help)
+      db_task_update "$task_id" "$advance_ts"
+      _owner_cmd_ack "Supported commands:\n\n- `/retry`\n- `/assign claude|codex|opencode`\n- `/unblock`\n- `/close`\n- `/context <text>`\n- `/priority low|medium|high`"
+      ;;
+    *)
+      db_task_update "$task_id" "$advance_ts"
+      _owner_cmd_ack "❌ Unknown command: `/${cmd}`. Use `/help` for supported commands."
+      ;;
+  esac
+}
+
+# Check a task for new owner feedback/comments since last scan and apply them.
+# This is intended to be called from poll/serve loops.
+# Usage: process_owner_feedback_for_task REPO TASK_ID OWNER_LOGIN
+process_owner_feedback_for_task() {
+  local repo="$1" task_id="$2" owner_login="$3"
+  [ -n "$repo" ] || return 0
+  [ -n "$task_id" ] || return 0
+  [ -n "$owner_login" ] || return 0
+
+  local since
+  since=$(db_task_field "$task_id" "gh_last_feedback_at" 2>/dev/null || true)
+  local feedback_json
+  feedback_json=$(fetch_owner_feedback "$repo" "$task_id" "$owner_login" "${since:-}")
+
+  local count
+  count=$(printf '%s' "$feedback_json" | jq -r 'length' 2>/dev/null || echo "0")
+  [ "$count" -gt 0 ] || return 0
+
+  # Process in order to preserve intent if multiple comments arrive.
+  local i
+  for i in $(seq 0 $((count - 1))); do
+    local item
+    item=$(printf '%s' "$feedback_json" | jq -c ".[$i]" 2>/dev/null || echo '{}')
+    process_owner_comment "$task_id" "$repo" "$item"
+  done
 }
 
 # Apply owner feedback to a task: append to context, reset status to routed.

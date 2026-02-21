@@ -97,6 +97,33 @@ fi
 # Normalize: add status:new to open issues missing a status label
 db_normalize_new_issues 2>/dev/null || true
 
+# Owner feedback + slash commands: scan for new owner comments and apply them.
+# This lets the owner re-activate completed tasks or issue commands like /retry.
+BACKEND=${ORCH_BACKEND:-$(config_get '.backend // ""')}
+if [ "$BACKEND" = "github" ] && command -v gh >/dev/null 2>&1; then
+  REPO=$(config_get '.gh.repo // ""' 2>/dev/null || true)
+  if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
+    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+  fi
+  OWNER_LOGIN=$(repo_owner "$REPO")
+  if [ -n "$REPO" ] && [ "$REPO" != "null" ] && [ -n "$OWNER_LOGIN" ]; then
+    CANDIDATES=$(
+      {
+        db_task_ids_by_status "done" || true
+        db_task_ids_by_status "in_review" || true
+        db_task_ids_by_status "needs_review" || true
+        db_task_ids_by_status "blocked" || true
+      } | sort -u
+    )
+    if [ -n "$CANDIDATES" ]; then
+      while IFS= read -r cid; do
+        [ -n "$cid" ] || continue
+        process_owner_feedback_for_task "$REPO" "$cid" "$OWNER_LOGIN" 2>/dev/null || true
+      done <<< "$CANDIDATES"
+    fi
+  fi
+fi
+
 # Run all new/routed tasks in parallel (skip tasks with no-agent label)
 NEW_IDS=$(db_task_ids_by_status "new" "no-agent")
 ROUTED_IDS=$(db_task_ids_by_status "routed" "no-agent")
