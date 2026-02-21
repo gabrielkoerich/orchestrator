@@ -448,7 +448,7 @@ _handle_remove_label() {
 
 # POST repos/OWNER/REPO/issues/N/comments — add comment
 _handle_add_comment() {
-  local num="$1"
+  local owner="$1" repo="$2" num="$3"
   _ensure_state
   local state
   state=$(_state_read)
@@ -457,6 +457,8 @@ _handle_add_comment() {
   body=$(_field_val "body")
   local now
   now=$(_now_iso)
+  local login
+  login="${GH_MOCK_LOGIN:-mock-user}"
 
   local comment_id
   comment_id=$(printf '%s' "$state" | jq -r '.next_comment_id')
@@ -466,7 +468,13 @@ _handle_add_comment() {
     --argjson id "$comment_id" \
     --arg body "${body:-}" \
     --arg now "$now" \
-    '{id: $id, body: $body, created_at: $now}')
+    --arg login "$login" \
+    --arg owner "$owner" --arg repo "$repo" --arg num "$num" \
+    '{id: $id, body: $body, created_at: $now,
+      user: {login: $login},
+      issue_url: ("https://api.github.com/repos/" + $owner + "/" + $repo + "/issues/" + $num),
+      html_url: ("https://github.com/" + $owner + "/" + $repo + "/issues/" + $num + "#issuecomment-" + ($id|tostring))
+    }')
 
   state=$(printf '%s' "$state" | jq -c \
     --arg n "$num" \
@@ -486,13 +494,52 @@ _handle_add_comment() {
 
 # GET repos/OWNER/REPO/issues/N/comments — list comments
 _handle_list_comments() {
-  local num="$1"
+  local owner="$1" repo="$2" num="$3"
   _ensure_state
   local state
   state=$(_state_read)
 
   local comments
-  comments=$(printf '%s' "$state" | jq -c --arg n "$num" '.comments[$n] // []')
+  comments=$(printf '%s' "$state" | jq -c --arg n "$num" --arg owner "$owner" --arg repo "$repo" '
+    (.comments[$n] // [])
+    | map(
+        . + {
+          user: (.user // {login: "mock-user"}),
+          issue_url: (.issue_url // ("https://api.github.com/repos/" + $owner + "/" + $repo + "/issues/" + $n)),
+          html_url: (.html_url // ("https://github.com/" + $owner + "/" + $repo + "/issues/" + $n + "#issuecomment-" + (.id|tostring)))
+        }
+      )')
+  _maybe_jq "$comments"
+}
+
+# GET repos/OWNER/REPO/issues/comments — list all issue/PR comments
+_handle_list_repo_issue_comments() {
+  local owner="$1" repo="$2"
+  _ensure_state
+  local state
+  state=$(_state_read)
+
+  local since
+  since=$(_field_val "since")
+  local since_filter='.'
+  if [ -n "$since" ]; then
+    since_filter="map(select((.created_at // \"\") > \$since))"
+  fi
+
+  local comments
+  comments=$(printf '%s' "$state" | jq -c --arg owner "$owner" --arg repo "$repo" --arg since "${since:-}" "
+    [
+      (.comments // {} | to_entries[]? | . as \$e
+        | (\$e.value // [])[]
+        | . + {
+            user: (.user // {login: \"mock-user\"}),
+            issue_url: (.issue_url // (\"https://api.github.com/repos/\" + \$owner + \"/\" + \$repo + \"/issues/\" + \$e.key)),
+            html_url: (.html_url // (\"https://github.com/\" + \$owner + \"/\" + \$repo + \"/issues/\" + \$e.key + \"#issuecomment-\" + (.id|tostring)))
+          }
+      )
+    ]
+    | ${since_filter}
+  " 2>/dev/null || echo "[]")
   _maybe_jq "$comments"
 }
 
@@ -802,13 +849,23 @@ main() {
         return
       fi
 
+      # repos/OWNER/REPO/issues/comments — list repo-wide issue/PR comments
+      if [[ "$_PA_ENDPOINT" =~ ^repos/([^/]+)/([^/]+)/issues/comments$ ]]; then
+        local owner="${BASH_REMATCH[1]}"
+        local repo="${BASH_REMATCH[2]}"
+        _handle_list_repo_issue_comments "$owner" "$repo"
+        return
+      fi
+
       # repos/OWNER/REPO/issues/N/comments
-      if [[ "$_PA_ENDPOINT" =~ ^repos/[^/]+/[^/]+/issues/([0-9]+)/comments$ ]]; then
-        local issue_num="${BASH_REMATCH[1]}"
+      if [[ "$_PA_ENDPOINT" =~ ^repos/([^/]+)/([^/]+)/issues/([0-9]+)/comments$ ]]; then
+        local owner="${BASH_REMATCH[1]}"
+        local repo="${BASH_REMATCH[2]}"
+        local issue_num="${BASH_REMATCH[3]}"
         if [ "$method" = "GET" ]; then
-          _handle_list_comments "$issue_num"
+          _handle_list_comments "$owner" "$repo" "$issue_num"
         else
-          _handle_add_comment "$issue_num"
+          _handle_add_comment "$owner" "$repo" "$issue_num"
         fi
         return
       fi
