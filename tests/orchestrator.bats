@@ -101,6 +101,29 @@ teardown() {
   rm -rf "${TMP_DIR}"
 }
 
+@test "task timeout resolves from workflow config with sensible defaults" {
+  source "${REPO_DIR}/scripts/lib.sh"
+
+  # No workflow timeout configured: default is 1800s (30 minutes).
+  run task_timeout_seconds medium
+  [ "$status" -eq 0 ]
+  [ "$output" = "1800" ]
+
+  # workflow.timeout_seconds overrides the default.
+  run yq -i '.workflow.timeout_seconds = 1200' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+  run task_timeout_seconds medium
+  [ "$status" -eq 0 ]
+  [ "$output" = "1200" ]
+
+  # workflow.timeout_by_complexity takes precedence.
+  run yq -i '.workflow.timeout_by_complexity.medium = 2400' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+  run task_timeout_seconds medium
+  [ "$status" -eq 0 ]
+  [ "$output" = "2400" ]
+}
+
 # Helper: parse task ID from add_task.sh output
 _task_id() {
   echo "$1" | grep 'Added task' | sed 's/Added task //' | cut -d: -f1 | tr -d ' '

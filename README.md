@@ -556,6 +556,8 @@ All runtime configuration lives in `config.yml`.
 | `workflow` | `enable_review_agent` | Run a review agent after completion. | `false` |
 | `workflow` | `review_agent` | Fallback reviewer when opposite agent unavailable. | `claude` |
 | `workflow` | `max_attempts` | Max attempts before marking task as blocked. | `10` |
+| `workflow` | `timeout_seconds` | Task execution timeout (0 disables timeout). | `1800` |
+| `workflow` | `timeout_by_complexity` | Per-complexity task timeouts (takes precedence). | `{}` |
 | `workflow` | `required_skills` | Skills always injected into agent prompts (marked `[REQUIRED]`). | `[]` |
 | `workflow` | `disallowed_tools` | Tool patterns blocked via `--disallowedTools`. | `["Bash(rm *)","Bash(rm -*)"]` |
 | `router` | `agent` | Default router executor. | `claude` |

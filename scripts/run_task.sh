@@ -361,6 +361,18 @@ AGENT_MESSAGE=$(render_template "$SCRIPT_DIR/../prompts/agent.md")
 
 require_agent "$TASK_AGENT"
 
+# Resolve agent/task timeout (seconds) unless explicitly overridden via env.
+# Priority: env AGENT_TIMEOUT_SECONDS > workflow.timeout_by_complexity > workflow.timeout_seconds > default.
+if [ -z "${AGENT_TIMEOUT_SECONDS:-}" ] || [ "${AGENT_TIMEOUT_SECONDS:-}" = "null" ]; then
+  AGENT_TIMEOUT_SECONDS=$(task_timeout_seconds "${TASK_COMPLEXITY:-medium}")
+  export AGENT_TIMEOUT_SECONDS
+fi
+if [ "${AGENT_TIMEOUT_SECONDS}" = "0" ]; then
+  log_err "[run] task=$TASK_ID timeout=disabled (complexity=${TASK_COMPLEXITY:-medium})"
+else
+  log_err "[run] task=$TASK_ID timeout=${AGENT_TIMEOUT_SECONDS}s (complexity=${TASK_COMPLEXITY:-medium})"
+fi
+
 # Build disallowed tools list
 DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash(rm -*)"] | join(",")')
 
@@ -446,12 +458,14 @@ tmux_wait() {
   local elapsed=0
   while tmux has-session -t "$session" 2>/dev/null; do
     sleep 5
-    elapsed=$((elapsed + 5))
-    if [ "$elapsed" -ge "$timeout" ]; then
-      log_err "[run] task=$TASK_ID tmux session timed out after ${timeout}s"
-      tmux kill-session -t "$session" 2>/dev/null || true
-      CMD_STATUS=124
-      return 1
+    if [ "$timeout" != "0" ]; then
+      elapsed=$((elapsed + 5))
+      if [ "$elapsed" -ge "$timeout" ]; then
+        log_err "[run] task=$TASK_ID tmux session timed out after ${timeout}s"
+        tmux kill-session -t "$session" 2>/dev/null || true
+        CMD_STATUS=124
+        return 1
+      fi
     fi
   done
   return 0
