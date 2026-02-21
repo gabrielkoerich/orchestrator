@@ -1483,22 +1483,20 @@ SH
   [ "$(echo "$output" | tr -d ' ')" = "0" ]
 }
 
-@test "auto_detect_status finds options with yq inline flag syntax" {
-  # Regression: test("^Name$"; "i") is jq syntax, yq needs test("(?i)^Name$")
+@test "auto_detect_status finds options with case-insensitive exact match" {
   json='{"data":{"node":{"fields":{"nodes":[{},{"id":"PVTSSF_f1","name":"Status","options":[{"id":"O1","name":"Backlog"},{"id":"O2","name":"In Progress"},{"id":"O3","name":"Review"},{"id":"O4","name":"Done"}]},{}]}}}}'
 
-  # Each option name should be found with case-insensitive regex
-  for pair in "Backlog:O1" "In Progress:O2" "Review:O3" "Done:O4"; do
-    name="${pair%%:*}"
+  for pair in "backlog:O1" "in progress:O2" "review:O3" "done:O4"; do
+    name_lower="${pair%%:*}"
     expected="${pair##*:}"
-    run bash -c "printf '%s' '$json' | yq -r '.data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"(?i)^${name}\$\")) | .id'"
+    run bash -c "printf '%s' '$json' | NAME_LOWER='${name_lower}' yq -r '.data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | downcase == strenv(NAME_LOWER)) | .id'"
     [ "$status" -eq 0 ]
     [ "$output" = "$expected" ]
   done
 
-  # Case-insensitive: "todo" should match "Todo"
+  # Case-insensitive: "todo" should match "Todo" exactly
   json2='{"data":{"node":{"fields":{"nodes":[{"id":"F1","name":"Status","options":[{"id":"X1","name":"Todo"}]}]}}}}'
-  run bash -c "printf '%s' '$json2' | yq -r '.data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | test(\"(?i)^Todo\$\")) | .id'"
+  run bash -c "printf '%s' '$json2' | NAME_LOWER='todo' yq -r '.data.node.fields.nodes[] | select(.name == \"Status\") | .options[] | select(.name | downcase == strenv(NAME_LOWER)) | .id'"
   [ "$status" -eq 0 ]
   [ "$output" = "X1" ]
 }
@@ -1539,6 +1537,57 @@ SH
 
   run yq -r '.gh.project_status_map.in_progress' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "opt_ip" ]
+
+  run yq -r '.gh.project_status_map.review' "$INIT_DIR/orchestrator.yml"
+  [ "$output" = "opt_rv" ]
+
+  run yq -r '.gh.project_status_map.done' "$INIT_DIR/orchestrator.yml"
+  [ "$output" = "opt_dn" ]
+
+  rm -rf "$INIT_DIR"
+}
+
+@test "init.sh auto_detect_status uses configured status column names" {
+  INIT_DIR=$(mktemp -d)
+
+  cat > "$INIT_DIR/orchestrator.yml" <<'YAML'
+gh:
+  repo: "test/repo"
+  project_id: "PVT_proj1"
+  project_status_names:
+    backlog: "Todo"
+    in_progress: "Doing"
+    review: ["In Review", "QA Review"]
+    done: "Closed"
+YAML
+
+  # Stub gh: returns project field options for the GraphQL query
+  GH_STUB="$INIT_DIR/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+args="$*"
+if printf '%s' "$args" | grep -q "graphql" && printf '%s' "$args" | grep -q "fields(first"; then
+  cat <<'JSON'
+{"data":{"node":{"fields":{"nodes":[{},{"id":"PVTSSF_status1","name":"Status","options":[{"id":"opt_td","name":"Todo"},{"id":"opt_dg","name":"Doing"},{"id":"opt_rv","name":"QA Review"},{"id":"opt_dn","name":"Closed"}]},{}]}}}}
+JSON
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$GH_STUB"
+
+  run env PATH="$INIT_DIR:$PATH" PROJECT_DIR="$INIT_DIR" \
+    "${REPO_DIR}/scripts/init.sh" --repo "test/repo" --project-id "PVT_proj1" </dev/null
+  [ "$status" -eq 0 ]
+
+  run yq -r '.gh.project_status_field_id' "$INIT_DIR/orchestrator.yml"
+  [ "$output" = "PVTSSF_status1" ]
+
+  run yq -r '.gh.project_status_map.backlog' "$INIT_DIR/orchestrator.yml"
+  [ "$output" = "opt_td" ]
+
+  run yq -r '.gh.project_status_map.in_progress' "$INIT_DIR/orchestrator.yml"
+  [ "$output" = "opt_dg" ]
 
   run yq -r '.gh.project_status_map.review' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "opt_rv" ]
