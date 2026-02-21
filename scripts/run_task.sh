@@ -349,17 +349,17 @@ if [ -n "$REQUIRED_TOOLS_CSV" ] && [ "$REQUIRED_TOOLS_CSV" != "null" ]; then
   _missing_tools=()
   for _tool in "${_req_tools[@]}"; do
     [ -z "$_tool" ] && continue
-    if ! which "$_tool" >/dev/null 2>&1; then
+    if ! command -v "$_tool" >/dev/null 2>&1; then
       _missing_tools+=("$_tool")
     fi
   done
   if [ "${#_missing_tools[@]}" -gt 0 ]; then
     _missing_csv=$(IFS=', '; echo "${_missing_tools[*]}")
-    _reason="missing required tools on PATH: ${_missing_csv}"
+    _reason="missing required tools on PATH: ${_missing_csv} (configure required_tools in .orchestrator.yml or install them)"
     log_err "[run] task=$TASK_ID blocked: $_reason"
     db_task_update "$TASK_ID" \
       "status=blocked" \
-      "reason=$_reason (configure required_tools in .orchestrator.yml or install them)" \
+      "reason=$_reason" \
       "last_error=$_reason" \
       "attempts=$ATTEMPTS"
     append_history "$TASK_ID" "blocked" "$_reason"

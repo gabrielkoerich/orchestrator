@@ -25,7 +25,7 @@ printf '%s\n' "$TITLE" > "$TITLE_FILE"
 
 {
   printf '## Summary\n\n'
-  printf '%s\n' "- Implements fail-fast environment validation before agent execution."
+  printf '%s\n' "- (edit this summary)"
   printf '\n## Changes\n\n'
   if [ -n "$COMMITS" ]; then
     printf '%s\n' "$COMMITS" | sed 's/^/- /'
@@ -45,4 +45,3 @@ printf '%s\n' "$TITLE" > "$TITLE_FILE"
 } > "$BODY_FILE"
 
 echo "Wrote $TITLE_FILE and $BODY_FILE"
-
