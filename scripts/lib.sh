@@ -777,6 +777,29 @@ model_for_complexity() {
   config_get ".model_map.${complexity}.${agent} // \"\""
 }
 
+task_timeout_seconds() {
+  local complexity="${1:-medium}"
+  if [ -z "$complexity" ] || [ "$complexity" = "null" ]; then
+    complexity="medium"
+  fi
+
+  local v=""
+  v=$(config_get ".workflow.timeout_by_complexity.${complexity} // \"\"" 2>/dev/null || true)
+  if [ -n "$v" ] && [ "$v" != "null" ]; then
+    echo "$v"
+    return 0
+  fi
+
+  v=$(config_get '.workflow.timeout_seconds // ""' 2>/dev/null || true)
+  if [ -n "$v" ] && [ "$v" != "null" ]; then
+    echo "$v"
+    return 0
+  fi
+
+  # Default task timeout: 30 minutes (increased from 15).
+  echo "1800"
+}
+
 max_attempts() {
   local max
   max=$(config_get '.workflow.max_attempts // ""')
@@ -948,6 +971,10 @@ process_owner_feedback() {
 
 run_with_timeout() {
   local timeout_seconds=${AGENT_TIMEOUT_SECONDS:-900}
+  if [ -z "$timeout_seconds" ] || [ "$timeout_seconds" = "0" ]; then
+    "$@"
+    return $?
+  fi
   if command -v timeout >/dev/null 2>&1; then
     timeout "$timeout_seconds" "$@"
     return $?
