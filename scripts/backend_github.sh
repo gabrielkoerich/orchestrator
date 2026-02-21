@@ -538,6 +538,8 @@ db_task_ids_by_status() {
 
   local args=(-f state="$state" -f per_page=100)
   args+=(-f labels="${_GH_STATUS_PREFIX}${_ids_status}")
+  local expected_label="${_GH_STATUS_PREFIX}${_ids_status}"
+  local needs_review_label="${_GH_STATUS_PREFIX}needs_review"
 
   local json
   json=$(gh_api -X GET "repos/$_GH_REPO/issues" "${args[@]}" 2>/dev/null) || return 0
@@ -545,10 +547,23 @@ db_task_ids_by_status() {
   json=$(printf '%s' "$json" | jq -s 'if type == "array" and length > 0 and (.[0] | type) == "array" then [.[][]] else . end' 2>/dev/null || echo "$json")
 
   if [ -n "$exclude_label" ]; then
-    printf '%s' "$json" | jq -r --arg lbl "$exclude_label" \
-      '[.[] | select(.pull_request == null) | select((.labels // []) | map(.name) | all(. != $lbl))] | .[].number' 2>/dev/null || true
+    printf '%s' "$json" | jq -r --arg lbl "$exclude_label" --arg expected "$expected_label" --arg nr "$needs_review_label" '
+      def label_names: (.labels // []) | map(.name);
+      [.[]
+        | select(.pull_request == null)
+        | select(label_names | any(. == $expected))
+        | select(($expected == $nr) or ((label_names | any(. == $nr)) | not))
+        | select(label_names | all(. != $lbl))
+      ]
+      | .[].number' 2>/dev/null || true
   else
-    printf '%s' "$json" | jq -r '.[] | select(.pull_request == null) | .number' 2>/dev/null || true
+    printf '%s' "$json" | jq -r --arg expected "$expected_label" --arg nr "$needs_review_label" '
+      def label_names: (.labels // []) | map(.name);
+      .[]
+      | select(.pull_request == null)
+      | select(label_names | any(. == $expected))
+      | select(($expected == $nr) or ((label_names | any(. == $nr)) | not))
+      | .number' 2>/dev/null || true
   fi
 }
 

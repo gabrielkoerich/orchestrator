@@ -4633,3 +4633,39 @@ SH
   [[ "$output" == *"foo/bar"* ]]
   [[ "$output" == *"$ORCH_HOME/projects/foo/bar.git"* ]]
 }
+
+@test "db_task_ids_by_status excludes issues that also have status:needs_review" {
+  # Create an issue that is "new" but (incorrectly) also has status:needs_review.
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Corrupted status labels" "Should not be runnable" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  # Add a second status label without removing the existing one.
+  gh api "repos/${ORCH_GH_REPO}/issues/${TASK2_ID}/labels" -f "labels[]=status:needs_review" >/dev/null
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_ids_by_status new"
+  [ "$status" -eq 0 ]
+  [[ \"$output\" != *\"${TASK2_ID}\"* ]]
+}
+
+@test "db_task_ids_by_status still returns needs_review issues when requested" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Needs review task" "Should be listed" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+  tdb_set "$TASK2_ID" status "needs_review"
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_ids_by_status needs_review"
+  [ "$status" -eq 0 ]
+  [[ \"$output\" == *\"${TASK2_ID}\"* ]]
+}
+
+@test "db_task_ids_by_status excludes needs_review issues from routed list when labels are corrupted" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Corrupted routed labels" "Should not be runnable" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+  tdb_set "$TASK2_ID" status "routed"
+
+  # Corrupt: add needs_review label without removing routed.
+  gh api "repos/${ORCH_GH_REPO}/issues/${TASK2_ID}/labels" -f "labels[]=status:needs_review" >/dev/null
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_ids_by_status routed"
+  [ "$status" -eq 0 ]
+  [[ \"$output\" != *\"${TASK2_ID}\"* ]]
+}
