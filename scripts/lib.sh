@@ -947,7 +947,7 @@ process_owner_feedback() {
 }
 
 run_with_timeout() {
-  local timeout_seconds=${AGENT_TIMEOUT_SECONDS:-900}
+  local timeout_seconds=${AGENT_TIMEOUT_SECONDS:-1800}
   if command -v timeout >/dev/null 2>&1; then
     timeout "$timeout_seconds" "$@"
     return $?

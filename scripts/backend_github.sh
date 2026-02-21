@@ -561,12 +561,12 @@ db_normalize_new_issues() {
   json=$(gh_api -X GET "repos/$_GH_REPO/issues" \
     -f state=open -f per_page=50 -f sort=created -f direction=desc 2>/dev/null) || return 0
 
-  # Find issues (not PRs) without any status: label, excluding no-agent and blocked
+  # Find issues (not PRs) without any status: label, excluding no-agent, blocked, and needs_review
   local unlabeled_ids
   unlabeled_ids=$(printf '%s' "$json" | jq -r --arg p "$_GH_STATUS_PREFIX" '
     [.[] | select(.pull_request == null)
          | select((.labels // []) | map(.name) | all(startswith($p) | not))
-         | select((.labels // []) | map(.name) | all(. != "no-agent" and . != "blocked"))]
+         | select((.labels // []) | map(.name) | all(. != "no-agent" and . != "blocked" and . != "needs_review"))]
     | .[].number' 2>/dev/null || true)
 
   [ -n "$unlabeled_ids" ] || return 0
