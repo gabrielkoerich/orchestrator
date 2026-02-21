@@ -417,6 +417,11 @@ if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
   AGENT_MODEL=$(model_for_complexity "$TASK_AGENT" "${TASK_COMPLEXITY:-medium}")
 fi
 
+# Set model: label on the issue for visibility (diagnostic, not blocking)
+if [ -n "$AGENT_MODEL" ] && [ "$AGENT_MODEL" != "null" ]; then
+  _gh_set_prefixed_label "$TASK_ID" "$_GH_MODEL_PREFIX" "$AGENT_MODEL" 2>/dev/null || true
+fi
+
 CMD_STATUS=0
 TMUX_RESPONSE_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-response-${ATTEMPTS}.txt"
 TMUX_STATUS_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-status-${ATTEMPTS}.txt"

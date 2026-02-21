@@ -13,6 +13,17 @@ _GH_STATUS_PREFIX="status:"
 _GH_AGENT_PREFIX="agent:"
 _GH_COMPLEXITY_PREFIX="complexity:"
 _GH_SKILL_PREFIX="skill:"
+_GH_MODEL_PREFIX="model:"
+
+# Validation constants
+_GH_VALID_STATUSES="new routed in_progress done blocked in_review needs_review"
+_GH_VALID_AGENTS="claude codex opencode"
+_GH_KNOWN_STANDALONE="plan scheduled blocked no-agent no-review has-error"
+_GH_RESERVED_PREFIXES="status: agent: model: skill: job:"
+
+# Model patterns per agent (prefix matching, for post-run diagnostics)
+_GH_CLAUDE_MODELS="haiku sonnet opus claude-"
+_GH_CODEX_MODELS="o1 o3 o4 gpt-4 codex-"
 
 # Sidecar dir is computed dynamically to pick up project-local STATE_DIR
 _gh_sidecar_dir() {
@@ -130,9 +141,17 @@ _gh_complexity_from_labels() {
     '[.[] | (if type == "object" then .name else . end) | select(startswith($p))] | .[0] // "" | ltrimstr($p)' 2>/dev/null || echo "medium"
 }
 
+# Extract model from labels
+_gh_model_from_labels() {
+  local labels_json="$1"
+  printf '%s' "$labels_json" | jq -r --arg p "$_GH_MODEL_PREFIX" \
+    '[.[] | (if type == "object" then .name else . end) | select(startswith($p))] | .[0] // "" | ltrimstr($p)' 2>/dev/null || true
+}
+
 # Ensure a label exists on the repo
 _gh_ensure_label() {
   local name="$1" color="${2:-ededed}" description="${3:-}"
+  _gh_validate_label "$name" || return 1
   _gh_ensure_repo || return 0
   local encoded
   encoded=$(printf '%s' "$name" | jq -sRr @uri)
@@ -155,6 +174,89 @@ _gh_status_color() {
     in_review)     echo "0075ca" ;;
     needs_review)  echo "e4e669" ;;
     *)             echo "c5def5" ;;
+  esac
+}
+
+# ============================================================
+# Label validation
+# ============================================================
+
+# Validate a label before creation/addition.
+# Returns 0 if valid, 1 if invalid.
+# Usage: _gh_validate_label "status:new" → ok
+#        _gh_validate_label "status:invalid" → fail
+#        _gh_validate_label "my-custom-label" → ok (user label)
+_gh_validate_label() {
+  local label="$1"
+  [ -z "$label" ] && return 0
+
+  # Check each reserved prefix
+  for prefix in $_GH_RESERVED_PREFIXES; do
+    if [[ "$label" == "${prefix}"* ]]; then
+      local value="${label#"$prefix"}"
+      case "$prefix" in
+        "status:")
+          for v in $_GH_VALID_STATUSES; do
+            [ "$v" = "$value" ] && return 0
+          done
+          log_err "[validate] invalid status label: $label (allowed: $_GH_VALID_STATUSES)"
+          return 1
+          ;;
+        "agent:")
+          for v in $_GH_VALID_AGENTS; do
+            [ "$v" = "$value" ] && return 0
+          done
+          log_err "[validate] invalid agent label: $label (allowed: $_GH_VALID_AGENTS)"
+          return 1
+          ;;
+        "model:")
+          # model: labels are validated via _gh_validate_agent_model at runtime
+          return 0
+          ;;
+        "skill:"|"job:")
+          # Open-ended — any value allowed
+          return 0
+          ;;
+      esac
+    fi
+  done
+
+  # Not a reserved prefix — user label, always allowed
+  return 0
+}
+
+# Cross-validate agent + model combination (for post-run diagnostics).
+# Returns 0 if consistent, 1 if mismatch.
+# NOT used as a pre-validation gate — models change too often.
+# Usage: _gh_validate_agent_model "claude" "opus-4"
+_gh_validate_agent_model() {
+  local agent="$1" model="$2"
+  [ -z "$model" ] || [ "$model" = "null" ] && return 0
+  [ -z "$agent" ] || [ "$agent" = "null" ] && return 0
+
+  case "$agent" in
+    claude)
+      for pattern in $_GH_CLAUDE_MODELS; do
+        [[ "$model" == "${pattern}"* ]] && return 0
+      done
+      log_err "[validate] invalid model '$model' for agent '$agent' (allowed prefixes: $_GH_CLAUDE_MODELS)"
+      return 1
+      ;;
+    codex)
+      for pattern in $_GH_CODEX_MODELS; do
+        [[ "$model" == "${pattern}"* ]] && return 0
+      done
+      log_err "[validate] invalid model '$model' for agent '$agent' (allowed prefixes: $_GH_CODEX_MODELS)"
+      return 1
+      ;;
+    opencode)
+      # Any model allowed for opencode
+      return 0
+      ;;
+    *)
+      # Unknown agent — allow
+      return 0
+      ;;
   esac
 }
 
@@ -270,9 +372,16 @@ db_task_field() {
       _gh_agent_from_labels "$labels_json"
       ;;
     complexity)
-      local labels_json
-      labels_json=$(printf '%s' "$json" | jq -c '.labels // []')
-      _gh_complexity_from_labels "$labels_json"
+      # Sidecar first, then fall back to labels (backward compat)
+      local sc_complexity
+      sc_complexity=$(_sidecar_read "$id" "complexity")
+      if [ -n "$sc_complexity" ] && [ "$sc_complexity" != "null" ]; then
+        echo "$sc_complexity"
+      else
+        local labels_json
+        labels_json=$(printf '%s' "$json" | jq -c '.labels // []')
+        _gh_complexity_from_labels "$labels_json"
+      fi
       ;;
     gh_issue_number) echo "$id" ;;
     gh_url)      printf '%s' "$json" | jq -r '.html_url // empty' ;;
@@ -307,7 +416,7 @@ db_task_set() {
       _sidecar_write "$id" "agent" "$value"
       ;;
     complexity)
-      _gh_set_prefixed_label "$id" "$_GH_COMPLEXITY_PREFIX" "$value"
+      # Sidecar only — no label
       _sidecar_write "$id" "complexity" "$value"
       ;;
     *)
@@ -319,6 +428,15 @@ db_task_set() {
 # Set a status label (remove old, add new)
 _gh_set_status_label() {
   local id="$1" status="$2"
+  # Validate status value
+  local _valid=false
+  for v in $_GH_VALID_STATUSES; do
+    [ "$v" = "$status" ] && _valid=true && break
+  done
+  if [ "$_valid" = false ]; then
+    log_err "[validate] invalid status: $status (allowed: $_GH_VALID_STATUSES)"
+    return 1
+  fi
   _gh_ensure_repo || return 0
 
   # Remove existing status labels
@@ -364,9 +482,11 @@ _gh_set_prefixed_label() {
   _gh_ensure_repo || return 0
   if [ -z "$value" ] || [ "$value" = "null" ] || [ "$value" = "NULL" ]; then return 0; fi
 
+  local label="${prefix}${value}"
+  _gh_validate_label "$label" || return 1
+
   _gh_remove_prefixed_labels "$id" "$prefix"
 
-  local label="${prefix}${value}"
   _gh_ensure_label "$label" "c5def5" ""
   gh_api "repos/$_GH_REPO/issues/$id/labels" \
     --input - <<< "{\"labels\":[\"$label\"]}" >/dev/null 2>&1 || true
@@ -403,7 +523,7 @@ db_task_count() {
   fi
 
   local result
-  result=$(gh_api "search/issues" -f q="$query" -f per_page=1 -q '.total_count' 2>/dev/null || echo 0)
+  result=$(gh_api -X GET "search/issues" -f q="$query" -f per_page=1 -q '.total_count' 2>/dev/null || echo 0)
   echo "$result"
 }
 
@@ -449,8 +569,10 @@ db_create_task() {
 
   if [ -n "$agent" ]; then
     local agent_label="${_GH_AGENT_PREFIX}${agent}"
-    _gh_ensure_label "$agent_label" "c5def5" "Assigned to $agent"
-    label_args+=(-f "labels[]=$agent_label")
+    if _gh_validate_label "$agent_label"; then
+      _gh_ensure_label "$agent_label" "c5def5" "Assigned to $agent"
+      label_args+=(-f "labels[]=$agent_label")
+    fi
   fi
 
   if [ -n "$labels_csv" ]; then
@@ -458,7 +580,11 @@ db_create_task() {
     for _l in "${_labels[@]}"; do
       _l=$(printf '%s' "$_l" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
       [ -z "$_l" ] && continue
-      label_args+=(-f "labels[]=$_l")
+      if _gh_validate_label "$_l"; then
+        label_args+=(-f "labels[]=$_l")
+      else
+        log_err "[create_task] skipping invalid label: $_l"
+      fi
     done
   fi
 
@@ -538,11 +664,10 @@ db_task_update() {
         fi
         ;;
       complexity)
+        # Sidecar only — no label
         if [ "$value" = "NULL" ] || [ "$value" = "null" ] || [ -z "$value" ]; then
-          _gh_remove_prefixed_labels "$id" "$_GH_COMPLEXITY_PREFIX"
           sidecar_json=$(printf '%s' "$sidecar_json" | jq -c '.complexity = null')
         else
-          _gh_set_prefixed_label "$id" "$_GH_COMPLEXITY_PREFIX" "$value"
           sidecar_json=$(printf '%s' "$sidecar_json" | jq -c --arg v "$value" '.complexity = $v')
         fi
         ;;
@@ -720,6 +845,7 @@ db_set_labels() {
 # Add a label to a task.
 db_add_label() {
   local task_id="$1" label="$2"
+  _gh_validate_label "$label" || return 1
   _gh_ensure_repo || return 0
   _gh_ensure_label "$label" "c5def5" ""
   gh_api "repos/$_GH_REPO/issues/$task_id/labels" \
@@ -1089,7 +1215,7 @@ db_total_task_count() {
   count=$(gh_api -X GET "repos/$_GH_REPO/issues" -f state=all -f per_page=1 2>/dev/null \
     | jq 'length' 2>/dev/null || echo 0)
   # For total count, use search API
-  gh_api "search/issues" -f q="repo:$_GH_REPO is:issue" -f per_page=1 -q '.total_count' 2>/dev/null || echo 0
+  gh_api -X GET "search/issues" -f q="repo:$_GH_REPO is:issue" -f per_page=1 -q '.total_count' 2>/dev/null || echo 0
 }
 
 # Comment dedup check.
@@ -1192,13 +1318,13 @@ db_status_count() {
   local state="open"
   [ "$status" = "done" ] && state="closed"
   local query="repo:$_GH_REPO is:issue is:$state label:${_GH_STATUS_PREFIX}${status}"
-  gh_api "search/issues" -f q="$query" -f per_page=1 -q '.total_count' 2>/dev/null || echo 0
+  gh_api -X GET "search/issues" -f q="$query" -f per_page=1 -q '.total_count' 2>/dev/null || echo 0
 }
 
 # Total filtered count.
 db_total_filtered_count() {
   _gh_ensure_repo || { echo 0; return; }
-  gh_api "search/issues" -f q="repo:$_GH_REPO is:issue is:open" -f per_page=1 -q '.total_count' 2>/dev/null || echo 0
+  gh_api -X GET "search/issues" -f q="repo:$_GH_REPO is:issue is:open" -f per_page=1 -q '.total_count' 2>/dev/null || echo 0
 }
 
 # List tasks as TSV for table display.

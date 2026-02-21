@@ -50,8 +50,7 @@ gh:
   project_id: "PVT_..."
 workflow:
   enable_review_agent: true
-  required_skills:
-    - gh-issue-worktree
+  required_skills: []
 router:
   fallback_executor: "claude"
 ```
