@@ -1829,6 +1829,73 @@ SH
   [ "$output" = "POSTED" ]
 }
 
+@test "@orchestrator mention creates a task and mirrors agent result" {
+  # Create a mention comment on the init issue
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="hey @orchestrator please take a look"
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  # Should create a new task issue
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+
+  MENTION_TASK_ID=$(_task_id_by_title "Respond to @orchestrator mention in #${INIT_TASK_ID}")
+  [ -n "$MENTION_TASK_ID" ]
+
+  # Idempotent: re-running should not create another task
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+
+  # Simulate an agent completing the mention task; backend should mirror to target issue
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    db_task_set '$MENTION_TASK_ID' agent 'codex'
+    db_store_agent_response '$MENTION_TASK_ID' done 'mention handled' '' false '' 1 0 0 '' ''
+    db_store_agent_arrays '$MENTION_TASK_ID' 'did the thing' '' '' ''
+  "
+  [ "$status" -eq 0 ]
+
+  # Target issue should have at least the ack + mirrored agent comment
+  run bash -c "jq -r --arg n '${INIT_TASK_ID}' '(.comments[$n] // []) | length' '$GH_MOCK_STATE'"
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 2 ]
+
+  run bash -c "jq -r --arg n '${INIT_TASK_ID}' '(.comments[$n] // []) | map(.body) | join(\"\\n---\\n\")' '$GH_MOCK_STATE'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Mention task: #${MENTION_TASK_ID}"* ]]
+  [[ "$output" == *"mention handled"* ]]
+}
+
+@test "@orchestrator mention inside blockquote is ignored" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'> @orchestrator please do not trigger\\n\\nthanks'
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
+@test "@orchestrator mention inside fenced code is ignored" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'```\\n@orchestrator do not trigger\\n```'
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
 @test "create_task_entry includes last_comment_hash field" {
   NOW="2026-01-01T00:00:00Z"
   export NOW PROJECT_DIR="$TMP_DIR"
