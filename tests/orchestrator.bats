@@ -764,6 +764,130 @@ SH
   [ "$output" = "stdout mode" ]
 }
 
+@test "run_task.sh auto-reroutes on usage limit (agent-reported needs_review)" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Usage Limit Reroute" "Should reroute on rate limit" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  # Keep fallback deterministic across environments (dev machines may have opencode installed).
+  yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"status":"needs_review","summary":"limit","reason":"Rate limit exceeded (429)","accomplished":[],"remaining":[],"blockers":[],"files_changed":[],"needs_help":true,"delegations":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"status":"done","summary":"noop","files_changed":[],"needs_help":false,"delegations":[]}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  tdb_set "$TASK2_ID" agent "codex"
+
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  run tdb_field "$TASK2_ID" agent
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+
+  run tdb_field "$TASK2_ID" limit_reroute_chain
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"codex"* ]]
+}
+
+@test "run_task.sh auto-reroutes on usage limit even with non-JSON response" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Usage Limit Non-JSON" "Should reroute even if response is not JSON" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  # Keep fallback deterministic across environments (dev machines may have opencode installed).
+  yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "429 Too Many Requests: rate limit"
+exit 0
+SH
+  chmod +x "$CODEX_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"status":"done","summary":"noop","files_changed":[],"needs_help":false,"delegations":[]}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  tdb_set "$TASK2_ID" agent "codex"
+
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  run tdb_field "$TASK2_ID" agent
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+}
+
+@test "run_task.sh avoids ping-pong on repeated usage limits" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Usage Limit Ping Pong" "Should not bounce back to previous agent" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  # Keep fallback deterministic across environments (dev machines may have opencode installed).
+  yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "Rate limit exceeded (429)"
+exit 0
+SH
+  chmod +x "$CODEX_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "rate-limit: try again later"
+exit 0
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  tdb_set "$TASK2_ID" agent "codex"
+
+  # First run: codex → claude
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" agent
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+
+  # Second run: claude has no fallback (codex already tried) → needs_review
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "needs_review" ]
+
+  run tdb_field "$TASK2_ID" limit_reroute_chain
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"codex"* ]]
+  [[ "$output" == *"claude"* ]]
+}
+
 @test "cron_match.py matches wildcard expression" {
   # "* * * * *" always matches
   run python3 "${REPO_DIR}/scripts/cron_match.py" "* * * * *"
