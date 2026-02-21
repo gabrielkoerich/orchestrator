@@ -1862,7 +1862,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Target issue should have at least the ack + mirrored agent comment
-  run bash -c "jq -r --arg n '${INIT_TASK_ID}' '(.comments[$n] // []) | length' '$GH_MOCK_STATE'"
+  run bash -c "jq -r --arg n '${INIT_TASK_ID}' '(.comments[$n] // []) | length' '$GH_MOCK_STATE' | head -n1"
   [ "$status" -eq 0 ]
   [ "$output" -ge 2 ]
 

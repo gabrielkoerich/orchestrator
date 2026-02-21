@@ -3,6 +3,9 @@ set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "$0")/lib.sh"
 
+# Ensure PROJECT_DIR is set before loading project config (lint + correct state paths)
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+
 load_project_config
 
 MENTIONS_MARKER="<!-- orch:mention -->"
@@ -62,7 +65,7 @@ acquire_mentions_lock() {
   ensure_state_dir
   local lock_dir="${STATE_DIR}/mentions.lock"
   if mkdir "$lock_dir" 2>/dev/null; then
-    trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+    trap "rmdir \"$lock_dir\" 2>/dev/null || true" EXIT
     return 0
   fi
   return 1
@@ -152,7 +155,7 @@ main() {
     [ -n "$comment_id" ] || continue
     [ -n "$issue_url" ] || continue
 
-    issue_number=$(printf '%s' "$issue_url" | sed -E 's#.*/issues/([0-9]+).*#\\1#')
+    issue_number=$(printf '%s' "$issue_url" | sed -E 's#.*/issues/([0-9]+).*#\1#')
     [ -n "$issue_number" ] || continue
 
     if [ -n "$created_at" ] && [ "$created_at" \> "$max_seen" ]; then
@@ -201,4 +204,3 @@ Acknowledged. Created task #${task_id} from this @orchestrator mention.
 }
 
 main "$@"
-
