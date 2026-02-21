@@ -3,45 +3,34 @@ set -euo pipefail
 
 BASE_BRANCH="${1:-main}"
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
-cd "$REPO_ROOT"
-
-BRANCH=$(git branch --show-current)
-TITLE=$(git log -1 --pretty=%s)
-
-ISSUE_NUMBER=""
-if [[ "$BRANCH" =~ ^gh-task-([0-9]+)- ]]; then
-  ISSUE_NUMBER="${BASH_REMATCH[1]}"
-fi
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT_DIR"
 
 mkdir -p .orchestrator
-TITLE_FILE=".orchestrator/pr-title.txt"
-BODY_FILE=".orchestrator/pr-body.md"
 
-COMMITS=$(git log --oneline "${BASE_BRANCH}..HEAD" 2>/dev/null || true)
-FILES=$(git diff --name-only "${BASE_BRANCH}..HEAD" 2>/dev/null || true)
-
-printf '%s\n' "$TITLE" > "$TITLE_FILE"
+TITLE=$(git log -1 --format=%s)
+BRANCH=$(git branch --show-current 2>/dev/null || true)
+TASK_ID=""
+if [[ "$BRANCH" =~ ^gh-task-([0-9]+)- ]]; then
+  TASK_ID="${BASH_REMATCH[1]}"
+fi
 
 {
-  printf '## Summary\n\n'
-  printf '%s\n' "- (edit this summary)"
-  printf '\n## Changes\n\n'
-  if [ -n "$COMMITS" ]; then
-    printf '%s\n' "$COMMITS" | sed 's/^/- /'
-  else
-    printf '%s\n' "- (no commits detected vs ${BASE_BRANCH})"
-  fi
-  printf '\n## Files Touched\n\n'
-  if [ -n "$FILES" ]; then
-    printf '%s\n' "$FILES" | sed 's/^/- `/' | sed 's/$/`/'
-  else
-    printf '%s\n' "- (no file changes detected vs ${BASE_BRANCH})"
-  fi
-  if [ -n "$ISSUE_NUMBER" ]; then
-    printf '\n## Link\n\n'
-    printf '%s\n' "Closes #${ISSUE_NUMBER}"
-  fi
-} > "$BODY_FILE"
+  echo "$TITLE"
+} > .orchestrator/pr-title.txt
 
-echo "Wrote $TITLE_FILE and $BODY_FILE"
+{
+  echo "## Summary"
+  echo ""
+  git log --format='- %s' "${BASE_BRANCH}..HEAD"
+  echo ""
+  echo "## Testing"
+  echo ""
+  echo "\`HOME=/tmp/orch-test-home bats tests/orchestrator.bats\`"
+  echo ""
+  if [ -n "$TASK_ID" ]; then
+    echo "Closes #${TASK_ID}"
+  fi
+} > .orchestrator/pr-body.md
+
+echo "Wrote .orchestrator/pr-title.txt and .orchestrator/pr-body.md"
