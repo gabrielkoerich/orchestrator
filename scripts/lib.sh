@@ -345,6 +345,51 @@ available_agents() {
   echo "$agents"
 }
 
+is_usage_limit_error() {
+  local text="${1:-}"
+  [ -n "$text" ] || return 1
+  printf '%s' "$text" | rg -qi '(?:\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|quota exceeded|insufficient[_ -]?quota|exceeded[_ -]?quota|limit (?:reached|exceeded)|overloaded[_ -]?error|service (?:overloaded|unavailable)|temporarily unavailable|try again later)'
+}
+
+# Pick a fallback agent from the locally available agents, rotating after the
+# current agent and skipping any agents present in exclude_csv (comma-separated).
+# Prints the chosen agent or nothing if none available.
+pick_fallback_agent() {
+  local current="${1:-}"
+  local exclude_csv="${2:-}"
+  local agents
+  agents=$(available_agents)
+  [ -n "$agents" ] || return 1
+
+  local list=()
+  IFS=',' read -ra list <<< "$agents"
+
+  local start=0
+  for i in "${!list[@]}"; do
+    if [ "${list[$i]}" = "$current" ]; then
+      start="$i"
+      break
+    fi
+  done
+
+  local n="${#list[@]}"
+  local offset idx candidate
+  for offset in $(seq 1 "$n"); do
+    idx=$(((start + offset) % n))
+    candidate="${list[$idx]}"
+    [ -n "$candidate" ] || continue
+    if [ -n "$current" ] && [ "$candidate" = "$current" ]; then
+      continue
+    fi
+    if [ -n "$exclude_csv" ] && printf ',%s,' "$exclude_csv" | grep -q ",${candidate},"; then
+      continue
+    fi
+    printf '%s' "$candidate"
+    return 0
+  done
+  return 1
+}
+
 opposite_agent() {
   local task_agent="${1:-}"
   local agents
