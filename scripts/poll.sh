@@ -94,6 +94,9 @@ if [ -n "$DONE_IDS_WT" ]; then
   done <<< "$DONE_IDS_WT"
 fi
 
+# Normalize: add status:new to open issues missing a status label
+db_normalize_new_issues 2>/dev/null || true
+
 # Run all new/routed tasks in parallel (skip tasks with no-agent label)
 NEW_IDS=$(db_task_ids_by_status "new" "no-agent")
 ROUTED_IDS=$(db_task_ids_by_status "routed" "no-agent")

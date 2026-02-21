@@ -4308,6 +4308,65 @@ SH
   [ "$status" -eq 0 ]
 }
 
+# ─── Normalize New Issues tests ───
+
+@test "db_normalize_new_issues adds status:new to unlabeled issues" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue directly via mock (no status label)
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Unlabeled issue")
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+  # Add a user label but no status: label
+  gh_api "repos/$ORCH_GH_REPO/issues/$id/labels" \
+    --input - <<< '{"labels":["bug"]}' >/dev/null 2>&1
+
+  # Verify no status: label
+  local labels
+  labels=$(gh_api "repos/$ORCH_GH_REPO/issues/$id" --cache 0s -q '[.labels[].name]' 2>/dev/null)
+  [[ "$labels" != *"status:"* ]]
+
+  # Run normalize
+  db_normalize_new_issues
+
+  # Verify status:new was added
+  local issue_labels
+  issue_labels=$(db_task_labels_csv "$id")
+  [[ "$issue_labels" == *"status:new"* ]]
+  # Original user label preserved
+  [[ "$issue_labels" == *"bug"* ]]
+}
+
+@test "db_normalize_new_issues skips issues with existing status label" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # The INIT_TASK_ID already has status:new
+  local labels_before
+  labels_before=$(jq -r '.issues["'"$INIT_TASK_ID"'"].labels // [] | map(.name) | join(",")' "$GH_MOCK_STATE")
+
+  db_normalize_new_issues
+
+  local labels_after
+  labels_after=$(jq -r '.issues["'"$INIT_TASK_ID"'"].labels // [] | map(.name) | join(",")' "$GH_MOCK_STATE")
+  [ "$labels_before" = "$labels_after" ]
+}
+
+@test "db_normalize_new_issues skips issues with no-agent label" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue with no-agent label but no status label
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="No agent issue")
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+  gh_api "repos/$ORCH_GH_REPO/issues/$id/labels" \
+    --input - <<< '{"labels":["no-agent"]}' >/dev/null 2>&1
+
+  db_normalize_new_issues
+
+  local labels
+  labels=$(jq -r '.issues["'"$id"'"].labels // [] | map(.name) | join(",")' "$GH_MOCK_STATE")
+  [[ "$labels" != *"status:new"* ]]
+}
+
 @test "_gh_set_status_label rejects invalid status" {
   source "${REPO_DIR}/scripts/lib.sh"
   run _gh_set_status_label "$INIT_TASK_ID" "invalid_status"

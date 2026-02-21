@@ -8,6 +8,16 @@ require_rg
 init_config_file
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+
+# Brew service starts with CWD / — detect and fix
+if [ "$PROJECT_DIR" = "/" ] || { [ ! -d "$PROJECT_DIR/.git" ] && ! is_bare_repo "$PROJECT_DIR" 2>/dev/null; }; then
+  _cfg_dir=$(config_get '.project_dir // ""' 2>/dev/null || true)
+  if [ -n "$_cfg_dir" ] && [ "$_cfg_dir" != "null" ] && [ -d "$_cfg_dir" ]; then
+    PROJECT_DIR="$_cfg_dir"
+  elif [ -d "${ORCH_HOME:-$HOME/.orchestrator}" ]; then
+    PROJECT_DIR="${ORCH_HOME:-$HOME/.orchestrator}"
+  fi
+fi
 export PROJECT_DIR
 
 # Augment PATH (brew services / launchd start with minimal PATH)

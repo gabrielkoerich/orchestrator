@@ -552,6 +552,34 @@ db_task_ids_by_status() {
   fi
 }
 
+# Normalize open issues: add status:new to any open issue missing a status: label.
+# This ensures externally-created issues (by agents, humans, retrospective jobs) get picked up.
+db_normalize_new_issues() {
+  _gh_ensure_repo || return 0
+
+  local json
+  json=$(gh_api -X GET "repos/$_GH_REPO/issues" \
+    -f state=open -f per_page=50 -f sort=created -f direction=desc 2>/dev/null) || return 0
+
+  # Find issues (not PRs) without any status: label, excluding no-agent and blocked
+  local unlabeled_ids
+  unlabeled_ids=$(printf '%s' "$json" | jq -r --arg p "$_GH_STATUS_PREFIX" '
+    [.[] | select(.pull_request == null)
+         | select((.labels // []) | map(.name) | all(startswith($p) | not))
+         | select((.labels // []) | map(.name) | all(. != "no-agent" and . != "blocked"))]
+    | .[].number' 2>/dev/null || true)
+
+  [ -n "$unlabeled_ids" ] || return 0
+
+  local _norm_id
+  while IFS= read -r _norm_id; do
+    [ -n "$_norm_id" ] || continue
+    log_err "[normalize] issue #$_norm_id missing status label, adding status:new"
+    gh_api "repos/$_GH_REPO/issues/$_norm_id/labels" \
+      -f "labels[]=${_GH_STATUS_PREFIX}new" >/dev/null 2>&1 || true
+  done <<< "$unlabeled_ids"
+}
+
 # Create a new task. Returns the new task ID (issue number).
 # Usage: db_create_task <title> [body] [dir] [labels_csv] [parent_id] [agent]
 db_create_task() {

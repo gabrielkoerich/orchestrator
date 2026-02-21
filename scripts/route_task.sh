@@ -6,6 +6,15 @@ source "$SCRIPT_DIR/lib.sh"
 require_jq
 require_rg
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+# Brew service starts with CWD / — detect and fix
+if [ "$PROJECT_DIR" = "/" ] || { [ ! -d "$PROJECT_DIR/.git" ] && ! is_bare_repo "$PROJECT_DIR" 2>/dev/null; }; then
+  _cfg_dir=$(config_get '.project_dir // ""' 2>/dev/null || true)
+  if [ -n "$_cfg_dir" ] && [ "$_cfg_dir" != "null" ] && [ -d "$_cfg_dir" ]; then
+    PROJECT_DIR="$_cfg_dir"
+  elif [ -d "${ORCH_HOME:-$HOME/.orchestrator}" ]; then
+    PROJECT_DIR="${ORCH_HOME:-$HOME/.orchestrator}"
+  fi
+fi
 export PROJECT_DIR
 init_config_file
 load_project_config
@@ -133,7 +142,8 @@ if [ "${CMD_STATUS:-0}" -ne 0 ]; then
       "complexity=$COMPLEXITY" \
       "status=routed" \
       "route_reason=$REASON" \
-      "agent_profile=$PROFILE_JSON"
+      "agent_profile=$PROFILE_JSON" \
+      "dir=$PROJECT_DIR"
     db_add_label "$TASK_ID" "agent:${ROUTED_AGENT}"
 
     append_history "$TASK_ID" "routed" "$REASON"
@@ -227,7 +237,8 @@ db_task_update "$TASK_ID" \
   "status=routed" \
   "route_reason=$REASON" \
   "route_warning=$ROUTE_WARNING_VAL" \
-  "agent_profile=$PROFILE_JSON"
+  "agent_profile=$PROFILE_JSON" \
+  "dir=$PROJECT_DIR"
 
 # Store selected skills
 if [ -n "$SELECTED_SKILLS_CSV" ]; then
