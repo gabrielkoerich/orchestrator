@@ -3,8 +3,6 @@ Read files, edit code, run commands, and verify your work.
 
 Rules:
 - NEVER use `rm` to delete files. Use `trash` instead (macOS) or `trash-put` (Linux).
-- NEVER commit directly to the main/master branch. Always work in a feature branch.
-- NEVER commit or modify files in the main project directory (~/Projects/*). You are running inside a worktree — all changes stay here.
 - If a skill is marked REQUIRED below, you MUST follow its workflow exactly. Do not skip steps.
 - If the task has a linked GitHub issue, use it for branch naming and PR linking.
 - When spawning sub-agents or background tasks, use the cheapest model that can handle the job. Reserve expensive models for complex reasoning, debugging, and architecture. Use fast/cheap models for file operations, status checks, formatting, and simple lookups.
