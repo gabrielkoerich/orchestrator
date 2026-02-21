@@ -1424,14 +1424,16 @@ db_status_json() {
   local _dummy="${1:-}"
   _gh_ensure_repo || { echo '{"total":0,"counts":{},"recent":[]}'; return; }
 
-  local new routed in_progress blocked done needs_review
+  local new routed in_progress in_review blocked done needs_review
   new=$(db_status_count "new")
   routed=$(db_status_count "routed")
   in_progress=$(db_status_count "in_progress")
+  in_review=$(db_status_count "in_review")
   blocked=$(db_status_count "blocked")
   done=$(db_status_count "done")
   needs_review=$(db_status_count "needs_review")
-  local total=$((new + routed + in_progress + blocked + done + needs_review))
+  local open=$((new + routed + in_progress + in_review + blocked + needs_review))
+  local total=$((open + done))
 
   # Recent tasks
   local recent_json
@@ -1445,11 +1447,11 @@ db_status_json() {
     updated_at: .updated_at
   }]' 2>/dev/null || echo '[]')
 
-  jq -nc --argjson t "$total" \
-    --argjson n "$new" --argjson r "$routed" --argjson ip "$in_progress" \
+  jq -nc --argjson t "$total" --argjson o "$open" \
+    --argjson n "$new" --argjson r "$routed" --argjson ip "$in_progress" --argjson ir "$in_review" \
     --argjson b "$blocked" --argjson d "$done" --argjson nr "$needs_review" \
     --argjson recent "$recent_json" \
-    '{total: $t, counts: {new: $n, routed: $r, in_progress: $ip, blocked: $b, done: $d, needs_review: $nr}, recent: $recent}'
+    '{total: $t, open: $o, counts: {new: $n, routed: $r, in_progress: $ip, in_review: $ir, blocked: $b, done: $d, needs_review: $nr}, recent: $recent}'
 }
 
 # Tasks with branches (for review_prs.sh).

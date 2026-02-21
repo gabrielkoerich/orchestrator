@@ -4,9 +4,11 @@ setup() {
   export REPO_DIR="${BATS_TEST_DIRNAME}/.."
   export PATH="${REPO_DIR}/scripts:${PATH}"
 
-  # Use ~/.orchestrator/.tmp to avoid macOS /tmp → /private/tmp symlink issues
-  mkdir -p "${HOME}/.orchestrator/.tmp"
-  TMP_DIR=$(mktemp -d "${HOME}/.orchestrator/.tmp/test.XXXXXX")
+  # Prefer Bats-managed temp dir (works in sandboxed CI + avoids macOS /tmp quirks)
+  local base_tmp
+  base_tmp="${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}"
+  mkdir -p "${base_tmp}/orchestrator-tests"
+  TMP_DIR=$(mktemp -d "${base_tmp}/orchestrator-tests/test.XXXXXX")
   export STATE_DIR="${TMP_DIR}/.orchestrator"
   mkdir -p "$STATE_DIR"
   export ORCH_HOME="${TMP_DIR}/orch_home"
@@ -2509,6 +2511,7 @@ JSON
   [[ "$output" == *"STATUS"* ]]
   [[ "$output" == *"QTY"* ]]
   [[ "$output" == *"new"* ]]
+  [[ "$output" == *"open"* ]]
   [[ "$output" == *"total"* ]]
 }
 
@@ -2520,6 +2523,8 @@ JSON
   # Check total
   TOTAL=$(printf '%s' "$output" | jq -r '.total')
   [ "$TOTAL" -ge 1 ]
+  OPEN=$(printf '%s' "$output" | jq -r '.open')
+  [ "$OPEN" -ge 0 ]
 }
 
 # --- add_task.sh edge cases ---
