@@ -4408,3 +4408,22 @@ SH
   run _gh_set_status_label "$INIT_TASK_ID" "routed"
   [ "$status" -eq 0 ]
 }
+
+@test "gh_project_list.sh lists managed bare-clone projects from ORCH_HOME/projects" {
+  mkdir -p "$ORCH_HOME/projects/acme/widget.git"
+  git -C "$ORCH_HOME/projects/acme/widget.git" init --bare --quiet
+  git -C "$ORCH_HOME/projects/acme/widget.git" config remote.origin.url "git@github.com:acme/widget.git"
+
+  mkdir -p "$ORCH_HOME/projects/foo/bar.git"
+  git -C "$ORCH_HOME/projects/foo/bar.git" init --bare --quiet
+
+  run "${REPO_DIR}/scripts/gh_project_list.sh"
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"REPO"* ]]
+  [[ "$output" == *"PATH"* ]]
+  [[ "$output" == *"acme/widget"* ]]
+  [[ "$output" == *"$ORCH_HOME/projects/acme/widget.git"* ]]
+  [[ "$output" == *"foo/bar"* ]]
+  [[ "$output" == *"$ORCH_HOME/projects/foo/bar.git"* ]]
+}
