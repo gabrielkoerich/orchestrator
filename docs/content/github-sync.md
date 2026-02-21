@@ -86,6 +86,13 @@ Link tasks to a GitHub Project v2 board:
 gh:
   project_id: "PVT_..."
   project_status_field_id: "PVTSSF_..."
+  # Optional: set these if your Project "Status" options aren't
+  # exactly: Backlog, In Progress, Review, Done
+  project_status_names:
+    backlog: "Todo"
+    in_progress: "Doing"
+    review: ["In Review", "Needs Review"]
+    done: "Done"
   project_status_map:
     backlog: "option-id-1"
     in_progress: "option-id-2"
