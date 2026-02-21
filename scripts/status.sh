@@ -39,19 +39,23 @@ _count() {
 NEW=$(_count "new")
 ROUTED=$(_count "routed")
 INPROG=$(_count "in_progress")
+IN_REVIEW=$(_count "in_review")
 BLOCKED=$(_count "blocked")
 DONE=$(_count "done")
 NEEDS_REVIEW=$(_count "needs_review")
+OPEN_TOTAL=$((NEW + ROUTED + INPROG + IN_REVIEW + BLOCKED + NEEDS_REVIEW))
 
 {
   printf 'STATUS\tQTY\n'
   printf 'new\t%s\n' "$NEW"
   printf 'routed\t%s\n' "$ROUTED"
   printf 'in_progress\t%s\n' "$INPROG"
+  printf 'in_review\t%s\n' "$IN_REVIEW"
   printf 'blocked\t%s\n' "$BLOCKED"
-  printf 'done\t%s\n' "$DONE"
   printf 'needs_review\t%s\n' "$NEEDS_REVIEW"
+  printf 'done\t%s\n' "$DONE"
   printf '────────\t───\n'
+  printf 'open\t%s\n' "$OPEN_TOTAL"
   printf 'total\t%s\n' "$TOTAL"
 } | column -t -s $'\t'
 
