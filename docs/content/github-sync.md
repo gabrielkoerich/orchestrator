@@ -107,6 +107,20 @@ When the repo owner comments on a GitHub issue linked to a completed task, the o
 2. If new comments are found, the task is reset to `routed` (keeping its agent assignment)
 3. The feedback is appended to the task context so the agent sees it on re-run
 
+### Slash Commands
+
+Owner comments can also start with a slash command on the **first line** (case-insensitive):
+
+| Command | Action |
+|---|---|
+| `/retry` | Reset task to `status:new` (clears agent + attempts) |
+| `/assign <agent>` | Set agent (`claude`, `codex`, `opencode`) and move to `status:routed` |
+| `/unblock` | Clear `blocked`/error state and reset to `status:new` |
+| `/close` | Mark `status:done` and close the issue |
+| `/context <text>` | Append text to task context and move to `status:routed` |
+| `/priority <low|medium|high>` | Set complexity (`simple|medium|complex`) and move to `status:routed` |
+| `/help` | Show supported commands |
+
 ## Notes
 
 - The repo is resolved from `config.yml` or `gh repo view`
