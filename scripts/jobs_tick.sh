@@ -65,9 +65,17 @@ for JOB_ID in $JOB_IDS; do
     else
       continue
     fi
-  elif ! python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE"; then
-    # No last_run and current minute doesn't match — skip
-    continue
+  else
+    # No last_run: check current minute, then 24h catch-up so first-ever
+    # runs aren't silently skipped when the server was down at schedule time.
+    SINCE_24H=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+    if python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE"; then
+      : # Current minute matches — proceed to execution
+    elif python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE" --since "$SINCE_24H"; then
+      job_log "[jobs] job=$JOB_ID catch-up: no last_run, missed run in last 24h"
+    else
+      continue
+    fi
   fi
 
   if [ "$JOB_TYPE" = "bash" ]; then

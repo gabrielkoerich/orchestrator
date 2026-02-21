@@ -2533,6 +2533,40 @@ JSON
   [ "$output" = "done" ]
 }
 
+@test "jobs_tick.sh catches up job with null last_run after server downtime" {
+  # Simulate a brand-new job (last_run: null) whose scheduled time was missed
+  # because the server was down. The tick should catch up using a 24h lookback.
+  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
+
+  # last_run is null — job has never run
+  _create_job "test-null-catchup" "Null Last Run Catchup" "0 ${MISSED_HOUR} * * *" "task" "First ever run was missed" "test" "true" "null" "null"
+
+  run env JOBS_FILE="$JOBS_FILE" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  # Should have created a task despite last_run being null
+  NULL_CATCHUP_ID=$(_task_id_by_title "Null Last Run Catchup")
+  [ -n "$NULL_CATCHUP_ID" ]
+  run tdb_field "$NULL_CATCHUP_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+}
+
+@test "jobs_tick.sh does not fire null last_run job when no match in last 24h" {
+  # Use a day-of-week 2 days from now — it cannot have occurred in the last 24h
+  DOW_2_DAYS=$(( ($(date -u +%w) + 2) % 7 ))
+
+  _create_job "test-null-no-fire" "Null No Fire" "0 8 * * ${DOW_2_DAYS}" "task" "Should not fire" "test" "true" "null" "null"
+
+  TASK_COUNT_BEFORE=$(tdb_count)
+
+  run env JOBS_FILE="$JOBS_FILE" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  TASK_COUNT_AFTER=$(tdb_count)
+  [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
+}
+
 # --- status.sh ---
 
 @test "status.sh shows counts table" {

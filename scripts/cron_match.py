@@ -58,7 +58,7 @@ def matches_cron(expr):
     if len(fields) != 5:
         return False
 
-    now = time.localtime()
+    now = time.gmtime()  # Use UTC for consistency with has_match_since()
     minute, hour, dom, month, dow = fields
 
     # Python tm_wday: 0=Mon..6=Sun → cron dow: 0=Sun, 1=Mon..6=Sat
