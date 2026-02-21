@@ -526,6 +526,7 @@ Place a `.orchestrator.yml` in your project root to override the global config f
 
 ```yaml
 # myproject/.orchestrator.yml
+required_tools: ["bun"]
 gh:
   repo: "myorg/myproject"
   project_id: "PVT_..."
@@ -551,6 +552,7 @@ All runtime configuration lives in `config.yml`.
 | Section | Key | Description | Default |
 | --- | --- | --- | --- |
 | top-level | `project_dir` | Override project directory (auto-detected from CWD). | `""` |
+| top-level | `required_tools` | Tools that must exist on PATH before launching an agent. | `[]` |
 | `workflow` | `auto_close` | Auto-close GitHub issues when tasks are `done`. | `true` |
 | `workflow` | `review_owner` | GitHub handle to tag when review is needed. | `@owner` |
 | `workflow` | `enable_review_agent` | Run a review agent after completion. | `false` |

@@ -340,6 +340,33 @@ if [ "$ATTEMPTS" -gt "$MAX" ]; then
   exit 0
 fi
 
+# Preflight: validate required tools exist on PATH before launching the agent.
+# Configure per project in .orchestrator.yml (orchestrator.yml) as:
+#   required_tools: [bun, anchor, solana-test-validator]
+REQUIRED_TOOLS_CSV=$(config_get '.required_tools // [] | map(select(. != null and . != "")) | join(",")' 2>/dev/null || true)
+if [ -n "$REQUIRED_TOOLS_CSV" ] && [ "$REQUIRED_TOOLS_CSV" != "null" ]; then
+  IFS=',' read -ra _req_tools <<< "$REQUIRED_TOOLS_CSV"
+  _missing_tools=()
+  for _tool in "${_req_tools[@]}"; do
+    [ -z "$_tool" ] && continue
+    if ! command -v "$_tool" >/dev/null 2>&1; then
+      _missing_tools+=("$_tool")
+    fi
+  done
+  if [ "${#_missing_tools[@]}" -gt 0 ]; then
+    _missing_csv=$(IFS=', '; echo "${_missing_tools[*]}")
+    _reason="missing required tools on PATH: ${_missing_csv} (configure required_tools in .orchestrator.yml or install them)"
+    log_err "[run] task=$TASK_ID blocked: $_reason"
+    db_task_update "$TASK_ID" \
+      "status=blocked" \
+      "reason=$_reason" \
+      "last_error=$_reason" \
+      "attempts=$ATTEMPTS"
+    append_history "$TASK_ID" "blocked" "$_reason"
+    exit 0
+  fi
+fi
+
 db_task_update "$TASK_ID" "status=in_progress" "attempts=$ATTEMPTS"
 append_history "$TASK_ID" "in_progress" "started attempt $ATTEMPTS"
 
