@@ -58,3 +58,15 @@ if [ -f "${STATE_DIR}/tail.pid" ]; then
   fi
   rm -f "${STATE_DIR}/tail.pid"
 fi
+
+# Clean up agent tmux sessions
+if command -v tmux >/dev/null 2>&1; then
+  ORCH_SESSIONS=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^orch-' || true)
+  if [ -n "$ORCH_SESSIONS" ]; then
+    echo "Cleaning up agent tmux sessions..."
+    while IFS= read -r session; do
+      tmux kill-session -t "$session" 2>/dev/null || true
+      echo "  killed $session"
+    done <<< "$ORCH_SESSIONS"
+  fi
+fi

@@ -157,6 +157,21 @@ _task_unlock:
 _task_review:
     @scripts/review_prs.sh
 
+# Attach to a running agent's tmux session
+[private]
+_task_attach id:
+    @scripts/task_attach.sh {{ id }}
+
+# List active agent tmux sessions
+[private]
+_task_live:
+    @scripts/task_live.sh
+
+# Kill a running agent tmux session
+[private]
+_task_kill id:
+    @scripts/task_kill.sh {{ id }}
+
 #####################################################################
 # Namespace: service (start, stop, restart, info, install, uninstall)
 #####################################################################

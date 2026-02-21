@@ -599,7 +599,7 @@ ${PROMPT_CONTENT}
 done <<< "$ALL_IDS"
 
 # --- Catch-all: create PRs for pushed branches that don't have one ---
-while IFS=$'\x1f' read -r _ID _BRANCH _STATUS _TITLE _SUMMARY _WORKTREE _AGENT _GH_NUM; do
+while IFS=$'\t' read -r _ID _BRANCH _STATUS _TITLE _SUMMARY _WORKTREE _AGENT _GH_NUM; do
   [ -n "$_ID" ] || continue
 
   # Check if branch exists on remote

@@ -64,8 +64,18 @@ log "[cleanup_worktrees] [$PROJECT_NAME] scan start"
 
 # Query done tasks with worktrees that haven't been cleaned yet
 # Use unit separator (\x1f) to handle empty fields correctly
-while IFS=$'\x1f' read -r id worktree branch project_dir gh_issue; do
+# bd list doesn't include metadata, so get done task IDs then show each
+DONE_IDS=$(_bd_json list -n 0 --all 2>/dev/null | jq -r '.[] | select(.status == "done") | .id' 2>/dev/null || true)
+while IFS= read -r id; do
   [ -n "$id" ] || continue
+
+  # Fetch full task with metadata via bd show
+  task_json=$(_bd_json show "$id" 2>/dev/null) || continue
+  worktree=$(printf '%s' "$task_json" | jq -r '.[0].metadata.worktree // empty' 2>/dev/null)
+  branch=$(printf '%s' "$task_json" | jq -r '.[0].metadata.branch // empty' 2>/dev/null)
+  project_dir=$(printf '%s' "$task_json" | jq -r '.[0].metadata.dir // empty' 2>/dev/null)
+  gh_issue=$(printf '%s' "$task_json" | jq -r '.[0].metadata.gh_issue_number // empty' 2>/dev/null)
+  wt_cleaned=$(printf '%s' "$task_json" | jq -r '.[0].metadata.worktree_cleaned // empty' 2>/dev/null)
 
   worktree=$(normalize_field "$worktree")
   branch=$(normalize_field "$branch")
@@ -74,6 +84,8 @@ while IFS=$'\x1f' read -r id worktree branch project_dir gh_issue; do
 
   [ -n "$worktree" ] || continue
   [ -n "$project_dir" ] || continue
+  # Skip already-cleaned tasks
+  [ "$wt_cleaned" = "1" ] || [ "$wt_cleaned" = "true" ] && continue
 
   if [ -n "$gh_issue" ]; then
     repo=$(resolve_repo "$project_dir")
@@ -108,10 +120,6 @@ while IFS=$'\x1f' read -r id worktree branch project_dir gh_issue; do
     db_task_set "$id" "worktree_cleaned" "1"
     log "[cleanup_worktrees] [$PROJECT_NAME] task=$id marked worktree_cleaned=true"
   fi
-done < <(db_row "SELECT id, COALESCE(worktree,''), COALESCE(branch,''), COALESCE(dir,''), COALESCE(gh_issue_number,'')
-  FROM tasks
-  WHERE status = 'done'
-    AND worktree IS NOT NULL AND worktree != ''
-    AND worktree_cleaned != 1;")
+done <<< "$DONE_IDS"
 
 log "[cleanup_worktrees] [$PROJECT_NAME] scan done"

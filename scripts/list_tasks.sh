@@ -12,5 +12,5 @@ if [ "$COUNT" -eq 0 ]; then
   exit 0
 fi
 
-db_task_display_tsv "1=1" "id ASC" \
+db_task_display_tsv "true" "id" \
   | table_with_header "$TASK_HEADER"

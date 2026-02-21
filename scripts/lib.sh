@@ -5,22 +5,15 @@ ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
 mkdir -p "$ORCH_HOME"
 
 ORCH_WORKTREES="${ORCH_WORKTREES:-${ORCH_HOME}/worktrees}"
-TASKS_PATH=${TASKS_PATH:-"${ORCH_HOME}/tasks.yml"}
-LOCK_PATH=${LOCK_PATH:-"${TASKS_PATH}.lock"}
+LOCK_PATH=${LOCK_PATH:-"${ORCH_HOME}/.orchestrator/locks"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
-JOBS_PATH=${JOBS_PATH:-"${ORCH_HOME}/jobs.yml"}
 STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
-DB_PATH=${DB_PATH:-"${ORCH_HOME}/orchestrator.db"}
-
-# Source SQLite wrapper if available
+# Source beads-backed database layer
 _LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [ -f "${_LIB_DIR}/db.sh" ]; then
   source "${_LIB_DIR}/db.sh"
 fi
-
-# Legacy compat — always returns true (SQLite is the only backend now).
-_use_sqlite() { return 0; }
 
 now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -445,6 +438,33 @@ config_get() {
   fi
 }
 
+# Lifecycle hooks: run user-defined commands at key points
+# Usage: run_hook <hook_name> [extra_args...]
+# Hooks are configured in config.yml under 'hooks:' key.
+# Hook commands run async (non-blocking) with ORCH_* env vars for context.
+run_hook() {
+  local hook_name="${1:-}"; shift 2>/dev/null || true
+  local cmd
+  cmd=$(config_get ".hooks.${hook_name} // \"\"" 2>/dev/null || true)
+  [ -z "$cmd" ] || [ "$cmd" = "null" ] && return 0
+
+  # Export context env vars for the hook
+  export ORCH_HOOK="$hook_name"
+  export ORCH_TASK_ID="${TASK_ID:-}"
+  export ORCH_TASK_TITLE="${TASK_TITLE:-}"
+  export ORCH_TASK_AGENT="${TASK_AGENT:-}"
+  export ORCH_TASK_STATUS="${AGENT_STATUS:-}"
+  export ORCH_PROJECT_DIR="${PROJECT_DIR:-}"
+  export ORCH_WORKTREE_DIR="${WORKTREE_DIR:-}"
+  export ORCH_BRANCH="${BRANCH_NAME:-}"
+  export ORCH_PR_URL="${PR_URL:-}"
+  export ORCH_TMUX_SESSION="${TMUX_SESSION:-}"
+  export ORCH_GH_ISSUE="${GH_ISSUE_NUMBER:-}"
+
+  # Run async — don't block the main flow
+  (eval "$cmd" "$@" >>"${STATE_DIR:-/tmp}/hooks.log" 2>&1 &) || true
+}
+
 repo_owner() {
   local repo="${1:-}"
   if [ -z "$repo" ]; then
@@ -651,7 +671,8 @@ build_parent_context() {
     fi
 
     local siblings
-    siblings=$(db "SELECT id || ': ' || title || ' [' || status || ']' FROM tasks WHERE parent_id = $parent_id AND id != $task_id;")
+    siblings=$(_bd_json show "$parent_id" --children 2>/dev/null \
+      | jq -r --arg tid "$task_id" '.[] | select(.id != $tid) | .id + ": " + .title + " [" + .status + "]"' 2>/dev/null || true)
     if [ -n "$siblings" ]; then
       out+="\nSibling tasks:\n${siblings}\n"
     fi

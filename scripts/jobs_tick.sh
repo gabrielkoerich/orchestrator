@@ -43,7 +43,8 @@ for JOB_ID in $JOB_IDS; do
     elif [ "$TASK_STATUS" != "done" ]; then
       continue
     else
-      db "UPDATE jobs SET active_task_id = NULL, last_task_status = '$(sql_escape "$TASK_STATUS")' WHERE id = '$(sql_escape "$JOB_ID")';"
+      db_job_set "$JOB_ID" "active_task_id" ""
+      db_job_set "$JOB_ID" "last_task_status" "$TASK_STATUS"
       ACTIVE_TASK_ID=""
     fi
   fi
@@ -78,7 +79,9 @@ for JOB_ID in $JOB_IDS; do
     if [ -n "$JOB_DIR" ] && [ "$JOB_DIR" != "null" ] && [ ! -d "$JOB_DIR" ]; then
       job_log "[jobs] job=$JOB_ID invalid dir=$JOB_DIR, disabling job to prevent repeated failures"
       NOW=$(now_iso)
-      db "UPDATE jobs SET enabled = 0, last_run = '$NOW', last_task_status = 'failed' WHERE id = '$(sql_escape "$JOB_ID")';"
+      db_job_set "$JOB_ID" "enabled" "false"
+      db_job_set "$JOB_ID" "last_run" "$NOW"
+      db_job_set "$JOB_ID" "last_task_status" "failed"
       continue
     fi
 
@@ -92,7 +95,8 @@ for JOB_ID in $JOB_IDS; do
     else
       BASH_STATUS="failed"
     fi
-    db "UPDATE jobs SET last_run = '$NOW', last_task_status = '$(sql_escape "$BASH_STATUS")' WHERE id = '$(sql_escape "$JOB_ID")';"
+    db_job_set "$JOB_ID" "last_run" "$NOW"
+    db_job_set "$JOB_ID" "last_task_status" "$BASH_STATUS"
 
     job_log "[jobs] job=$JOB_ID bash exit=$BASH_RC status=$BASH_STATUS"
     if [ -n "$BASH_OUTPUT" ]; then
@@ -110,7 +114,7 @@ for JOB_ID in $JOB_IDS; do
   fi
 
   ADD_OUTPUT=$(PROJECT_DIR="$JOB_DIR" "${SCRIPT_DIR}/add_task.sh" "$JOB_TITLE" "$JOB_BODY" "$JOB_LABELS")
-  NEW_TASK_ID=$(printf '%s' "$ADD_OUTPUT" | rg -o 'task [0-9]+' | rg -o '[0-9]+')
+  NEW_TASK_ID=$(printf '%s' "$ADD_OUTPUT" | rg -o 'task [^ :]+' | head -1 | sed 's/^task //')
 
   # Set agent if specified
   if [ -n "$JOB_AGENT" ] && [ "$JOB_AGENT" != "null" ]; then
@@ -119,8 +123,11 @@ for JOB_ID in $JOB_IDS; do
 
   # Update job state
   NOW=$(now_iso)
-  db "UPDATE jobs SET last_run = '$NOW', active_task_id = $NEW_TASK_ID WHERE id = '$(sql_escape "$JOB_ID")';"
+  db_job_set "$JOB_ID" "last_run" "$NOW"
+  db_job_set "$JOB_ID" "active_task_id" "$NEW_TASK_ID"
 
+  export TASK_ID="$NEW_TASK_ID"
+  run_hook on_job_fired
   job_log "[jobs] job=$JOB_ID created task $NEW_TASK_ID"
   CREATED=$((CREATED + 1))
 done

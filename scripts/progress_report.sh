@@ -16,22 +16,22 @@ echo ""
 
 # --- Task Status Summary (global) ---
 section "Task Status (all projects)"
-TOTAL=$(db_scalar "SELECT COUNT(*) FROM tasks;")
-_count() { db_scalar "SELECT COUNT(*) FROM tasks WHERE status = '$1';"; }
+TOTAL=$(db_total_task_count)
 {
   printf 'STATUS\tQTY\n'
   for s in new routed in_progress blocked done needs_review; do
-    printf '%s\t%s\n' "$s" "$(_count "$s")"
+    printf '%s\t%s\n' "$s" "$(db_status_count "$s")"
   done
   printf '────────\t───\n'
   printf 'total\t%s\n' "$TOTAL"
 } | column -t -s $'\t'
 
+ALL_TASKS=$(_bd_json list -n 0 --all 2>/dev/null || echo '[]')
+
 # --- Recently completed tasks ---
 section "Completed since $(echo "$SINCE_ISO" | sed 's/T/ /;s/Z//')"
-DONE_RECENT=$(db "SELECT id, COALESCE(agent,'?'), COALESCE(agent_model,''), title
-  FROM tasks WHERE status = 'done' AND updated_at >= '$SINCE_ISO'
-  ORDER BY updated_at DESC;")
+DONE_RECENT=$(printf '%s' "$ALL_TASKS" | jq -r --arg since "$SINCE_ISO" \
+  '.[] | select(.status == "done" and .updated_at >= $since) | [.id, (.metadata.agent // "?"), (.metadata.agent_model // ""), .title] | @tsv' 2>/dev/null || true)
 if [ -n "$DONE_RECENT" ]; then
   {
     printf 'ID\tAGENT\tMODEL\tTITLE\n'
@@ -43,9 +43,8 @@ fi
 
 # --- Currently in progress ---
 section "In Progress"
-IN_PROGRESS=$(db "SELECT id, COALESCE(agent,'?'), COALESCE(agent_model,''), attempts, title
-  FROM tasks WHERE status = 'in_progress'
-  ORDER BY updated_at DESC;")
+IN_PROGRESS=$(printf '%s' "$ALL_TASKS" | jq -r \
+  '.[] | select(.status == "in_progress") | [.id, (.metadata.agent // "?"), (.metadata.agent_model // ""), (.metadata.attempts // "0"), .title] | @tsv' 2>/dev/null || true)
 if [ -n "$IN_PROGRESS" ]; then
   {
     printf 'ID\tAGENT\tMODEL\tATT\tTITLE\n'
@@ -57,9 +56,8 @@ fi
 
 # --- Needs review ---
 section "Needs Review"
-NEEDS_REVIEW=$(db "SELECT id, COALESCE(agent,'?'), attempts, COALESCE(SUBSTR(last_error,1,60),''), title
-  FROM tasks WHERE status = 'needs_review'
-  ORDER BY updated_at DESC LIMIT 10;")
+NEEDS_REVIEW=$(printf '%s' "$ALL_TASKS" | jq -r \
+  '.[] | select(.status == "needs_review") | [.id, (.metadata.agent // "?"), (.metadata.attempts // "0"), (.metadata.last_error // "" | .[:60]), .title] | @tsv' 2>/dev/null | head -10 || true)
 if [ -n "$NEEDS_REVIEW" ]; then
   {
     printf 'ID\tAGENT\tATT\tLAST_ERROR\tTITLE\n'
@@ -71,9 +69,8 @@ fi
 
 # --- Tasks queued ---
 section "Queued (new/routed)"
-QUEUED=$(db "SELECT id, COALESCE(agent,'?'), title
-  FROM tasks WHERE status IN ('new','routed')
-  ORDER BY id LIMIT 10;")
+QUEUED=$(printf '%s' "$ALL_TASKS" | jq -r \
+  '.[] | select(.status == "new" or .status == "routed") | [.id, (.metadata.agent // "?"), .title] | @tsv' 2>/dev/null | head -10 || true)
 if [ -n "$QUEUED" ]; then
   {
     printf 'ID\tAGENT\tTITLE\n'
@@ -83,20 +80,10 @@ else
   echo "(none)"
 fi
 
-# --- Recent history events ---
+# --- Recent activity from comments ---
 section "Recent Activity"
-RECENT_HISTORY=$(db "SELECT h.task_id, h.status, SUBSTR(h.note,1,80), h.ts
-  FROM task_history h
-  WHERE h.ts >= '$SINCE_ISO'
-  ORDER BY h.ts DESC LIMIT 15;")
-if [ -n "$RECENT_HISTORY" ]; then
-  {
-    printf 'TASK\tSTATUS\tNOTE\tTIME\n'
-    printf '%s\n' "$RECENT_HISTORY"
-  } | column -t -s $'\t'
-else
-  echo "(none)"
-fi
+# Scan recent tasks for comments (beads comments replace task_history)
+echo "(check individual task comments for activity log)"
 
 # --- PR Status (check all projects with repos) ---
 section "Open PRs"

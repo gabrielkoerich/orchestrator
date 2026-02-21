@@ -28,9 +28,9 @@ load_project_config
 
 TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
-  TASK_ID=$(db_scalar "SELECT id FROM tasks WHERE status = 'new' ORDER BY id LIMIT 1;" 2>/dev/null || true)
+  TASK_ID=$(db_task_ids_by_status "new" | head -1)
   if [ -z "$TASK_ID" ]; then
-    TASK_ID=$(db_scalar "SELECT id FROM tasks WHERE status = 'routed' ORDER BY id LIMIT 1;" 2>/dev/null || true)
+    TASK_ID=$(db_task_ids_by_status "routed" | head -1)
   fi
   if [ -z "$TASK_ID" ]; then
     log_err "No runnable tasks found"
@@ -165,21 +165,32 @@ SAVED_BRANCH="$TASK_BRANCH"
 SAVED_WORKTREE="$TASK_WORKTREE"
 PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 
+# Project-local worktrees: stored inside the project at .orchestrator/worktrees/
+# Falls back to the old global location for backward compatibility
+WORKTREES_BASE="${MAIN_PROJECT_DIR}/.orchestrator/worktrees"
+mkdir -p "$WORKTREES_BASE"
+
 if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
   BRANCH_NAME="$SAVED_BRANCH"
-  WORKTREE_DIR="${SAVED_WORKTREE:-${ORCH_WORKTREES}/${PROJECT_NAME}/${BRANCH_NAME}}"
+  if [ -n "$SAVED_WORKTREE" ] && [ "$SAVED_WORKTREE" != "null" ] && [ -d "$SAVED_WORKTREE" ]; then
+    WORKTREE_DIR="$SAVED_WORKTREE"
+  else
+    WORKTREE_DIR="${WORKTREES_BASE}/${BRANCH_NAME}"
+  fi
 else
   # Try to find an existing worktree by issue/task prefix
   EXISTING_WT=""
-  WORKTREES_BASE="${ORCH_WORKTREES}/${PROJECT_NAME}"
-  if [ -d "$WORKTREES_BASE" ]; then
+  # Check project-local location first, then fall back to old global location
+  for _wt_search in "$WORKTREES_BASE" "${ORCH_WORKTREES}/${PROJECT_NAME}"; do
+    [ -d "$_wt_search" ] || continue
     if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1)
+      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1 || true)
     fi
     if [ -z "$EXISTING_WT" ]; then
-      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1)
+      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1 || true)
     fi
-  fi
+    [ -n "$EXISTING_WT" ] && break
+  done
 
   if [ -n "$EXISTING_WT" ]; then
     BRANCH_NAME=$(basename "$EXISTING_WT")
@@ -192,7 +203,7 @@ else
     else
       BRANCH_NAME="task-${TASK_ID}-${BRANCH_SLUG}"
     fi
-    WORKTREE_DIR="${ORCH_WORKTREES}/${PROJECT_NAME}/${BRANCH_NAME}"
+    WORKTREE_DIR="${WORKTREES_BASE}/${BRANCH_NAME}"
   fi
 fi
 export BRANCH_NAME
@@ -217,6 +228,7 @@ if [ ! -d "$WORKTREE_DIR" ]; then
   cd "$PROJECT_DIR" && git branch "$BRANCH_NAME" "$DEFAULT_BRANCH" 2>/dev/null || true
   mkdir -p "$(dirname "$WORKTREE_DIR")"
   cd "$PROJECT_DIR" && git worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null || true
+  run_hook on_worktree_created
 fi
 
 if [ -d "$WORKTREE_DIR" ]; then
@@ -293,16 +305,15 @@ export NOW ATTEMPTS
 # Check max attempts before starting
 MAX=$(max_attempts)
 
-# Detect retry loops: if 4+ attempts and last 3 blocked entries have identical notes, stop
+# Detect retry loops: if 4+ attempts and last 3 blocked comments have identical text, stop
 if [ "$ATTEMPTS" -ge 4 ]; then
-  BLOCKED_NOTES=$(db_scalar "SELECT COUNT(DISTINCT note) FROM (
-    SELECT note FROM task_history WHERE task_id = $TASK_ID AND status = 'blocked'
-    ORDER BY id DESC LIMIT 3);" 2>/dev/null || echo "0")
-  BLOCKED_COUNT=$(db_scalar "SELECT COUNT(*) FROM (
-    SELECT id FROM task_history WHERE task_id = $TASK_ID AND status = 'blocked'
-    ORDER BY id DESC LIMIT 3);" 2>/dev/null || echo "0")
+  # Strip timestamp prefix (e.g. "[2026-01-01T00:00:00Z] ") before comparing for uniqueness
+  BLOCKED_NOTES=$(_bd_json comments "$TASK_ID" 2>/dev/null \
+    | jq -r '[.[] | select((.text // .body) | test("blocked:"; "i"))] | .[-3:] | [.[] | ((.text // .body) | sub("^\\[\\d{4}-[^]]+\\] "; ""))] | unique | length' 2>/dev/null || echo "0")
+  BLOCKED_COUNT=$(_bd_json comments "$TASK_ID" 2>/dev/null \
+    | jq '[.[] | select((.text // .body) | test("blocked:"; "i"))] | .[-3:] | length' 2>/dev/null || echo "0")
   if [ "$BLOCKED_COUNT" -ge 3 ] && [ "$BLOCKED_NOTES" -eq 1 ]; then
-    error_log "[run] task=$TASK_ID retry loop detected (same error 3x)"
+    log_err "[run] task=$TASK_ID retry loop detected (same error 3x)"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
     exit 0
   fi
@@ -367,6 +378,7 @@ log_err "[run] task=$TASK_ID prompt saved to $PROMPT_FILE (hash=$PROMPT_HASH)"
 log_err "[run] task=$TASK_ID agent=$TASK_AGENT model=${AGENT_MODEL:-default} attempt=$ATTEMPTS project=$PROJECT_DIR"
 log_err "[run] task=$TASK_ID skills=${SELECTED_SKILLS:-none} issue=${GH_ISSUE_REF:-none}"
 
+run_hook on_task_started
 start_spinner "Running task $TASK_ID ($TASK_AGENT)"
 AGENT_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -405,6 +417,33 @@ if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
 fi
 
 CMD_STATUS=0
+TMUX_RESPONSE_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-response-${ATTEMPTS}.txt"
+TMUX_STATUS_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-status-${ATTEMPTS}.txt"
+TMUX_SESSION="orch-${TASK_ID}"
+USE_TMUX=${USE_TMUX:-$(config_get '.workflow.use_tmux // "true"')}
+
+# Wait for tmux session to finish with a timeout
+# Usage: tmux_wait <session_name> <timeout_seconds>
+tmux_wait() {
+  local session="$1"
+  local timeout="${2:-${AGENT_TIMEOUT_SECONDS:-900}}"
+  local elapsed=0
+  while tmux has-session -t "$session" 2>/dev/null; do
+    sleep 5
+    elapsed=$((elapsed + 5))
+    if [ "$elapsed" -ge "$timeout" ]; then
+      log_err "[run] task=$TASK_ID tmux session timed out after ${timeout}s"
+      tmux kill-session -t "$session" 2>/dev/null || true
+      CMD_STATUS=124
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Build agent command into a runner script for tmux
+RUNNER_SCRIPT="${STATE_DIR}/${FILE_PREFIX}-runner-${ATTEMPTS}.sh"
+
 case "$TASK_AGENT" in
   claude)
     log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
@@ -423,14 +462,80 @@ case "$TASK_AGENT" in
         ALLOW_ARGS+=(--allowedTools "$_t")
       done
     fi
-    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
-      ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
-      --permission-mode bypassPermissions \
-      "${ALLOW_ARGS[@]}" \
-      "${DISALLOW_ARGS[@]}" \
-      --output-format json \
-      --append-system-prompt "$SYSTEM_PROMPT" \
-      "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      # Write prompt content to temp files to avoid shell injection from task data
+      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
+      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
+      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
+      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
+      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
+      # Write tool args one per line for safe reading
+      {
+        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
+        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
+      } > "$TOOL_ARGS_FILE"
+
+      # Use quoted heredoc to prevent variable expansion in the script body
+      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+RUNNER_EOF
+      # Append environment setup (safe values only — no user-controlled data)
+      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+export ORCH_HOME="$ORCH_HOME"
+cd "$PROJECT_DIR"
+TOOL_ARGS=()
+while IFS= read -r arg; do
+  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
+done < "$TOOL_ARGS_FILE"
+claude -p \
+  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+  --permission-mode bypassPermissions \
+  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
+  --output-format json \
+  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
+  "\$(cat "$PROMPT_MSG_FILE")" \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_ENV
+      chmod +x "$RUNNER_SCRIPT"
+
+      # Kill any existing session for this task
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+      # Start tmux session with the runner
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
+      run_hook on_agent_session_start
+
+      # Wait for the session to complete (with timeout)
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
+      run_hook on_agent_session_end
+
+      # Read response from file
+      if [ -f "$TMUX_RESPONSE_FILE" ]; then
+        RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
+      fi
+      if [ -f "$TMUX_STATUS_FILE" ]; then
+        CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
+      fi
+    else
+      # No tmux — run directly (original behavior)
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
+        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+        --permission-mode bypassPermissions \
+        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
+        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
+        --output-format json \
+        --append-system-prompt "$SYSTEM_PROMPT" \
+        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
     ;;
   codex)
     log_err "[run] cmd: codex exec ${AGENT_MODEL:+-m $AGENT_MODEL} --full-auto --json <stdin>"
@@ -459,21 +564,82 @@ ${AGENT_MESSAGE}"
         CODEX_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
         ;;
     esac
-    RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
-      ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-      "${CODEX_ARGS[@]}" \
-      --json \
-      - 2>"$STDERR_FILE") || CMD_STATUS=$?
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_INPUT_FILE="${STATE_DIR}/${FILE_PREFIX}-codex-input-${ATTEMPTS}.txt"
+      printf '%s' "$FULL_MESSAGE" > "$PROMPT_INPUT_FILE"
+      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+cd "$PROJECT_DIR"
+cat "$PROMPT_INPUT_FILE" | codex exec \
+  ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+  $(printf '%s ' ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"}) \
+  --json \
+  - > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_EOF
+      chmod +x "$RUNNER_SCRIPT"
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
+
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
+
+      [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
+      [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
+        ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+        ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"} \
+        --json \
+        - 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
     ;;
   opencode)
     log_err "[run] cmd: opencode run ${AGENT_MODEL:+-m $AGENT_MODEL} --format json <message>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
-    RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
-      ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-      --format json \
-      "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_INPUT_FILE="${STATE_DIR}/${FILE_PREFIX}-opencode-input-${ATTEMPTS}.txt"
+      printf '%s' "$FULL_MESSAGE" > "$PROMPT_INPUT_FILE"
+      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+cd "$PROJECT_DIR"
+opencode run \
+  ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+  --format json \
+  "\$(cat "$PROMPT_INPUT_FILE")" > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_EOF
+      chmod +x "$RUNNER_SCRIPT"
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
+
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-900}" || true
+
+      [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
+      [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
+        ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+        --format json \
+        "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
     ;;
   *)
     log_err "[run] task=$TASK_ID unknown agent: $TASK_AGENT"
@@ -585,7 +751,7 @@ if [ "$CMD_STATUS" -ne 0 ]; then
       if [ "$NEXT_AGENT" = "opencode" ]; then
         FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
         if [ -n "$FREE_MODELS" ]; then
-          FREE_IDX=$(db_scalar "SELECT COUNT(*) FROM task_history WHERE task_id = $TASK_ID AND note LIKE '%switched to opencode%';" 2>/dev/null || echo "0")
+          FREE_IDX=$(_bd_json comments "$TASK_ID" 2>/dev/null | jq '[.[] | select(.body | test("switched to opencode"))] | length' 2>/dev/null || echo "0")
           IFS=',' read -ra _fm <<< "$FREE_MODELS"
           if [ ${#_fm[@]} -gt 0 ]; then
             NEXT_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
@@ -612,7 +778,7 @@ ${STDERR_SNIPPET}
       if command -v opencode >/dev/null 2>&1; then
         FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
         if [ -n "$FREE_MODELS" ]; then
-          FREE_IDX=$(db_scalar "SELECT COUNT(*) FROM task_history WHERE task_id = $TASK_ID AND note LIKE '%free model fallback%';" 2>/dev/null || echo "0")
+          FREE_IDX=$(_bd_json comments "$TASK_ID" 2>/dev/null | jq '[.[] | select(.body | test("free model fallback"))] | length' 2>/dev/null || echo "0")
           IFS=',' read -ra _fm <<< "$FREE_MODELS"
           if [ ${#_fm[@]} -gt 0 ]; then
             FREE_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
@@ -755,9 +921,11 @@ if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
 
       if [ "$HAS_UNPUSHED" = true ]; then
         log_err "[run] task=$TASK_ID pushing branch $CURRENT_BRANCH"
-        if ! (cd "$PROJECT_DIR" && git \
+        if (cd "$PROJECT_DIR" && git \
           -c "url.https://github.com/.insteadOf=git@github.com:" \
           push -u origin "$CURRENT_BRANCH" 2>>"$STDERR_FILE"); then
+          run_hook on_branch_pushed
+        else
           error_log "[run] task=$TASK_ID failed to push branch $CURRENT_BRANCH"
         fi
 
@@ -801,6 +969,7 @@ ${GH_ISSUE_NUMBER:+Closes #${GH_ISSUE_NUMBER}}
               --head "$CURRENT_BRANCH" 2>>"$STDERR_FILE" || true)
             if [ -n "$PR_URL" ]; then
               log_err "[run] task=$TASK_ID created PR: $PR_URL"
+              run_hook on_pr_created
             else
               log_err "[run] task=$TASK_ID failed to create PR for $CURRENT_BRANCH"
             fi
@@ -929,3 +1098,11 @@ if [ "$DELEG_COUNT" -gt 0 ]; then
 fi
 
 log_err "[run] task=$TASK_ID DONE status=$AGENT_STATUS agent=$TASK_AGENT model=${RESP_MODEL:-${AGENT_MODEL:-default}} attempt=$ATTEMPTS duration=$(duration_fmt $AGENT_DURATION) tokens=${INPUT_TOKENS}in/${OUTPUT_TOKENS}out tools=$TOOL_COUNT"
+
+# Fire completion hooks
+case "$AGENT_STATUS" in
+  done|in_review) run_hook on_task_completed ;;
+  blocked)        run_hook on_task_blocked ;;
+  needs_review)   run_hook on_task_failed ;;
+  *)              run_hook on_task_completed ;;
+esac
