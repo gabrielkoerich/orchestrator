@@ -13,8 +13,8 @@ fi
 BRANCH=$(git branch --show-current)
 TITLE=$(cat .orchestrator/pr-title.txt)
 
-if gh pr view --head "$BRANCH" --json url -q .url >/dev/null 2>&1; then
-  gh pr view --head "$BRANCH" --json url -q .url
+if gh pr view --head "$BRANCH" --json url --jq .url >/dev/null 2>&1; then
+  gh pr view --head "$BRANCH" --json url --jq .url
   exit 0
 fi
 
