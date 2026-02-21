@@ -9,9 +9,7 @@ if [ "${1:-}" = "--force" ] || [ "${1:-}" = "-f" ]; then
   pkill -f 'orchestrator.*scripts/serve\.sh' 2>/dev/null || true
   pkill -f 'orchestrator.*scripts/poll\.sh' 2>/dev/null || true
   pkill -f 'orchestrator.*scripts/run_task\.sh' 2>/dev/null || true
-  pkill -f 'orchestrator.*scripts/gh_sync\.sh' 2>/dev/null || true
-  pkill -f 'orchestrator.*scripts/gh_push\.sh' 2>/dev/null || true
-  pkill -f 'orchestrator.*scripts/gh_pull\.sh' 2>/dev/null || true
+  pkill -f 'orchestrator.*scripts/cleanup_worktrees\.sh' 2>/dev/null || true
   pkill -f 'orchestrator.*scripts/route_task\.sh' 2>/dev/null || true
   pkill -f 'orchestrator.*scripts/jobs_tick\.sh' 2>/dev/null || true
   pkill -f 'orchestrator.*scripts/review_prs\.sh' 2>/dev/null || true

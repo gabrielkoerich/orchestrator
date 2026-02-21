@@ -50,11 +50,6 @@ if ! mkdir "$SERVE_LOCK" 2>/dev/null; then
   fi
 fi
 
-# Clean up any stale YAML lock dirs left from pre-SQLite versions
-if [ -d "${TASKS_PATH:-tasks.yml}.lock" ]; then
-  rm -rf "${TASKS_PATH:-tasks.yml}.lock"
-fi
-
 echo $$ > "$PID_FILE"
 
 _on_signal() {
@@ -80,7 +75,7 @@ cleanup() {
 trap '_on_signal; cleanup' INT TERM
 trap cleanup EXIT
 
-# Ensure beads is initialized
+# Ensure backend is initialized
 db_init
 
 # Rotate log on start
@@ -115,12 +110,9 @@ snapshot_hash() {
   # Hash all repo files except runtime state
   fd --type f --no-ignore --hidden \
     --exclude '.git' \
-    --exclude 'tasks.yml' \
     --exclude 'jobs.yml' \
     --exclude 'config.yml' \
     --exclude '.orchestrator' \
-    --exclude 'tasks.yml.lock' \
-    --exclude 'tasks.yml.lock.task.*' \
     --exclude 'contexts' \
     --exclude 'skills' \
     -0 \
@@ -131,7 +123,7 @@ snapshot_hash() {
 }
 
 LAST_CONFIG_MTIME=$(lock_mtime "$CONFIG_PATH")
-PROJECT_CONFIG="${PROJECT_DIR:+${PROJECT_DIR}/.orchestrator.yml}"
+PROJECT_CONFIG="${PROJECT_DIR:+${PROJECT_DIR}/orchestrator.yml}"
 LAST_PROJECT_CONFIG_MTIME=0
 if [ -n "$PROJECT_CONFIG" ] && [ -f "$PROJECT_CONFIG" ]; then
   LAST_PROJECT_CONFIG_MTIME=$(lock_mtime "$PROJECT_CONFIG")
@@ -173,28 +165,29 @@ while true; do
   $_stopping && break
   NOW_EPOCH=$(date +%s)
   if [ $((NOW_EPOCH - LAST_GH_PULL)) -ge "$GH_PULL_INTERVAL" ]; then
-    # Skip sync if GitHub API backoff is active
+    # Skip if GitHub API backoff is active
     if _remaining=$(gh_backoff_active 2>/dev/null); then
-      _log "[serve] gh backoff active (${_remaining}s remaining), skipping sync" >> "$LOG_FILE"
+      _log "[serve] gh backoff active (${_remaining}s remaining), skipping" >> "$LOG_FILE"
     else
-      # Run gh_sync for each unique project dir
+      # Worktree cleanup for each project dir
       DIRS=$(db_task_projects 2>/dev/null || true)
-      SYNCED_DEFAULT=false
+      CLEANED_DEFAULT=false
       for dir in $DIRS; do
         $_stopping && break
         if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
-          PROJECT_DIR="$dir" "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
-          SYNCED_DEFAULT=true
+          PROJECT_DIR="$dir" "$SCRIPT_DIR/cleanup_worktrees.sh" >> "$LOG_FILE" 2>&1 || true
+          CLEANED_DEFAULT=true
         fi
       done
-      if [ "$SYNCED_DEFAULT" = false ]; then
-        "$SCRIPT_DIR/gh_sync.sh" >> "$LOG_FILE" 2>&1 || true
+      if [ "$CLEANED_DEFAULT" = false ]; then
+        "$SCRIPT_DIR/cleanup_worktrees.sh" >> "$LOG_FILE" 2>&1 || true
       fi
     fi
     LAST_GH_PULL=$NOW_EPOCH
 
-    # Review open PRs after sync (runs inside the same interval gate)
+    # Review open PRs (runs inside the same interval gate)
     if ! $_stopping; then
+      DIRS=$(db_task_projects 2>/dev/null || true)
       REVIEWED_DEFAULT=false
       for dir in $DIRS; do
         $_stopping && break
@@ -219,7 +212,7 @@ while true; do
   if [ -n "$PROJECT_CONFIG" ] && [ -f "$PROJECT_CONFIG" ]; then
     CURRENT_PROJECT_MTIME=$(lock_mtime "$PROJECT_CONFIG")
     if [ "$CURRENT_PROJECT_MTIME" -ne "$LAST_PROJECT_CONFIG_MTIME" ]; then
-      _log "[serve] .orchestrator.yml changed; restarting" >> "$LOG_FILE"
+      _log "[serve] orchestrator.yml changed; restarting" >> "$LOG_FILE"
       exec env RESTARTING=1 "$SCRIPT_DIR/serve.sh"
     fi
   fi

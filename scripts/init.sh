@@ -16,7 +16,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-CONFIG_FILE="$PROJECT_DIR/.orchestrator.yml"
+CONFIG_FILE="$PROJECT_DIR/orchestrator.yml"
 
 # Load existing config if present (idempotent re-init)
 EXISTING_REPO=""
@@ -32,7 +32,7 @@ fi
 
 echo "Initialized orchestrator for $(basename "$PROJECT_DIR" .git)"
 echo "  Project: $PROJECT_DIR"
-[ -f "$CONFIG_FILE" ] && echo "  Config: .orchestrator.yml (existing)"
+[ -f "$CONFIG_FILE" ] && echo "  Config: orchestrator.yml (existing)"
 
 write_config() {
   if [ -z "$GH_REPO" ]; then return; fi
@@ -51,7 +51,7 @@ YAML
   if [ "$existing_sync_label" = "MISSING" ]; then
     yq -i '.gh.sync_label = ""' "$CONFIG_FILE"
   fi
-  echo "Saved .orchestrator.yml"
+  echo "Saved orchestrator.yml"
 
   # Add orchestrator runtime files to .gitignore
   if [ -f ".gitignore" ]; then
@@ -314,9 +314,9 @@ echo ""
 echo "Add tasks with: orchestrator add \"title\" \"body\" \"labels\""
 echo "Start the server: orchestrator serve"
 
-# Auto-sync existing GitHub issues after init
+# Verify GitHub connection after init
 if [ -n "${GH_REPO:-}" ] && command -v gh >/dev/null 2>&1; then
   echo ""
-  echo "Syncing GitHub issues..."
-  PROJECT_DIR="$PROJECT_DIR" "$SCRIPT_DIR/gh_sync.sh" || echo "gh-sync failed (non-fatal)." >&2
+  ISSUE_COUNT=$(gh issue list --repo "$GH_REPO" --state open --limit 1 --json number -q 'length' 2>/dev/null || echo "?")
+  echo "GitHub connected: $GH_REPO ($ISSUE_COUNT open issues)"
 fi

@@ -116,14 +116,8 @@ dispatch() {
       db_job_set "$id" "enabled" "0"
       echo "Disabled job '$id'"
       ;;
-    gh_sync)
-      "${SCRIPT_DIR}/gh_sync.sh"
-      ;;
-    gh_pull)
-      "${SCRIPT_DIR}/gh_pull.sh"
-      ;;
-    gh_push)
-      "${SCRIPT_DIR}/gh_push.sh"
+    gh_sync|gh_pull|gh_push)
+      echo "GitHub is the native backend — no sync needed."
       ;;
     gh_project_create)
       local title

@@ -9,10 +9,10 @@ LOCK_PATH=${LOCK_PATH:-"${ORCH_HOME}/.orchestrator/locks"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
 STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
-# Source beads-backed database layer
+# Source backend layer (GitHub, etc.)
 _LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if [ -f "${_LIB_DIR}/db.sh" ]; then
-  source "${_LIB_DIR}/db.sh"
+if [ -f "${_LIB_DIR}/backend.sh" ]; then
+  source "${_LIB_DIR}/backend.sh"
 fi
 
 now_iso() {
@@ -380,14 +380,14 @@ normalize_json_response() {
   return 1
 }
 
-# Legacy compat — now just ensures SQLite DB is initialized.
+# Legacy compat — ensures backend is initialized.
 init_tasks_file() {
   db_init
 }
 
-# Legacy compat — now just ensures SQLite DB is initialized.
+# Legacy compat — ensures jobs file exists.
 init_jobs_file() {
-  db_init
+  backend_init_jobs
 }
 
 init_config_file() {
@@ -417,9 +417,19 @@ YAML
 GLOBAL_CONFIG_PATH="${GLOBAL_CONFIG_PATH:-${ORCH_HOME}/config.yml}"
 
 load_project_config() {
-  local project_config="${PROJECT_DIR:+${PROJECT_DIR}/.orchestrator.yml}"
+  local project_config="${PROJECT_DIR:+${PROJECT_DIR}/orchestrator.yml}"
+  # Backwards compat: also check old .orchestrator.yml name
+  if [ -z "$project_config" ] || [ ! -f "$project_config" ]; then
+    project_config="${PROJECT_DIR:+${PROJECT_DIR}/.orchestrator.yml}"
+  fi
   if [ -z "$project_config" ] || [ ! -f "$project_config" ]; then
     return 0
+  fi
+
+  # Set project-local state dir
+  if [ -n "${PROJECT_DIR:-}" ]; then
+    STATE_DIR="${PROJECT_DIR}/.orchestrator"
+    ORCH_WORKTREES="${PROJECT_DIR}/.orchestrator/worktrees"
   fi
   ensure_state_dir
   local merged="${STATE_DIR}/config-merged.yml"
@@ -475,7 +485,7 @@ repo_owner() {
   fi
 }
 
-# Legacy compat — SQLite WAL mode handles concurrency.
+# Legacy compat — no local locking needed.
 acquire_lock() { :; }
 release_lock() { :; }
 
@@ -502,7 +512,7 @@ lock_is_stale() {
   return 1
 }
 
-# Legacy compat — runs command directly (SQLite handles concurrency).
+# Legacy compat — runs command directly.
 with_lock() { "$@"; }
 
 append_history() {
@@ -670,9 +680,17 @@ build_parent_context() {
       out+="Parent summary: ${parent_summary}\n"
     fi
 
-    local siblings
-    siblings=$(_bd_json show "$parent_id" --children 2>/dev/null \
-      | jq -r --arg tid "$task_id" '.[] | select(.id != $tid) | .id + ": " + .title + " [" + .status + "]"' 2>/dev/null || true)
+    local siblings=""
+    local child_ids
+    child_ids=$(db_task_children "$parent_id" 2>/dev/null || true)
+    while IFS= read -r _cid; do
+      [ -n "$_cid" ] || continue
+      [ "$_cid" = "$task_id" ] && continue
+      local _ct _cs
+      _ct=$(db_task_field "$_cid" "title" 2>/dev/null || true)
+      _cs=$(db_task_field "$_cid" "status" 2>/dev/null || true)
+      siblings+="${_cid}: ${_ct} [${_cs}]"$'\n'
+    done <<< "$child_ids"
     if [ -n "$siblings" ]; then
       out+="\nSibling tasks:\n${siblings}\n"
     fi
@@ -850,7 +868,7 @@ label_issue() {
 
 # Mark a task as needs_review — requires human attention.
 # The task will not be retried until manually addressed.
-# GitHub comments and labels are handled by gh_push.sh on next sync.
+# GitHub labels and comments are updated via the backend.
 # Usage: mark_needs_review TASK_ID ATTEMPTS "error message" ["history note"]
 mark_needs_review() {
   local task_id="$1" attempts="$2" error="$3" note="${4:-$3}"

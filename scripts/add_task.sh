@@ -35,8 +35,8 @@ if [ -n "$PROJECT_SLUG" ]; then
 else
   PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 
-  # If cwd has no .orchestrator.yml and isn't a known project, check for managed projects
-  if [ ! -f "$PROJECT_DIR/.orchestrator.yml" ] && [ -t 0 ]; then
+  # If cwd has no orchestrator.yml and isn't a known project, check for managed projects
+  if [ ! -f "$PROJECT_DIR/orchestrator.yml" ] && [ -t 0 ]; then
     PROJECTS_DIR="${ORCH_HOME}/projects"
     if [ -d "$PROJECTS_DIR" ]; then
       MANAGED=()
@@ -51,7 +51,7 @@ else
       done < <(find "$PROJECTS_DIR" -name "*.git" -type d -mindepth 2 -maxdepth 2 2>/dev/null)
 
       if [ ${#MANAGED[@]} -gt 0 ]; then
-        echo "No .orchestrator.yml in current directory."
+        echo "No orchestrator.yml in current directory."
         echo ""
         echo "Available projects:"
         for i in "${!MANAGED[@]}"; do

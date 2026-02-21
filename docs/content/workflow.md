@@ -12,7 +12,7 @@ How the orchestrator runs tasks end-to-end.
 Issue → Branch + Worktree → Agent works → Push → PR → Review Agent → Merge → Cleanup
 ```
 
-1. **Issue** — created via `orchestrator task add`, `gh_pull`, or `jobs_tick`
+1. **Issue** — created via `orchestrator task add` or `jobs_tick`
 2. **Branch + Worktree** — orchestrator creates via `gh issue develop` + `git worktree add`
 3. **Agent works** — runs inside worktree, edits files, commits changes
 4. **Push** — orchestrator pushes the branch after agent finishes
@@ -31,7 +31,7 @@ new → routed → in_progress → done → in_review → (merged externally)
                             → needs_review
 ```
 
-- **new**: task created (via `add`, `gh_pull`, or `jobs_tick`)
+- **new**: task created (via `add` or `jobs_tick`)
 - **routed**: LLM router assigned agent, model, profile, skills
 - **in_progress**: agent is running
 - **done**: agent completed successfully (no open PR)
@@ -47,7 +47,8 @@ new → routed → in_progress → done → in_review → (merged externally)
 2. `poll.sh` — detects stuck `in_progress` tasks (no lock held, stale >30min), resets to `new`
 3. `poll.sh` — checks blocked parents: if all children are `done`, unblocks parent
 4. `jobs_tick.sh` — checks cron schedules, creates tasks for due jobs
-5. `gh_sync.sh` — pulls issues from GitHub, pushes task updates back (every 60s)
+5. `review_prs.sh` — auto-reviews open PRs (if review agent enabled)
+6. `cleanup_worktrees.sh` — removes worktrees for merged PRs
 
 ## Worktrees
 

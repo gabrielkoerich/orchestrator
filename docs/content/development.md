@@ -25,7 +25,7 @@ bats tests --filter "review"            # run matching tests
 bats tests/orchestrator.bats            # run specific file
 ```
 
-All tests mock external tools (`gh`, `codex`, `claude`) to prevent real API calls. Test setup creates a temporary directory with a git repo, tasks.yml, and config.yml.
+All tests mock external tools (`gh`, `codex`, `claude`) to prevent real API calls. The `gh` mock (`tests/gh_mock.sh`) simulates GitHub's REST and GraphQL APIs using a local JSON file for state.
 
 ## Release Pipeline
 
@@ -48,28 +48,28 @@ Use prefixes in commit messages:
 
 ```
 scripts/
-  lib.sh          — shared helpers (logging, locking, yq wrappers, GitHub API)
-  serve.sh        — main loop (poll, jobs, gh sync)
-  poll.sh          — finds and runs pending tasks
-  run_task.sh     — runs a single task (route → agent → parse → review)
-  route_task.sh   — routes tasks via LLM
-  gh_push.sh      — pushes task updates to GitHub
-  gh_pull.sh      — imports GitHub issues
-  gh_sync.sh      — bidirectional sync
-  add_task.sh     — creates tasks
-  output.sh       — shared formatting (tables, sections)
+  lib.sh            — shared helpers (logging, locking, yq wrappers, GitHub API)
+  backend.sh        — backend interface loader + jobs CRUD (YAML-backed)
+  backend_github.sh — GitHub Issues backend implementation
+  serve.sh          — main loop (poll, jobs, reviews)
+  poll.sh           — finds and runs pending tasks
+  run_task.sh       — runs a single task (route → agent → parse → push → PR)
+  route_task.sh     — routes tasks via LLM
+  add_task.sh       — creates tasks (GitHub issues)
+  output.sh         — shared formatting (tables, sections)
   normalize_json.py — JSON extraction, tool history, token usage
-  cron_match.py   — cron expression matcher
+  cron_match.py     — cron expression matcher
 prompts/
-  system.md       — system prompt
-  agent.md        — execution prompt
-  plan.md         — planning/decomposition prompt
-  route.md        — routing prompt
-  review.md       — review agent prompt
+  system.md         — system prompt
+  agent.md          — execution prompt
+  plan.md           — planning/decomposition prompt
+  route.md          — routing prompt
+  review.md         — review agent prompt
 tests/
-  orchestrator.bats — test suite
+  orchestrator.bats — 200 bats tests
+  gh_mock.sh        — comprehensive gh CLI mock
 docs/
-  content/        — documentation pages (Zola site)
-  templates/      — Zola HTML templates
-  config.toml     — Zola config
+  content/          — documentation pages (Zola site)
+  templates/        — Zola HTML templates
+  config.toml       — Zola config
 ```

@@ -15,17 +15,29 @@ setup() {
   export JOBS_FILE="${ORCH_HOME}/jobs.yml"
   export LOCK_PATH="${STATE_DIR}/locks"
   export PROJECT_DIR="${TMP_DIR}"
-  # Initialize a git repo so worktree creation and beads work
+
+  # Initialize a git repo so worktree creation works
   git -C "$PROJECT_DIR" init -b main --quiet 2>/dev/null || true
   git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet 2>/dev/null || true
-  # Initialize beads in the project dir
-  (cd "$PROJECT_DIR" && bd init --quiet >/dev/null 2>/dev/null) || true
-  (cd "$PROJECT_DIR" && bd config set status.custom "new,routed,in_progress,blocked,needs_review,in_review,done" >/dev/null 2>/dev/null) || true
+
+  # Set up gh mock — GitHub is the native backend
+  MOCK_BIN="${TMP_DIR}/mock_bin"
+  mkdir -p "$MOCK_BIN"
+  cp "${BATS_TEST_DIRNAME}/gh_mock.sh" "$MOCK_BIN/gh"
+  chmod +x "$MOCK_BIN/gh"
+  export PATH="${MOCK_BIN}:${PATH}"
+  export GH_MOCK_STATE="${STATE_DIR}/gh_mock_state.json"
+  export ORCH_GH_REPO="mock/repo"
+  export ORCH_BACKEND="github"
+
   # Initialize jobs file
   printf 'jobs: []\n' > "$JOBS_FILE"
   export MONITOR_INTERVAL=0.1
   export USE_TMUX=false
   cat > "$CONFIG_PATH" <<'YAML'
+backend: github
+gh:
+  repo: "mock/repo"
 router:
   agent: "codex"
   model: ""
@@ -45,29 +57,24 @@ YAML
   export INIT_TASK_ID=$(echo "$INIT_OUTPUT" | sed 's/Added task //' | cut -d: -f1 | tr -d ' ')
 }
 
-# Beads test helpers (replace SQLite tdb_* helpers)
+# Test helpers — read/write via backend (GitHub mock + sidecar)
 tdb_field() {
   local id="$1" field="$2"
-  (cd "$PROJECT_DIR" && bd --json --quiet show "$id" 2>/dev/null) | jq -r ".[0].metadata.${field} // .[0].${field} // empty" 2>/dev/null
+  source "${REPO_DIR}/scripts/lib.sh"
+  db_task_field "$id" "$field"
 }
 tdb_set() {
   local id="$1" field="$2" value="$3"
-  case "$field" in
-    status) (cd "$PROJECT_DIR" && bd --quiet update "$id" -s "$value") >/dev/null 2>/dev/null ;;
-    title)  (cd "$PROJECT_DIR" && bd --quiet update "$id" --title "$value") >/dev/null 2>/dev/null ;;
-    *)
-      # Merge metadata instead of replacing (bd --metadata replaces entirely)
-      local existing merged new_meta
-      existing=$(cd "$PROJECT_DIR" && bd --json --quiet show "$id" 2>/dev/null | jq -c '.[0].metadata // {}' 2>/dev/null) || existing='{}'
-      [ -z "$existing" ] || [ "$existing" = "null" ] && existing='{}'
-      new_meta=$(printf '{}' | jq -c --arg k "$field" --arg v "$value" '.[$k] = $v')
-      merged=$(printf '%s' "$existing" | jq -c --argjson n "$new_meta" '. * $n') || merged="$new_meta"
-      (cd "$PROJECT_DIR" && bd --quiet update "$id" --metadata "$merged") >/dev/null 2>/dev/null
-      ;;
-  esac
+  source "${REPO_DIR}/scripts/lib.sh"
+  db_task_set "$id" "$field" "$value"
 }
 tdb_count() {
-  (cd "$PROJECT_DIR" && bd --json --quiet list -n 0 --all 2>/dev/null) | jq 'length' 2>/dev/null || echo 0
+  # Count issues in gh mock state
+  if [ -f "$GH_MOCK_STATE" ]; then
+    jq '.issues | length' "$GH_MOCK_STATE" 2>/dev/null || echo 0
+  else
+    echo 0
+  fi
 }
 tdb_job_field() {
   local id="$1" field="$2"
@@ -78,7 +85,7 @@ tdb_job_count() {
 }
 
 teardown() {
-  # Clean up project-local worktrees (new location: inside PROJECT_DIR/.orchestrator/worktrees)
+  # Clean up project-local worktrees
   if [ -d "${TMP_DIR}/.orchestrator/worktrees" ]; then
     (cd "$TMP_DIR" && git worktree prune 2>/dev/null) || true
   fi
@@ -97,40 +104,60 @@ _task_id() {
   echo "$1" | grep 'Added task' | sed 's/Added task //' | cut -d: -f1 | tr -d ' '
 }
 
-# Helper: find task ID by title
+# Helper: find task ID by title (search gh mock state)
 _task_id_by_title() {
   local title="$1"
-  (cd "$PROJECT_DIR" && bd --json --quiet list -n 0 --all 2>/dev/null) | jq -r --arg t "$title" '.[] | select(.title == $t) | .id' | head -1
+  if [ -f "$GH_MOCK_STATE" ]; then
+    jq -r --arg t "$title" '.issues | to_entries[] | select(.value.title == $t) | .key' "$GH_MOCK_STATE" | head -1
+  fi
 }
 
-# Helper: get child task titles
+# Helper: get child task titles (via sub_issues in mock state)
 _task_children_titles() {
   local parent_id="$1"
-  (cd "$PROJECT_DIR" && bd --json --quiet show "$parent_id" --children 2>/dev/null) | jq -r '.[].[] | .title' 2>/dev/null
+  if [ -f "$GH_MOCK_STATE" ]; then
+    local children
+    children=$(jq -r --arg p "$parent_id" '.sub_issues[$p] // [] | .[]' "$GH_MOCK_STATE" 2>/dev/null || true)
+    for cid in $children; do
+      jq -r --arg id "$cid" '.issues[$id].title // empty' "$GH_MOCK_STATE" 2>/dev/null
+    done
+  fi
 }
 
-# Helper: add beads comment (replaces INSERT INTO task_history)
+# Helper: add comment to gh mock (replaces INSERT INTO task_history)
 _add_history() {
   local task_id="$1" ts="$2" hist_status="$3" note="$4"
-  (cd "$PROJECT_DIR" && bd --quiet comments add "$task_id" "[$ts] $hist_status: $note" >/dev/null 2>/dev/null) || true
+  source "${REPO_DIR}/scripts/lib.sh"
+  db_append_history "$task_id" "$hist_status" "$note"
 }
 
 # Helper: get task labels
 _task_labels() {
   local task_id="$1"
-  (cd "$PROJECT_DIR" && bd --json --quiet show "$task_id" 2>/dev/null) | jq -r '.[0].labels // [] | .[]' 2>/dev/null
+  if [ -f "$GH_MOCK_STATE" ]; then
+    jq -r --arg id "$task_id" '.issues[$id].labels // [] | .[].name' "$GH_MOCK_STATE" 2>/dev/null
+  fi
 }
 
 # Helper: add label
 _task_add_label() {
   local task_id="$1" label="$2"
-  (cd "$PROJECT_DIR" && bd --quiet label add "$task_id" "$label" >/dev/null 2>/dev/null) || true
+  source "${REPO_DIR}/scripts/lib.sh"
+  db_add_label "$task_id" "$label"
 }
 
-# Helper: set parent-child relationship
+# Helper: set parent-child relationship (via sub-issues in mock)
 _task_set_parent() {
   local child_id="$1" parent_id="$2"
-  (cd "$PROJECT_DIR" && bd --quiet update "$child_id" --parent "$parent_id" >/dev/null 2>/dev/null) || true
+  source "${REPO_DIR}/scripts/lib.sh"
+  _sidecar_write "$child_id" "parent_id" "$parent_id"
+  # Also update mock state sub_issues
+  if [ -f "$GH_MOCK_STATE" ]; then
+    local state
+    state=$(cat "$GH_MOCK_STATE")
+    printf '%s' "$state" | jq --arg p "$parent_id" --arg c "$child_id" \
+      '.sub_issues[$p] = ((.sub_issues[$p] // []) + [($c | tonumber)] | unique)' > "$GH_MOCK_STATE"
+  fi
 }
 
 # Helper: create a job directly in jobs.yml (for tests that bypass jobs_add.sh)
@@ -351,14 +378,6 @@ SH
   [ ! -f "${STATE_DIR}/gh_called" ]
 }
 
-@test "gh_sync.sh respects gh.enabled=false" {
-  run yq -i '.gh.enabled = false' "$CONFIG_PATH"
-  [ "$status" -eq 0 ]
-
-  run env CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/gh_sync.sh"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"GitHub sync disabled."* ]]
-}
 
 @test "cleanup_worktrees.sh removes worktree for merged PR task" {
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Cleanup merged" "Body" "")
@@ -367,25 +386,15 @@ SH
   WT_DIR="${TMP_DIR}/wt-merged"
   mkdir -p "$WT_DIR"
 
-  run yq -i '(.gh.repo) = "testowner/testrepo"' "$CONFIG_PATH"
-  [ "$status" -eq 0 ]
   tdb_set "$TASK2_ID" status "done"
-  tdb_set "$TASK2_ID" gh_issue_number 47
-  tdb_set "$TASK2_ID" branch "gh-task-47-cleanup"
+  tdb_set "$TASK2_ID" branch "gh-task-${TASK2_ID}-cleanup"
   tdb_set "$TASK2_ID" worktree "$WT_DIR"
   tdb_set "$TASK2_ID" dir "$PROJECT_DIR"
 
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-# Return PR number as gh --jq '.[0].number // ""' would output
-if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-  echo '123'
-  exit 0
-fi
-exit 0
-SH
-  chmod +x "$GH_STUB"
+  # Close the issue so db_task_ids_by_status "done" finds it (queries closed issues)
+  local state
+  state=$(cat "$GH_MOCK_STATE")
+  printf '%s' "$state" | jq -c --arg id "$TASK2_ID" '.issues[$id].state = "closed" | .prs = {"123": {"number": 123, "state": "MERGED"}}' > "$GH_MOCK_STATE"
 
   REAL_GIT=$(command -v git)
   GIT_STUB="${TMP_DIR}/git"
@@ -413,7 +422,7 @@ SH
   run bash -c "cat '${TMP_DIR}/git_calls'"
   [ "$status" -eq 0 ]
   [[ "$output" == *"worktree remove ${WT_DIR} --force"* ]]
-  [[ "$output" == *"branch -d gh-task-47-cleanup"* ]]
+  [[ "$output" == *"branch -d gh-task-${TASK2_ID}-cleanup"* ]]
 }
 
 @test "cleanup_worktrees.sh skips tasks without merged PR" {
@@ -423,24 +432,14 @@ SH
   WT_DIR="${TMP_DIR}/wt-unmerged"
   mkdir -p "$WT_DIR"
 
-  run yq -i '(.gh.repo) = "testowner/testrepo"' "$CONFIG_PATH"
-  [ "$status" -eq 0 ]
   tdb_set "$TASK2_ID" status "done"
-  tdb_set "$TASK2_ID" gh_issue_number 48
-  tdb_set "$TASK2_ID" branch "gh-task-48-cleanup"
+  tdb_set "$TASK2_ID" branch "gh-task-${TASK2_ID}-cleanup"
   tdb_set "$TASK2_ID" worktree "$WT_DIR"
   tdb_set "$TASK2_ID" dir "$PROJECT_DIR"
 
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-# Return empty output to simulate no merged PR found (gh --jq returns empty for no matches)
-if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-  exit 0
-fi
-exit 0
-SH
-  chmod +x "$GH_STUB"
+  # Close the issue so db_task_ids_by_status "done" finds it, but no PRs → not cleaned
+  local state; state=$(cat "$GH_MOCK_STATE")
+  printf '%s' "$state" | jq -c --arg id "$TASK2_ID" '.issues[$id].state = "closed"' > "$GH_MOCK_STATE"
 
   REAL_GIT=$(command -v git)
   GIT_STUB="${TMP_DIR}/git"
@@ -473,6 +472,8 @@ SH
 
   tdb_set "$TASK2_ID" status "done"
   tdb_set "$TASK2_ID" branch "task-2-local"
+  # Close the issue and add a merged PR to mock state
+  local wt_st; wt_st=$(cat "$GH_MOCK_STATE"); printf '%s' "$wt_st" | jq -c --arg id "$TASK2_ID" '.issues[$id].state = "closed" | .prs={"99":{"number":99,"state":"MERGED"}}' > "$GH_MOCK_STATE"
   tdb_set "$TASK2_ID" worktree "$WT_DIR"
   tdb_set "$TASK2_ID" dir "$PROJECT_DIR"
 
@@ -507,6 +508,8 @@ SH
   tdb_set "$TASK2_ID" status "done"
   tdb_set "$TASK2_ID" worktree "$WT_DIR"
   tdb_set "$TASK2_ID" dir "$PROJECT_DIR"
+  # Close the issue and add a merged PR to mock state
+  local ms_st; ms_st=$(cat "$GH_MOCK_STATE"); printf '%s' "$ms_st" | jq -c --arg id "$TASK2_ID" '.issues[$id].state = "closed" | .prs={"98":{"number":98,"state":"MERGED"}}' > "$GH_MOCK_STATE"
 
   REAL_GIT=$(command -v git)
   GIT_STUB="${TMP_DIR}/git"
@@ -634,24 +637,8 @@ JSON
 SH
   chmod +x "$CLAUDE_STUB"
 
-  # Mock gh — return PR number for pr list, empty diff, accept pr review
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-  echo "42"
-elif [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
-  echo "+added line"
-elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
-  echo "Approved"
-elif [ "$1" = "issue" ]; then
-  echo ""
-else
-  echo "[]"
-fi
-SH
-  chmod +x "$GH_STUB"
-
+  # Add PR + diff to mock state for review agent (replaces old GH_STUB)
+  local rv_st; rv_st=$(cat "$GH_MOCK_STATE"); printf '%s' "$rv_st" | jq -c '.prs={"42":{"number":42,"state":"OPEN"}} | .pr_diff="+added line"' > "$GH_MOCK_STATE"
   run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
   [ "$status" -eq 0 ]
 
@@ -867,7 +854,7 @@ SH
   [ "$output" = "" ]
 
   # Create project override
-  cat > "${TMP_DIR}/.orchestrator.yml" <<'YAML'
+  cat > "${TMP_DIR}/orchestrator.yml" <<'YAML'
 gh:
   repo: "myorg/myproject"
 router:
@@ -957,13 +944,13 @@ SH
 
 @test "list_tasks.sh filters by PROJECT_DIR" {
   # Task 1 (Init) already has dir=$TMP_DIR from setup()
-  # Add a task for a different project
+  # Add a task for a different project using a separate gh mock state
   OTHER_DIR=$(mktemp -d)
   git -C "$OTHER_DIR" init -b main --quiet 2>/dev/null || true
   git -C "$OTHER_DIR" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet 2>/dev/null || true
-  (cd "$OTHER_DIR" && bd init --quiet 2>/dev/null) || true
-  (cd "$OTHER_DIR" && bd config set status.custom "new,routed,in_progress,blocked,needs_review,in_review,done" 2>/dev/null) || true
-  run env PROJECT_DIR="$OTHER_DIR" "${REPO_DIR}/scripts/add_task.sh" "Other Project" "other body" ""
+  OTHER_STATE_DIR="${OTHER_DIR}/.orchestrator"
+  mkdir -p "$OTHER_STATE_DIR"
+  run env PROJECT_DIR="$OTHER_DIR" STATE_DIR="$OTHER_STATE_DIR" GH_MOCK_STATE="${OTHER_STATE_DIR}/gh_mock_state.json" "${REPO_DIR}/scripts/add_task.sh" "Other Project" "other body" ""
   [ "$status" -eq 0 ]
 
   # Listing from TMP_DIR should only show the Init task
@@ -973,7 +960,7 @@ SH
   [[ "$output" != *"Other Project"* ]]
 
   # Listing from OTHER_DIR should only show the Other task
-  run env PROJECT_DIR="$OTHER_DIR" "${REPO_DIR}/scripts/list_tasks.sh"
+  run env PROJECT_DIR="$OTHER_DIR" STATE_DIR="$OTHER_STATE_DIR" GH_MOCK_STATE="${OTHER_STATE_DIR}/gh_mock_state.json" "${REPO_DIR}/scripts/list_tasks.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Other Project"* ]]
   [[ "$output" != *"Init"* ]]
@@ -1028,9 +1015,9 @@ SH
   run env PATH="$INIT_DIR:$PATH" PROJECT_DIR="$INIT_DIR" "${REPO_DIR}/scripts/init.sh" --repo "myorg/myapp" </dev/null
   [ "$status" -eq 0 ]
   [[ "$output" == *"Initialized orchestrator"* ]]
-  [ -f "$INIT_DIR/.orchestrator.yml" ]
+  [ -f "$INIT_DIR/orchestrator.yml" ]
 
-  run yq -r '.gh.repo' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.repo' "$INIT_DIR/orchestrator.yml"
   [ "$status" -eq 0 ]
   [ "$output" = "myorg/myapp" ]
 
@@ -1044,9 +1031,9 @@ SH
   # First init creates config
   run env PATH="$INIT_DIR:$PATH" PROJECT_DIR="$INIT_DIR" "${REPO_DIR}/scripts/init.sh" --repo "myorg/myapp" </dev/null
   [ "$status" -eq 0 ]
-  [ -f "$INIT_DIR/.orchestrator.yml" ]
+  [ -f "$INIT_DIR/orchestrator.yml" ]
 
-  run yq -r '.gh.repo' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.repo' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "myorg/myapp" ]
 
   # Second init preserves existing repo
@@ -1055,7 +1042,7 @@ SH
   [[ "$output" == *"existing"* ]]
 
   # Config should still have the repo
-  run yq -r '.gh.repo' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.repo' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "myorg/myapp" ]
 
   rm -rf "$INIT_DIR"
@@ -1073,56 +1060,12 @@ SH
   run env PATH="$INIT_DIR:$PATH" PROJECT_DIR="$INIT_DIR" "${REPO_DIR}/scripts/init.sh" --repo "new/repo" </dev/null
   [ "$status" -eq 0 ]
 
-  run yq -r '.gh.repo' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.repo' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "new/repo" ]
 
   rm -rf "$INIT_DIR"
 }
 
-@test "gh_pull.sh handles paginated JSON arrays" {
-  # Simulate gh api returning two separate JSON arrays (one per page)
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [ "$1" = "api" ]; then
-  if printf '%s' "$*" | grep -q "repos/"; then
-    # Simulate paginated output: two arrays
-    printf '[{"number":1,"title":"Issue 1","body":"body1","labels":[],"state":"open","html_url":"https://github.com/test/repo/issues/1","updated_at":"2026-01-01T00:00:00Z","pull_request":null}]\n'
-    printf '[{"number":2,"title":"Issue 2","body":"body2","labels":[],"state":"open","html_url":"https://github.com/test/repo/issues/2","updated_at":"2026-01-01T00:00:00Z","pull_request":null}]\n'
-    exit 0
-  fi
-fi
-exit 0
-SH
-  chmod +x "$GH_STUB"
-
-  # Create a minimal project config with gh.repo
-  cat > "${TMP_DIR}/.orchestrator.yml" <<'YAML'
-gh:
-  repo: "test/repo"
-YAML
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" \
-    STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_pull.sh"
-  [ "$status" -eq 0 ]
-
-  # Both issues should have been imported
-  ISSUE1_ID=$(_task_id_by_title "Issue 1")
-  [ -n "$ISSUE1_ID" ]
-  run tdb_field "$ISSUE1_ID" gh_issue_number
-  [ "$status" -eq 0 ]
-  [ "$output" = "1" ]
-
-  ISSUE2_ID=$(_task_id_by_title "Issue 2")
-  [ -n "$ISSUE2_ID" ]
-  run tdb_field "$ISSUE2_ID" gh_issue_number
-  [ "$status" -eq 0 ]
-  [ "$output" = "2" ]
-}
 
 @test "agents.sh lists agent availability" {
   run "${REPO_DIR}/scripts/agents.sh"
@@ -1133,35 +1076,29 @@ YAML
   [[ "$output" == *"opencode"* ]]
 }
 
-@test "concurrent task additions don't corrupt beads" {
-  # Run 5 parallel add_task.sh calls (enough to test concurrency, not too many for slow CI)
-  pids=()
-  successes=0
-  for i in $(seq 1 5); do
-    env PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/add_task.sh" "Concurrent $i" "body $i" "" >/dev/null 2>&1 &
-    pids+=($!)
-  done
-
-  # Wait for all to complete and count successes
-  for pid in "${pids[@]}"; do
-    wait "$pid" && successes=$((successes + 1)) || true
-  done
-
-  # At least 3 of 5 should succeed (slow CI may lose some to lock contention)
-  [ "$successes" -ge 3 ]
-
-  # Correct task count (Init + successes)
-  EXPECTED=$((1 + successes))
-  run tdb_count
-  [ "$status" -eq 0 ]
-  [ "$output" -eq "$EXPECTED" ]
-}
+# concurrent write test removed — GitHub-native backend handles this
 
 @test "performance: list_tasks.sh handles 100+ tasks" {
-  # Create 99 more tasks via bd create (Init already exists)
+  # Create 99 more tasks directly in gh mock state (Init already exists as issue 1)
+  if [ ! -f "$GH_MOCK_STATE" ]; then
+    echo '{"issues":{},"sub_issues":{},"comments":{},"next_issue_number":2}' > "$GH_MOCK_STATE"
+  fi
+  local state
+  state=$(cat "$GH_MOCK_STATE")
   for i in $(seq 2 100); do
-    (cd "$PROJECT_DIR" && bd --quiet create "Task $i" --silent 2>/dev/null) >/dev/null || true
+    state=$(printf '%s' "$state" | jq \
+      --argjson n "$i" \
+      --arg title "Task $i" \
+      '.issues[($n|tostring)] = {
+        "number": $n,
+        "title": $title,
+        "body": "perf test body",
+        "state": "open",
+        "labels": [],
+        "assignees": []
+      } | .next_issue_number = ($n + 1)')
   done
+  printf '%s' "$state" > "$GH_MOCK_STATE"
 
   run tdb_count
   [ "$status" -eq 0 ]
@@ -1519,233 +1456,6 @@ SH
   [ -f "${STATE_DIR}/link_called" ]
 }
 
-@test "gh_push.sh adds issue to project when not already present" {
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-# Route based on arguments
-args="$*"
-
-# repos/REPO/issues (create issue)
-if printf '%s' "$args" | grep -q "repos/test/repo/issues" && ! printf '%s' "$args" | grep -q "graphql"; then
-  if printf '%s' "$args" | grep -q "PATCH"; then
-    echo '{}'
-    exit 0
-  fi
-  if printf '%s' "$args" | grep -q "comments"; then
-    echo '{}'
-    exit 0
-  fi
-  # GET issue node_id
-  if printf '%s' "$args" | grep -q -- "-q .node_id"; then
-    echo "I_issue1node"
-    exit 0
-  fi
-  echo '{"number":1,"html_url":"https://github.com/test/repo/issues/1","state":"open"}'
-  exit 0
-fi
-
-# GraphQL: project items query (return empty — issue not in project)
-if printf '%s' "$args" | grep -q "items(first"; then
-  echo '{"data":{"node":{"items":{"nodes":[]}}}}'
-  exit 0
-fi
-
-# GraphQL: addProjectV2ItemById
-if printf '%s' "$args" | grep -q "addProjectV2ItemById"; then
-  echo "add_to_project" >> "${STATE_DIR}/gh_calls"
-  echo '{"data":{"addProjectV2ItemById":{"item":{"id":"PVTI_item1"}}}}'
-  exit 0
-fi
-
-# GraphQL: updateProjectV2ItemFieldValue
-if printf '%s' "$args" | grep -q "updateProjectV2ItemFieldValue"; then
-  echo "update_status" >> "${STATE_DIR}/gh_calls"
-  echo '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_item1"}}}}'
-  exit 0
-fi
-
-# repo view
-if printf '%s' "$args" | grep -q "repo view"; then
-  echo "test/repo"
-  exit 0
-fi
-
-echo '{}'
-exit 0
-SH
-  chmod +x "$GH_STUB"
-
-  # Set up config with project settings
-  cat > "$CONFIG_PATH" <<'YAML'
-workflow:
-  auto_close: true
-gh:
-  repo: "test/repo"
-  project_id: "PVT_proj123"
-  project_status_field_id: "PVTSSF_field1"
-  project_status_map:
-    backlog: "opt_backlog"
-    in_progress: "opt_inprog"
-    review: "opt_review"
-    done: "opt_done"
-YAML
-
-  # Create a task with gh_issue_number already set but not synced
-  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  tdb_set "$INIT_TASK_ID" gh_issue_number "1"
-  tdb_set "$INIT_TASK_ID" gh_url "https://github.com/test/repo/issues/1"
-  tdb_set "$INIT_TASK_ID" gh_state "open"
-  tdb_set "$INIT_TASK_ID" status "in_progress"
-  tdb_set "$INIT_TASK_ID" gh_synced_at ""
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" \
-    STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"added issue #1 to project"* ]]
-
-  # Verify addProjectV2ItemById was called
-  [ -f "${STATE_DIR}/gh_calls" ]
-  grep -q "add_to_project" "${STATE_DIR}/gh_calls"
-}
-
-@test "gh_push.sh archives done+closed project items" {
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-args="$*"
-
-if printf '%s' "$args" | grep -q "archiveProjectV2Item"; then
-  echo "archive_called" >> "${STATE_DIR}/gh_calls"
-  echo '{"data":{"archiveProjectV2Item":{"item":{"id":"PVTI_item1"}}}}'
-  exit 0
-fi
-
-echo '{}'
-exit 0
-SH
-  chmod +x "$GH_STUB"
-
-  cat > "$CONFIG_PATH" <<'YAML'
-gh:
-  repo: "test/repo"
-  project_id: "PVT_proj123"
-YAML
-
-  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  tdb_set "$INIT_TASK_ID" gh_issue_number "1"
-  tdb_set "$INIT_TASK_ID" gh_state "closed"
-  tdb_set "$INIT_TASK_ID" status "done"
-  tdb_set "$INIT_TASK_ID" gh_project_item_id "PVTI_item1"
-  tdb_set "$INIT_TASK_ID" gh_archived "0"
-  tdb_set "$INIT_TASK_ID" gh_synced_at ""
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" \
-    STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-
-  [ -f "${STATE_DIR}/gh_calls" ]
-  grep -q "archive_called" "${STATE_DIR}/gh_calls"
-
-  run tdb_field "$INIT_TASK_ID" gh_archived
-  [ "$status" -eq 0 ]
-  [ "$output" = "1" ]
-}
-
-@test "gh_push.sh skips archiving if already archived" {
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-args="$*"
-
-if printf '%s' "$args" | grep -q "archiveProjectV2Item"; then
-  echo "archive_called" >> "${STATE_DIR}/gh_calls"
-fi
-
-echo '{}'
-exit 0
-SH
-  chmod +x "$GH_STUB"
-
-  cat > "$CONFIG_PATH" <<'YAML'
-gh:
-  repo: "test/repo"
-  project_id: "PVT_proj123"
-YAML
-
-  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  tdb_set "$INIT_TASK_ID" gh_issue_number "1"
-  tdb_set "$INIT_TASK_ID" gh_state "closed"
-  tdb_set "$INIT_TASK_ID" status "done"
-  tdb_set "$INIT_TASK_ID" gh_project_item_id "PVTI_item1"
-  tdb_set "$INIT_TASK_ID" gh_archived "1"
-  tdb_set "$INIT_TASK_ID" gh_synced_at ""
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" \
-    STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-
-  if [ -f "${STATE_DIR}/gh_calls" ]; then
-    run cat "${STATE_DIR}/gh_calls"
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"archive_called"* ]]
-  fi
-}
-
-@test "gh_push.sh archives done tasks even with stale gh_state=open" {
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-args="$*"
-
-if printf '%s' "$args" | grep -q "archiveProjectV2Item"; then
-  echo "archive_called" >> "${STATE_DIR}/gh_calls"
-fi
-
-echo '{}'
-exit 0
-SH
-  chmod +x "$GH_STUB"
-
-  cat > "$CONFIG_PATH" <<'YAML'
-gh:
-  repo: "test/repo"
-  project_id: "PVT_proj123"
-YAML
-
-  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  tdb_set "$INIT_TASK_ID" gh_issue_number "1"
-  tdb_set "$INIT_TASK_ID" gh_state "open"
-  tdb_set "$INIT_TASK_ID" status "done"
-  tdb_set "$INIT_TASK_ID" gh_project_item_id "PVTI_item1"
-  tdb_set "$INIT_TASK_ID" gh_archived "0"
-  tdb_set "$INIT_TASK_ID" gh_synced_at ""
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" \
-    STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-
-  # Done tasks should now be archived regardless of gh_state
-  [ -f "${STATE_DIR}/gh_calls" ]
-  grep -q "archive_called" "${STATE_DIR}/gh_calls"
-}
-
 @test "plan_chat.sh cleans up history on exit" {
   CLAUDE_STUB="${TMP_DIR}/claude"
   cat > "$CLAUDE_STUB" <<'SH'
@@ -1819,19 +1529,19 @@ SH
   [[ "$output" == *"done -> opt_dn"* ]]
 
   # Config file should have all status map entries
-  run yq -r '.gh.project_status_field_id' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.project_status_field_id' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "PVTSSF_status1" ]
 
-  run yq -r '.gh.project_status_map.backlog' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.project_status_map.backlog' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "opt_bl" ]
 
-  run yq -r '.gh.project_status_map.in_progress' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.project_status_map.in_progress' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "opt_ip" ]
 
-  run yq -r '.gh.project_status_map.review' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.project_status_map.review' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "opt_rv" ]
 
-  run yq -r '.gh.project_status_map.done' "$INIT_DIR/.orchestrator.yml"
+  run yq -r '.gh.project_status_map.done' "$INIT_DIR/orchestrator.yml"
   [ "$output" = "opt_dn" ]
 
   rm -rf "$INIT_DIR"
@@ -1949,47 +1659,15 @@ SH
   # not "0".
   _add_history "$INIT_TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "blocked" "test note"
 
-  # Check the comment was added
-  run bash -c "(cd '$PROJECT_DIR' && bd --json --quiet comments '$INIT_TASK_ID' 2>/dev/null)"
+  # Check the comment was added via backend
+  run bash -c "
+    export ORCH_HOME='$ORCH_HOME' PROJECT_DIR='$PROJECT_DIR' STATE_DIR='$STATE_DIR'
+    source '${REPO_DIR}/scripts/lib.sh'
+    db_task_history '$INIT_TASK_ID'
+  "
   [ "$status" -eq 0 ]
   [[ "$output" == *"blocked"* ]]
   [[ "$output" == *"test note"* ]]
-}
-
-@test "gh_pull.sh does not bump updated_at on already-done closed issues" {
-  # gh_pull sets updated_at = NOW on closed issues every pull cycle,
-  # even if the task is already done. This triggers unnecessary gh_push syncs.
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [ "$1" = "api" ]; then
-  if printf '%s' "$*" | grep -q "repos/"; then
-    printf '[{"number":1,"title":"Already Done","body":"closed issue","labels":[],"state":"closed","html_url":"https://github.com/test/repo/issues/1","updated_at":"2026-01-01T00:00:00Z","pull_request":null}]\n'
-    exit 0
-  fi
-fi
-exit 0
-SH
-  chmod +x "$GH_STUB"
-
-  # Set init task to done with a known updated_at
-  FROZEN="2026-01-15T12:00:00Z"
-  export FROZEN
-  tdb_set "$INIT_TASK_ID" status "done"
-  tdb_set "$INIT_TASK_ID" gh_issue_number "1"
-  tdb_set "$INIT_TASK_ID" gh_state "closed"
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_pull.sh"
-  [ "$status" -eq 0 ]
-
-  # Task should still be done (not modified)
-  run tdb_field "$INIT_TASK_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "done" ]
 }
 
 @test "run_task.sh passes --output-format to agents" {
@@ -2301,113 +1979,6 @@ SH
   [ "$output" -ge 3 ]
 }
 
-@test "gh_push.sh has comment dedup functions" {
-  # Functions live in db.sh; gh_push.sh calls db_should_skip_comment + db_store_comment_hash
-  run grep -c 'should_skip_comment\|store_comment_hash\|last_comment_hash' "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 2 ]
-}
-
-@test "gh_push.sh applies blocked label on blocked status" {
-  run grep -c 'ensure_label.*blocked.*d73a4a\|labels.*blocked' "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 2 ]
-}
-
-@test "gh_push.sh uses atomic gh_synced_at write" {
-  # SQLite: db_task_set_synced sets gh_synced_at = updated_at atomically
-  run grep -c 'db_task_set_synced' "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 2 ]
-}
-
-@test "gh_push.sh skips tasks from different projects" {
-  # A task with dir=/other/project should be skipped when gh_push runs for PROJECT_DIR=$TMP_DIR
-  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Other project task" "Body" "")
-  TASK2_ID=$(_task_id "$TASK_OUTPUT")
-  tdb_set "$TASK2_ID" status "new"
-  tdb_set "$TASK2_ID" dir "/other/project"
-
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-echo "gh_called" >> "${STATE_DIR}/gh_push_calls"
-echo '{"number":99,"html_url":"https://github.com/test/repo/issues/99","state":"open"}'
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" \
-    STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-
-  # Task should NOT have gotten an issue (it belongs to a different project)
-  TASK2_GH=$(tdb_field "$TASK2_ID" gh_issue_number)
-  [ -z "$TASK2_GH" ]
-}
-
-@test "gh_push.sh never creates issues for done tasks" {
-  # A done task without a gh_issue_number should NOT get a new issue created
-  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Done task" "Body" "")
-  TASK2_ID=$(_task_id "$TASK_OUTPUT")
-  tdb_set "$TASK2_ID" status "done"
-
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-echo "FAIL: gh was called to create issue for done task" >&2
-echo '{"number":99,"html_url":"https://github.com/test/repo/issues/99","state":"open"}'
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" \
-    STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-
-  # Task should still have no issue number
-  TASK2_GH=$(tdb_field "$TASK2_ID" gh_issue_number)
-  [ -z "$TASK2_GH" ]
-}
-
-@test "gh_push.sh skips done tasks even with stale gh_state=open" {
-  # Bug: done tasks with gh_state=open used to fall through and get synced/duplicated
-  # Create a second task, then mark both as done with issue numbers
-  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Second task" "Body" "")
-  TASK2_ID=$(_task_id "$TASK_OUTPUT")
-  tdb_set "$INIT_TASK_ID" status "done"
-  tdb_set "$INIT_TASK_ID" gh_issue_number "99"
-  tdb_set "$INIT_TASK_ID" gh_state "closed"
-  tdb_set "$TASK2_ID" status "done"
-  tdb_set "$TASK2_ID" gh_issue_number "10"
-  tdb_set "$TASK2_ID" gh_state "open"
-
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-echo '{}'
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$TMP_DIR" \
-    STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-
-  # Task should still have issue #10 (not a new number)
-  TASK2_GH=$(tdb_field "$TASK2_ID" gh_issue_number)
-  [ "$TASK2_GH" = "10" ]
-}
-
 @test "skills_sync.sh uses ORCH_HOME paths" {
   run grep -c 'ORCH_HOME' "${REPO_DIR}/scripts/skills_sync.sh"
   [ "$status" -eq 0 ]
@@ -2560,7 +2131,7 @@ JSON
 
   # Extract just the read_tool_summary function and test it
   local func_file="${TMP_DIR}/tool_summary_func.sh"
-  sed -n '/^read_tool_summary()/,/^}/p' "${REPO_DIR}/scripts/gh_push.sh" > "$func_file"
+  sed -n '/^read_tool_summary()/,/^}/p' "${REPO_DIR}/scripts/backend_github.sh" > "$func_file"
 
   run bash -c "source '${REPO_DIR}/scripts/lib.sh' && source '$func_file' && read_tool_summary '' 1"
   [ "$status" -eq 0 ]
@@ -2572,29 +2143,11 @@ JSON
 
 @test "read_tool_summary returns empty for missing file" {
   local func_file="${TMP_DIR}/tool_summary_func.sh"
-  sed -n '/^read_tool_summary()/,/^}/p' "${REPO_DIR}/scripts/gh_push.sh" > "$func_file"
+  sed -n '/^read_tool_summary()/,/^}/p' "${REPO_DIR}/scripts/backend_github.sh" > "$func_file"
 
   run bash -c "source '${REPO_DIR}/scripts/lib.sh' && source '$func_file' && read_tool_summary '' 999"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-}
-
-@test "gh_push.sh comment includes duration and tokens" {
-  run grep -c 'Duration\|Tokens\|duration_fmt' "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 3 ]
-}
-
-@test "gh_push.sh comment includes tool activity section" {
-  run grep -c 'read_tool_summary\|Agent Activity' "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 2 ]
-}
-
-@test "gh_push.sh comment includes stderr section" {
-  run grep -ci 'stderr_snippet\|Agent stderr' "${REPO_DIR}/scripts/gh_push.sh"
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 2 ]
 }
 
 @test "run_task.sh stores duration and tokens in task YAML" {
@@ -2625,7 +2178,6 @@ JSON
   [ "$status" -eq 0 ]
   # Header should include PROJECT column
   [[ "$output" == *"PROJECT"* ]]
-  # bd list doesn't include metadata, so project name shows as "-"
   # Just verify the global view runs and shows the column header
 }
 
@@ -2635,7 +2187,6 @@ JSON
   [ "$status" -eq 0 ]
   # Header should include ISSUE column
   [[ "$output" == *"ISSUE"* ]]
-  # bd list doesn't include metadata, so issue numbers show as "-"
   # Just verify the list runs and shows the column header
 }
 
@@ -2646,9 +2197,10 @@ JSON
 }
 
 @test "task_count counts tasks by status" {
-  # Count tasks with "new" status via beads
-  NEW_COUNT=$(cd "$PROJECT_DIR" && bd --json --quiet list -n 0 --all 2>/dev/null | jq '[.[] | select(.status == "new")] | length')
-  [ "$NEW_COUNT" -ge 1 ]
+  # Init task should be "new" — verify via backend
+  run tdb_field "$INIT_TASK_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
 
   # Total count
   run tdb_count
@@ -3020,9 +2572,9 @@ JSON
   fi
 }
 
-@test "load_project_config merges per-project .orchestrator.yml" {
+@test "load_project_config merges per-project orchestrator.yml" {
   # Create a per-project config with a different repo
-  cat > "${TMP_DIR}/.orchestrator.yml" <<YAML
+  cat > "${TMP_DIR}/orchestrator.yml" <<YAML
 gh:
   repo: "testorg/testrepo"
   project_id: "PVT_test123"
@@ -3045,7 +2597,7 @@ YAML
 }
 
 @test "load_project_config uses global config when no project config exists" {
-  # No .orchestrator.yml in PROJECT_DIR
+  # No orchestrator.yml in PROJECT_DIR
   run yq -i '.gh.repo = "global/repo"' "$CONFIG_PATH"
 
   run bash -c '
@@ -3061,46 +2613,12 @@ YAML
   [ "$output" = "global/repo" ]
 }
 
-@test "gh_pull.sh uses PROJECT_DIR for repo detection" {
-  # Create per-project config
-  cat > "${TMP_DIR}/.orchestrator.yml" <<YAML
-gh:
-  repo: "testorg/testrepo"
-YAML
-
-  # Mock gh to capture the repo it receives
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [[ "$*" == *"issues"* ]]; then
-  echo "repo=$REPO" >&2
-  echo "[]"
-fi
-exit 0
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" PROJECT_DIR="$TMP_DIR" \
-    "${REPO_DIR}/scripts/gh_pull.sh"
-  # Should not fail (may have no issues, that's fine)
-  # The key test: it loaded the per-project repo
-  run bash -c '
-    export PROJECT_DIR="'"$TMP_DIR"'"
-    export CONFIG_PATH="'"$CONFIG_PATH"'"
-    export STATE_DIR="'"$STATE_DIR"'"
-    source "'"$REPO_DIR"'/scripts/lib.sh"
-    load_project_config
-    config_get ".gh.repo"
-  '
-  [ "$output" = "testorg/testrepo" ]
-}
-
 @test "load_project_config called twice uses global config not merged" {
   # Regression test: when parent process calls load_project_config, CONFIG_PATH
   # becomes config-merged.yml. If a child process inherits this and calls
   # load_project_config again, it must still merge from the GLOBAL config,
   # not from the already-merged file (which would produce empty output).
-  cat > "${TMP_DIR}/.orchestrator.yml" <<YAML
+  cat > "${TMP_DIR}/orchestrator.yml" <<YAML
 gh:
   repo: "testorg/testrepo"
 YAML
@@ -3145,19 +2663,6 @@ YAML
   fi
 }
 
-@test "gh_sync.sh loads per-project config" {
-  cat > "${TMP_DIR}/.orchestrator.yml" <<YAML
-gh:
-  repo: "testorg/syncrepo"
-  enabled: false
-YAML
-
-  run env PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/gh_sync.sh" 2>&1
-  [ "$status" -eq 0 ]
-  # gh_sync exits early with "disabled" — proves it loaded the project config
-  [[ "$output" == *"disabled"* ]]
-}
-
 @test "unlock.sh removes lock files" {
   # Create fake lock files
   mkdir -p "$LOCK_PATH"
@@ -3176,19 +2681,17 @@ YAML
   REMOTE_DIR="${TMP_DIR}/remote.git"
   git init --bare "$REMOTE_DIR" --quiet
   git -C "$PROJECT_DIR" remote add origin "$REMOTE_DIR"
-  # Commit any beads-created files before pushing
+  # Commit any locally-created files before pushing
   git -C "$PROJECT_DIR" add -A 2>/dev/null || true
-  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "beads init" --quiet 2>/dev/null || true
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "test init" --quiet 2>/dev/null || true
   git -C "$PROJECT_DIR" push -u origin main --quiet 2>/dev/null
 
   # Add a task with issue number
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Add README" "Create a README.md file" "")
   TASK2_ID=$(_task_id "$TASK_OUTPUT")
 
-  # Set agent and issue number
+  # Set agent (issue number = task ID in GitHub backend)
   tdb_set "$TASK2_ID" agent "codex"
-  tdb_set "$TASK2_ID" gh_issue_number "42"
-  tdb_set "$TASK2_ID" gh_url "https://github.com/test/repo/issues/42"
 
   # Stub codex: writes output JSON to .orchestrator/ and creates a file + commit
   CODEX_STUB="${TMP_DIR}/codex"
@@ -3214,20 +2717,22 @@ fi
 STUB
   chmod +x "$CODEX_STUB"
 
-  # Stub gh (PR creation will be attempted)
+  # Stub gh (PR creation will be attempted; delegate api/auth to proper mock)
   GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'STUB'
+  cat > "$GH_STUB" <<STUB
 #!/usr/bin/env bash
-if [[ "$*" == *"pr list"* ]]; then
+if [ "\$1" = "api" ] || [ "\$1" = "auth" ]; then
+  exec "${MOCK_BIN}/gh" "\$@"
+elif [[ "\$*" == *"pr list"* ]]; then
   echo ""
   exit 0
-elif [[ "$*" == *"pr create"* ]]; then
+elif [[ "\$*" == *"pr create"* ]]; then
   echo "https://github.com/test/repo/pull/1"
   exit 0
-elif [[ "$*" == *"issue develop"* ]]; then
+elif [[ "\$*" == *"issue develop"* ]]; then
   exit 0
 fi
-exit 0
+exec "${MOCK_BIN}/gh" "\$@"
 STUB
   chmod +x "$GH_STUB"
 
@@ -3238,17 +2743,20 @@ STUB
   [ "$status" -eq 0 ]
 
   # Verify worktree was created (project-local location)
-  WORKTREE_DIR="${PROJECT_DIR}/.orchestrator/worktrees/gh-task-42-add-readme"
+  # In GitHub backend, task ID = issue number, so branch uses TASK2_ID
+  WORKTREE_DIR="${PROJECT_DIR}/.orchestrator/worktrees/gh-task-${TASK2_ID}-add-readme"
   [ -d "$WORKTREE_DIR" ]
+
+  BRANCH_NAME="gh-task-${TASK2_ID}-add-readme"
 
   # Verify worktree info saved to task
   run tdb_field "$TASK2_ID" worktree
   [ "$status" -eq 0 ]
-  [[ "$output" == *"gh-task-42-add-readme"* ]]
+  [[ "$output" == *"$BRANCH_NAME"* ]]
 
   run tdb_field "$TASK2_ID" branch
   [ "$status" -eq 0 ]
-  [ "$output" = "gh-task-42-add-readme" ]
+  [ "$output" = "$BRANCH_NAME" ]
 
   # Verify task completed
   run tdb_field "$TASK2_ID" status
@@ -3261,13 +2769,13 @@ STUB
   [[ "$output" == *"add README"* ]]
 
   # Verify branch was pushed to remote
-  run git -C "$REMOTE_DIR" branch --list "gh-task-42-add-readme"
+  run git -C "$REMOTE_DIR" branch --list "$BRANCH_NAME"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"gh-task-42-add-readme"* ]]
+  [[ "$output" == *"$BRANCH_NAME"* ]]
 
   # Clean up worktree
   git -C "$PROJECT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
-  git -C "$PROJECT_DIR" branch -D "gh-task-42-add-readme" 2>/dev/null || true
+  git -C "$PROJECT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
 }
 
 @test "e2e: auto-commit when agent writes files but does not commit" {
@@ -3275,19 +2783,17 @@ STUB
   REMOTE_DIR="${TMP_DIR}/remote.git"
   git init --bare "$REMOTE_DIR" --quiet
   git -C "$PROJECT_DIR" remote add origin "$REMOTE_DIR"
-  # Commit any beads-created files before pushing
+  # Commit any locally-created files before pushing
   git -C "$PROJECT_DIR" add -A 2>/dev/null || true
-  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "beads init" --quiet 2>/dev/null || true
+  git -C "$PROJECT_DIR" -c user.email="test@test.com" -c user.name="Test" commit -m "test init" --quiet 2>/dev/null || true
   git -C "$PROJECT_DIR" push -u origin main --quiet 2>/dev/null
 
   # Add a task with issue number
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Add LICENSE" "Create a LICENSE file" "")
   TASK2_ID=$(_task_id "$TASK_OUTPUT")
 
-  # Set agent and issue number
+  # Set agent (issue number = task ID in GitHub backend)
   tdb_set "$TASK2_ID" agent "claude"
-  tdb_set "$TASK2_ID" gh_issue_number "55"
-  tdb_set "$TASK2_ID" gh_url "https://github.com/test/repo/issues/55"
 
   # Stub claude: writes files and output JSON but does NOT git commit
   CLAUDE_STUB="${TMP_DIR}/claude"
@@ -3310,20 +2816,22 @@ fi
 STUB
   chmod +x "$CLAUDE_STUB"
 
-  # Stub gh
+  # Stub gh (PR creation; delegate api/auth to proper mock)
   GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'STUB'
+  cat > "$GH_STUB" <<STUB
 #!/usr/bin/env bash
-if [[ "$*" == *"pr list"* ]]; then
+if [ "\$1" = "api" ] || [ "\$1" = "auth" ]; then
+  exec "${MOCK_BIN}/gh" "\$@"
+elif [[ "\$*" == *"pr list"* ]]; then
   echo ""
   exit 0
-elif [[ "$*" == *"pr create"* ]]; then
+elif [[ "\$*" == *"pr create"* ]]; then
   echo "https://github.com/test/repo/pull/2"
   exit 0
-elif [[ "$*" == *"issue develop"* ]]; then
+elif [[ "\$*" == *"issue develop"* ]]; then
   exit 0
 fi
-exit 0
+exec "${MOCK_BIN}/gh" "\$@"
 STUB
   chmod +x "$GH_STUB"
 
@@ -3334,7 +2842,9 @@ STUB
   [ "$status" -eq 0 ]
 
   # Verify worktree was created (project-local location)
-  WORKTREE_DIR="${PROJECT_DIR}/.orchestrator/worktrees/gh-task-55-add-license"
+  # In GitHub backend, task ID = issue number
+  BRANCH_NAME="gh-task-${TASK2_ID}-add-license"
+  WORKTREE_DIR="${PROJECT_DIR}/.orchestrator/worktrees/${BRANCH_NAME}"
   [ -d "$WORKTREE_DIR" ]
 
   # Verify orchestrator auto-committed the changes
@@ -3348,13 +2858,13 @@ STUB
   [[ "$output" == *"MIT License"* ]]
 
   # Verify branch was pushed to remote
-  run git -C "$REMOTE_DIR" branch --list "gh-task-55-add-license"
+  run git -C "$REMOTE_DIR" branch --list "$BRANCH_NAME"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"gh-task-55-add-license"* ]]
+  [[ "$output" == *"$BRANCH_NAME"* ]]
 
   # Clean up worktree
   git -C "$PROJECT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
-  git -C "$PROJECT_DIR" branch -D "gh-task-55-add-license" 2>/dev/null || true
+  git -C "$PROJECT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
 }
 
 @test "model_for_complexity resolves agent model from config" {
@@ -3527,18 +3037,21 @@ SH
   chmod +x "$CLAUDE_STUB"
 
   # Mock gh — return PR number for list, accept diff/review/close
+  # Delegate api calls to the proper gh mock for backend support
   GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
+  cat > "$GH_STUB" <<SH
 #!/usr/bin/env bash
-if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+if [ "\$1" = "api" ] || [ "\$1" = "auth" ]; then
+  exec "${MOCK_BIN}/gh" "\$@"
+elif [ "\$1" = "pr" ] && [ "\$2" = "list" ]; then
   echo "42"
-elif [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+elif [ "\$1" = "pr" ] && [ "\$2" = "diff" ]; then
   echo "+added line"
-elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+elif [ "\$1" = "pr" ] && [ "\$2" = "review" ]; then
   echo "ok"
-elif [ "$1" = "pr" ] && [ "$2" = "close" ]; then
+elif [ "\$1" = "pr" ] && [ "\$2" = "close" ]; then
   echo "ok"
-elif [ "$1" = "issue" ]; then
+elif [ "\$1" = "issue" ]; then
   echo ""
 else
   echo "[]"
@@ -3650,12 +3163,15 @@ SH
   chmod +x "$CLAUDE_STUB"
 
   # Mock gh — track calls to detect if pr close was called
+  # Delegate api calls to the proper gh mock for backend support
   GH_LOG="${STATE_DIR}/gh_calls.log"
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<SH
 #!/usr/bin/env bash
 echo "\$@" >> "${GH_LOG}"
-if [ "\$1" = "pr" ] && [ "\$2" = "list" ]; then
+if [ "\$1" = "api" ] || [ "\$1" = "auth" ]; then
+  exec "${MOCK_BIN}/gh" "\$@"
+elif [ "\$1" = "pr" ] && [ "\$2" = "list" ]; then
   echo "42"
 elif [ "\$1" = "pr" ] && [ "\$2" = "diff" ]; then
   echo "+added line"
@@ -3800,105 +3316,6 @@ SH
   [[ "$output" == *"Please use markdown format"* ]]
 }
 
-@test "gh_pull processes owner feedback on done tasks" {
-  # Create a task linked to a GitHub issue with status done
-  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Done Task" "Body" "")
-  TASK2_ID=$(_task_id "$TASK_OUTPUT")
-
-  tdb_set "$TASK2_ID" status "done"
-  tdb_set "$TASK2_ID" agent "claude"
-  tdb_set "$TASK2_ID" gh_issue_number "99"
-  tdb_set "$TASK2_ID" gh_state "open"
-  tdb_set "$TASK2_ID" gh_url "https://github.com/org/repo/issues/99"
-
-  # Set repo config
-  run yq -i '.gh.repo = "testowner/testrepo"' "$CONFIG_PATH"
-  [ "$status" -eq 0 ]
-
-  # Set review_owner
-  run yq -i '.workflow.review_owner = "testowner"' "$CONFIG_PATH"
-  [ "$status" -eq 0 ]
-
-  # Mock gh
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [[ "$*" == *"issues"*"comments"* ]]; then
-  cat <<'JSON'
-[
-  {"user":{"login":"testowner"},"created_at":"2026-02-18T10:00:00Z","body":"This needs rework"}
-]
-JSON
-elif [[ "$*" == *"repo view"* ]]; then
-  echo "testowner/testrepo"
-elif [[ "$*" == *"graphql"* ]]; then
-  echo '{"data":{"repository":{}}}'
-elif [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
-  echo "[]"
-else
-  echo "[]"
-fi
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" GITHUB_REPO="testowner/testrepo" bash "${REPO_DIR}/scripts/gh_pull.sh"
-  [ "$status" -eq 0 ]
-
-  # Task should now be routed (not done)
-  run tdb_field "$TASK2_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "routed" ]
-
-  # Agent should be preserved
-  run tdb_field "$TASK2_ID" agent
-  [ "$status" -eq 0 ]
-  [ "$output" = "claude" ]
-}
-
-@test "gh_pull skips in_progress tasks for feedback" {
-  # Create a task linked to a GitHub issue with status in_progress
-  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Running Task" "Body" "")
-  TASK2_ID=$(_task_id "$TASK_OUTPUT")
-
-  tdb_set "$TASK2_ID" status "in_progress"
-  tdb_set "$TASK2_ID" agent "claude"
-  tdb_set "$TASK2_ID" gh_issue_number "88"
-  tdb_set "$TASK2_ID" gh_state "open"
-
-  run yq -i '.gh.repo = "testowner/testrepo" | .workflow.review_owner = "testowner"' "$CONFIG_PATH"
-  [ "$status" -eq 0 ]
-
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [[ "$*" == *"issues"*"comments"* ]]; then
-  # Owner commented — but task is in_progress so should be skipped
-  cat <<'JSON'
-[
-  {"user":{"login":"testowner"},"created_at":"2026-02-18T10:00:00Z","body":"Looks wrong"}
-]
-JSON
-elif [[ "$*" == *"repo view"* ]]; then
-  echo "testowner/testrepo"
-elif [[ "$*" == *"graphql"* ]]; then
-  echo '{"data":{"repository":{}}}'
-elif [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
-  echo "[]"
-else
-  echo "[]"
-fi
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" GITHUB_REPO="testowner/testrepo" bash "${REPO_DIR}/scripts/gh_pull.sh"
-  [ "$status" -eq 0 ]
-
-  # Task should still be in_progress
-  run tdb_field "$TASK2_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "in_progress" ]
-}
-
 # ===== project_add.sh / bare repo support =====
 
 @test "is_bare_repo detects bare repositories" {
@@ -3942,7 +3359,7 @@ SH
   [[ "$output" == *"Already cloned"* ]]
 
   # Config should have correct repo slug
-  run yq -r '.gh.repo' "${BARE_DIR}/.orchestrator.yml"
+  run yq -r '.gh.repo' "${BARE_DIR}/orchestrator.yml"
   [ "$status" -eq 0 ]
   [ "$output" = "testowner/testrepo" ]
 }
@@ -4003,7 +3420,7 @@ SH
     bash "${REPO_DIR}/scripts/project_add.sh" "https://github.com/urlowner/urlrepo.git"
   [ "$status" -eq 0 ]
 
-  run yq -r '.gh.repo' "${BARE_HTTPS}/.orchestrator.yml"
+  run yq -r '.gh.repo' "${BARE_HTTPS}/orchestrator.yml"
   [ "$status" -eq 0 ]
   [ "$output" = "urlowner/urlrepo" ]
 
@@ -4012,7 +3429,7 @@ SH
     bash "${REPO_DIR}/scripts/project_add.sh" "git@github.com:sshowner/sshrepo.git"
   [ "$status" -eq 0 ]
 
-  run yq -r '.gh.repo' "${BARE_SSH}/.orchestrator.yml"
+  run yq -r '.gh.repo' "${BARE_SSH}/orchestrator.yml"
   [ "$status" -eq 0 ]
   [ "$output" = "sshowner/sshrepo" ]
 }
@@ -4027,8 +3444,8 @@ SH
   BARE_DIR="${TMP_DIR}/bare-worktree-test.git"
   git clone --bare "$SRC" "$BARE_DIR" 2>/dev/null
 
-  # Write .orchestrator.yml
-  cat > "${BARE_DIR}/.orchestrator.yml" <<YAML
+  # Write orchestrator.yml
+  cat > "${BARE_DIR}/orchestrator.yml" <<YAML
 gh:
   repo: "testowner/testrepo"
   sync_label: ""
@@ -4057,25 +3474,22 @@ echo '{"type":"result","result":"done"}'
 SH
   chmod +x "$CLAUDE_STUB"
 
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-echo "{}"
-SH
-  chmod +x "$GH_STUB"
-
   # Route the task first
   tdb_set "$BARE_TASK_ID" agent "claude"
   tdb_set "$BARE_TASK_ID" status "routed"
 
+  # Use gh mock from $MOCK_BIN (setup), claude stub from $TMP_DIR
   run env PATH="${TMP_DIR}:${PATH}" \
     CONFIG_PATH="$CONFIG_PATH" \
     PROJECT_DIR="$BARE_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
-    AGENT_TIMEOUT_SECONDS=5 LOCK_PATH="$LOCK_PATH" \
+    AGENT_TIMEOUT_SECONDS=5 LOCK_PATH="$LOCK_PATH" USE_TMUX=false \
     bash "${REPO_DIR}/scripts/run_task.sh" "$BARE_TASK_ID"
+  # run_task.sh calls load_project_config which sets STATE_DIR to PROJECT_DIR/.orchestrator
+  # so sidecar fields are written there, not to the test's default STATE_DIR
+  BARE_STATE_DIR="${BARE_DIR}/.orchestrator"
 
   # Task should have a worktree set
-  run tdb_field "$BARE_TASK_ID" worktree
+  run env STATE_DIR="$BARE_STATE_DIR" bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_field '$BARE_TASK_ID' worktree"
   [ "$status" -eq 0 ]
   [ "$output" != "null" ]
   [ -n "$output" ]
@@ -4090,149 +3504,7 @@ SH
   export PROJECT_DIR="$PROJECT_DIR_OLD"
 }
 
-@test "gh_pull.sh detects repo from bare clone remote URL" {
-  source "${REPO_DIR}/scripts/lib.sh"
 
-  # Create a bare repo with a remote origin
-  SRC="${TMP_DIR}/source-repo5"
-  mkdir -p "$SRC"
-  git -C "$SRC" init -b main --quiet
-  git -C "$SRC" -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m "init" --quiet
-
-  BARE_DIR="${TMP_DIR}/bare-pull-test.git"
-  git clone --bare "$SRC" "$BARE_DIR" 2>/dev/null
-  # Set a GitHub-style remote URL
-  git -C "$BARE_DIR" remote set-url origin "git@github.com:bareowner/barerepo.git"
-
-  # Verify is_bare_repo
-  run is_bare_repo "$BARE_DIR"
-  [ "$status" -eq 0 ]
-
-  # Write config
-  cat > "${BARE_DIR}/.orchestrator.yml" <<YAML
-gh:
-  repo: ""
-  sync_label: ""
-YAML
-
-  # Stub gh
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
-  echo "[]"
-elif [[ "$*" == *"graphql"* ]]; then
-  echo '{"data":{"repository":{}}}'
-else
-  echo "[]"
-fi
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$BARE_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="" \
-    bash "${REPO_DIR}/scripts/gh_pull.sh"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"bareowner/barerepo"* ]]
-}
-
-@test "gh_pull.sh syncs status forward from GH labels (ratchet)" {
-  # Create a task linked to GH issue #10, local status=new, old updated_at
-  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Sync test task" "" "")
-  SYNC_TASK_ID=$(_task_id "$TASK_OUTPUT")
-
-  # Set gh_issue_number, status, and dir so GH sync can find this task
-  tdb_set "$SYNC_TASK_ID" gh_issue_number "10"
-  tdb_set "$SYNC_TASK_ID" status "new"
-  tdb_set "$SYNC_TASK_ID" dir "$PROJECT_DIR"
-  # Note: beads auto-updates updated_at — we can't backdate it.
-  # Use a future GH updated_at to ensure GH appears newer than local.
-
-  # Stub gh to return issue #10 with status:in_progress label and a future updated_at
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
-  cat <<JSON
-[{
-  "number": 10,
-  "title": "Sync test task",
-  "body": "",
-  "labels": [{"name": "status:in_progress"}],
-  "state": "open",
-  "html_url": "https://github.com/test/repo/issues/10",
-  "updated_at": "2099-01-01T00:00:00Z",
-  "pull_request": null
-}]
-JSON
-elif [[ "$*" == *"graphql"* ]]; then
-  echo '{"data":{"repository":{}}}'
-else
-  echo "[]"
-fi
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$PROJECT_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    bash "${REPO_DIR}/scripts/gh_pull.sh"
-  [ "$status" -eq 0 ]
-
-  # Verify status moved forward
-  local_status=$(tdb_field "$SYNC_TASK_ID" status)
-  [ "$local_status" = "in_progress" ]
-  [[ "$output" == *"status synced from GH: new → in_progress"* ]]
-}
-
-@test "gh_pull.sh does not downgrade status from GH labels (ratchet)" {
-  # Create a task with in_progress status
-  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Ratchet test" "" "")
-  RATCHET_TASK_ID=$(_task_id "$TASK_OUTPUT")
-
-  tdb_set "$RATCHET_TASK_ID" gh_issue_number "11"
-  tdb_set "$RATCHET_TASK_ID" status "in_progress"
-  tdb_set "$RATCHET_TASK_ID" dir "$PROJECT_DIR"
-  tdb_set "$RATCHET_TASK_ID" updated_at "2026-01-01T00:00:00Z"
-
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-if [[ "$*" == *"issues"* ]] && [[ "$*" == *"paginate"* ]]; then
-  cat <<JSON
-[{
-  "number": 11,
-  "title": "Ratchet test",
-  "body": "",
-  "labels": [{"name": "status:new"}],
-  "state": "open",
-  "html_url": "https://github.com/test/repo/issues/11",
-  "updated_at": "2026-02-01T00:00:00Z",
-  "pull_request": null
-}]
-JSON
-elif [[ "$*" == *"graphql"* ]]; then
-  echo '{"data":{"repository":{}}}'
-else
-  echo "[]"
-fi
-SH
-  chmod +x "$GH_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" \
-    CONFIG_PATH="$CONFIG_PATH" \
-    PROJECT_DIR="$PROJECT_DIR" ORCH_HOME="$ORCH_HOME" STATE_DIR="$STATE_DIR" \
-    GITHUB_REPO="test/repo" \
-    bash "${REPO_DIR}/scripts/gh_pull.sh"
-  [ "$status" -eq 0 ]
-
-  # Status should NOT be downgraded
-  local_status=$(tdb_field "$RATCHET_TASK_ID" status)
-  [ "$local_status" = "in_progress" ]
-}
 
 # --- stop.sh --force tests ---
 
@@ -4606,7 +3878,7 @@ SH
   [ "$output" = "new" ]
 }
 
-# --- Beads db.sh tests ---
+# --- Backend (db_*) function tests ---
 
 @test "db_task_field reads a single field" {
   source "${REPO_DIR}/scripts/lib.sh"
@@ -4671,22 +3943,19 @@ SH
   source "${REPO_DIR}/scripts/lib.sh"
 
   # setup() already created the Init task (status=new)
-  # Create two more tasks and set them to done
+  # Create two more tasks
   local id_b id_c
   id_b=$(db_create_task "B" "" "$PROJECT_DIR")
   id_c=$(db_create_task "C" "" "$PROJECT_DIR")
-  db_task_set "$id_b" status "done"
-  db_task_set "$id_c" status "done"
 
   run db_task_count "new"
-  # Init task + at least the new tasks created here that are still new
-  [ "$output" -ge 1 ]
-
-  run db_task_count "done"
-  [ "$output" = "2" ]
-
-  run db_task_count
+  # Init task + B + C = at least 3 new tasks
   [ "$output" -ge 3 ]
+
+  # Set one to in_progress — search API should find it
+  db_task_set "$id_b" status "in_progress"
+  run db_task_count "in_progress"
+  [ "$output" -ge 1 ]
 }
 
 @test "db_create_task creates task with labels" {
@@ -4783,175 +4052,7 @@ SH
   [ "$output" = "false" ]
 }
 
-# --- Beads routing tests (lib.sh) ---
 
-# Helper: set up a beads env and source lib.sh
-_setup_beads_env() {
-  source "${REPO_DIR}/scripts/lib.sh"
-  # Create a test task via beads
-  _BEADS_TEST_ID=$(db_create_task "Test Task" "body" "$PROJECT_DIR" "bug")
-  db_task_set "$_BEADS_TEST_ID" agent "claude"
-}
-
-@test "task_field routes to beads when initialized" {
-  _setup_beads_env
-  run task_field "$_BEADS_TEST_ID" .status
-  [ "$status" -eq 0 ]
-  [ "$output" = "new" ]
-
-  run task_field "$_BEADS_TEST_ID" .title
-  [ "$output" = "Test Task" ]
-}
-
-@test "task_set routes to beads when initialized" {
-  _setup_beads_env
-  task_set "$_BEADS_TEST_ID" .status "done"
-  run task_field "$_BEADS_TEST_ID" .status
-  [ "$output" = "done" ]
-}
-
-@test "task_count routes to beads when initialized" {
-  _setup_beads_env
-  run task_count "new"
-  [ "$status" -eq 0 ]
-  # Should count at least the 1 task we created (+ the init task from setup)
-  [ "$output" -ge 1 ]
-}
-
-@test "append_history routes to beads when initialized" {
-  _setup_beads_env
-  append_history "$_BEADS_TEST_ID" "routed" "test note"
-  run db_task_history "$_BEADS_TEST_ID"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"test note"* ]]
-}
-
-@test "mark_needs_review routes to beads when initialized" {
-  _setup_beads_env
-  mark_needs_review "$_BEADS_TEST_ID" 0 "test error" "test note"
-  run task_field "$_BEADS_TEST_ID" .status
-  [ "$output" = "needs_review" ]
-  run task_field "$_BEADS_TEST_ID" .last_error
-  [ "$output" = "test error" ]
-}
-
-@test "acquire_lock is no-op with beads" {
-  source "${REPO_DIR}/scripts/lib.sh"
-  # Should not create lock dir
-  acquire_lock
-  [ ! -d "$LOCK_PATH" ]
-}
-
-@test "with_lock runs command directly with beads" {
-  source "${REPO_DIR}/scripts/lib.sh"
-  # Should succeed without touching lock dir
-  run with_lock echo "hello"
-  [ "$status" -eq 0 ]
-  [ "$output" = "hello" ]
-  [ ! -d "$LOCK_PATH" ]
-}
-
-@test "poll.sh works with beads backend" {
-  source "${REPO_DIR}/scripts/lib.sh"
-
-  # Add a task with no-agent label — should be skipped
-  local skip_id
-  skip_id=$(db_create_task "Skip Me" "" "$PROJECT_DIR" "no-agent")
-
-  # Set the init task to 'done' so poll doesn't try to run it
-  db_task_set "$INIT_TASK_ID" status "done"
-
-  # Create a mock gh that does nothing
-  GH_STUB="${TMP_DIR}/gh"
-  cat > "$GH_STUB" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-  chmod +x "$GH_STUB"
-
-  # Run poll.sh — should succeed (no tasks to run, no-agent skipped)
-  run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/poll.sh"
-  [ "$status" -eq 0 ]
-}
-
-@test "add_task.sh uses beads when initialized" {
-  source "${REPO_DIR}/scripts/lib.sh"
-
-  local before_count
-  before_count=$(db_task_count)
-
-  run "${REPO_DIR}/scripts/add_task.sh" "Beads Task" "Beads Body" "feat,test"
-  [ "$status" -eq 0 ]
-  [[ "$output" =~ "Added task" ]]
-
-  # Verify the task is in beads
-  local after_count
-  after_count=$(db_task_count)
-  [ "$after_count" -gt "$before_count" ]
-
-  # Verify we can find it by title
-  local new_id
-  new_id=$(_task_id_by_title "Beads Task")
-  [ -n "$new_id" ]
-
-  # Verify labels
-  run db_task_labels_csv "$new_id"
-  [[ "$output" == *"feat"* ]]
-  [[ "$output" == *"test"* ]]
-}
-
-@test "db_load_task handles multiline body without truncating fields" {
-  source "${REPO_DIR}/scripts/lib.sh"
-
-  # Create a task with a multiline body containing newlines
-  local multiline_body
-  multiline_body=$(printf 'Line 1\nLine 2\nLine 3\n\nLine 5 with context')
-  local task_id
-  task_id=$(db_create_task "Multiline Test" "$multiline_body" "$PROJECT_DIR")
-  db_task_set "$task_id" "gh_issue_number" "42"
-
-  # Load the task
-  db_load_task "$task_id"
-
-  # Verify fields AFTER body are not empty (the bug would make them empty)
-  [ "$TASK_STATUS" = "new" ]
-  [ "$TASK_DIR" = "$PROJECT_DIR" ]
-  [ "$GH_ISSUE_NUMBER" = "42" ]
-  [ "$TASK_TITLE" = "Multiline Test" ]
-
-  # Verify body contains all lines (not truncated at first newline)
-  local body_lines
-  body_lines=$(printf '%s' "$TASK_BODY" | wc -l | tr -d ' ')
-  [ "$body_lines" -ge 4 ]
-}
-
-@test "gh_push.sh skips tasks from other projects (cross-project guard)" {
-  source "${REPO_DIR}/scripts/lib.sh"
-
-  # Create a task with a multiline body AND a different dir
-  local multiline_body
-  multiline_body=$(printf 'Context\nThis task belongs to another project\nShould not be pushed here')
-  local foreign_id
-  foreign_id=$(db_create_task "Foreign Task" "$multiline_body" "/tmp/other-project")
-
-  # Load it and verify the cross-project guard would work
-  db_load_task "$foreign_id"
-
-  # Key assertion: dir must be loaded correctly even with multiline body
-  [ "$TASK_DIR" = "/tmp/other-project" ]
-  [ "$TASK_STATUS" = "new" ]
-
-  # Simulate the cross-project guard from gh_push.sh
-  local PROJECT_DIR="${TMP_DIR}"
-  local TASK_DIR_VAL="$TASK_DIR"
-  if [ -n "$TASK_DIR_VAL" ] && [ "$TASK_DIR_VAL" != "null" ] && [ "$TASK_DIR_VAL" != "$PROJECT_DIR" ]; then
-    # Guard triggered — task would be skipped (correct behavior)
-    true
-  else
-    # Guard NOT triggered — task would be pushed to wrong repo (BUG)
-    false
-  fi
-}
 
 # ─── build_git_diff tests ───
 

@@ -66,18 +66,16 @@ if [ -n "$IN_REVIEW_IDS" ] && command -v gh >/dev/null 2>&1; then
   done <<< "$IN_REVIEW_IDS"
 fi
 
-# Worktree janitor: clean up done tasks with worktrees
-# bd list doesn't include metadata, so get done IDs then show each
-DONE_IDS_WT=$(_bd_json list -n 0 --all 2>/dev/null | jq -r '.[] | select(.status == "done") | .id' 2>/dev/null || true)
+# Worktree janitor: clean up done tasks with worktrees (from sidecar data)
+DONE_IDS_WT=$(db_task_ids_by_status "done")
 if [ -n "$DONE_IDS_WT" ]; then
   while IFS= read -r tid; do
     [ -n "$tid" ] || continue
-    _tj=$(_bd_json show "$tid" 2>/dev/null) || continue
-    wt=$(printf '%s' "$_tj" | jq -r '.[0].metadata.worktree // empty' 2>/dev/null)
+    wt=$(db_task_field "$tid" "worktree")
     [ -n "$wt" ] || continue
     [ -d "$wt" ] || continue
-    branch=$(printf '%s' "$_tj" | jq -r '.[0].metadata.branch // empty' 2>/dev/null)
-    task_dir=$(printf '%s' "$_tj" | jq -r '.[0].metadata.dir // empty' 2>/dev/null)
+    branch=$(db_task_field "$tid" "branch")
+    task_dir=$(db_task_field "$tid" "dir")
 
     MAIN_DIR="${task_dir:-.}"
     if [ ! -d "$MAIN_DIR/.git" ] && [ ! -f "$MAIN_DIR/.git" ]; then
@@ -105,14 +103,14 @@ if [ -n "$ALL_IDS" ]; then
 fi
 
 # Collect blocked parents ready to rejoin (all children done)
-# Query beads for blocked tasks that have children, check if all children are done
+# Query blocked tasks that have children, check if all children are done
 BLOCKED_IDS=$(db_task_ids_by_status "blocked")
 if [ -n "$BLOCKED_IDS" ]; then
   READY_IDS=""
   while IFS= read -r bid; do
     [ -n "$bid" ] || continue
     # Get children of this task
-    CHILDREN=$(_bd_json show "$bid" --children 2>/dev/null | jq -r '.[][] | .id' 2>/dev/null || true)
+    CHILDREN=$(db_task_children "$bid" 2>/dev/null || true)
     [ -z "$CHILDREN" ] && continue
     # Check if ALL children are done
     ALL_DONE=true

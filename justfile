@@ -238,7 +238,7 @@ _service_killall:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "Killing all orchestrator processes..."
-    for pattern in 'scripts/serve\.sh' 'scripts/poll\.sh' 'scripts/run_task\.sh' 'scripts/gh_sync\.sh' 'scripts/gh_push\.sh' 'scripts/gh_pull\.sh'; do
+    for pattern in 'scripts/serve\.sh' 'scripts/poll\.sh' 'scripts/run_task\.sh' 'scripts/cleanup_worktrees\.sh' 'scripts/route_task\.sh' 'scripts/jobs_tick\.sh'; do
       pkill -f "$pattern" 2>/dev/null && echo "  killed $pattern" || true
     done
     # Clean up stale PID/lock files
@@ -270,15 +270,15 @@ gh target *args:
 
 [private]
 _gh_pull:
-    @scripts/gh_pull.sh
+    @echo "GitHub is the native backend — no pull needed."
 
 [private]
 _gh_push:
-    @scripts/gh_push.sh
+    @echo "GitHub is the native backend — no push needed."
 
 [private]
 _gh_sync:
-    @scripts/gh_sync.sh
+    @echo "GitHub is the native backend — no sync needed."
 
 #########################################
 # Namespace: project (info, create, list)
@@ -352,11 +352,6 @@ _job_tick:
 [group('service')]
 killall:
     @scripts/stop.sh --force
-
-# Migrate tasks.yml + jobs.yml to SQLite (automatic on next service start)
-[group('config')]
-migrate:
-    @scripts/migrate_to_sqlite.sh
 
 # Stop orchestrator service (via brew)
 [group('service')]

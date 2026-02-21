@@ -42,8 +42,8 @@ else
   git clone --bare "$CLONE_URL" "$BARE_DIR"
 fi
 
-# Write .orchestrator.yml inside the bare repo
-CONFIG_FILE="${BARE_DIR}/.orchestrator.yml"
+# Write orchestrator.yml inside the bare repo
+CONFIG_FILE="${BARE_DIR}/orchestrator.yml"
 if [ -f "$CONFIG_FILE" ]; then
   # Update repo slug if it changed
   export SLUG

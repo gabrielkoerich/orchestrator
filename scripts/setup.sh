@@ -9,7 +9,6 @@ mkdir -p "$TARGET_DIR" "$BIN_DIR"
 # Copy repo to target, preserving local state/config
 rsync -a --delete \
   --exclude '.git' \
-  --exclude 'tasks.yml' \
   --exclude 'jobs.yml' \
   --exclude 'config.yml' \
   --exclude 'contexts/' \

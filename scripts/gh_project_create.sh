@@ -17,7 +17,7 @@ require_gh() {
 
 require_gh
 
-CONFIG_FILE="${PROJECT_DIR}/.orchestrator.yml"
+CONFIG_FILE="${PROJECT_DIR}/orchestrator.yml"
 
 REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
@@ -25,7 +25,7 @@ if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
     | sed -E 's#^https?://github\.com/##; s#^git@github\.com:##; s#\.git$##' || true)
 fi
 if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
-  echo "No GitHub repo configured. Run 'orchestrator init' first or set gh.repo in .orchestrator.yml." >&2
+  echo "No GitHub repo configured. Run 'orchestrator init' first or set gh.repo in orchestrator.yml." >&2
   exit 1
 fi
 

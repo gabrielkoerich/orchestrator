@@ -1,10 +1,10 @@
 +++
-title = "GitHub Sync"
-description = "Two-way sync between tasks.yml and GitHub Issues"
+title = "GitHub Backend"
+description = "GitHub Issues as the native task backend"
 weight = 8
 +++
 
-Sync tasks to GitHub Issues using `gh`. The orchestrator supports two-way sync, project boards, error comments, and rate-limit backoff.
+Tasks are stored directly in **GitHub Issues** — no local database, no sync layer. The orchestrator reads and writes GitHub via the `gh` CLI.
 
 ## Setup
 
@@ -18,7 +18,6 @@ gh auth login
 gh:
   enabled: true
   repo: "owner/repo"
-  sync_label: "sync"       # only sync tasks/issues with this label (empty = all)
 ```
 
 3. Optionally set up a GitHub Project v2:
@@ -26,47 +25,46 @@ gh:
 orch project info --fix     # auto-fills project field/option IDs into config
 ```
 
-## Commands
+## How It Works
 
-```bash
-orch gh pull    # import GitHub issues into tasks.yml
-orch gh push    # push task updates to GitHub issues
-orch gh sync    # both directions
-```
+**Task ID = Issue Number.** When you run `orch task add "Fix the login bug"`, it creates a GitHub issue and returns the issue number.
 
-The background server (`orch start`) runs `gh sync` every 60 seconds automatically.
+### Field → GitHub Mapping
 
-## Pull (Issues → Tasks)
+| Task Field | GitHub Storage |
+|------------|----------------|
+| title | Issue title |
+| body | Issue body |
+| status | Label `status:new`, `status:routed`, etc. |
+| agent | Label `agent:claude`, `agent:codex`, etc. |
+| complexity | Label `complexity:low/med/high` |
+| labels | Issue labels (non-prefixed) |
+| parent_id | Sub-issue relationship |
+| summary, response | Structured comment with `<!-- orch:agent-response -->` marker |
+| branch, worktree | Local sidecar file (`$STATE_DIR/tasks/{id}.json`) |
 
-`gh_pull.sh` reads open issues from the repo and creates/updates local tasks:
-- Maps issue labels to task fields
-- Preserves existing task state (won't overwrite local changes)
-- Handles paginated API responses
-- Skips issues with `no_gh` or `local-only` labels
+### Agent Response Comments
 
-## Push (Tasks → Issues)
+When an agent completes a task, the orchestrator posts a structured comment:
 
-`gh_push.sh` posts structured comments on GitHub issues:
 - **Agent badges**: 🟣 Claude, 🟢 Codex, 🔵 OpenCode
 - **Metadata table**: status, agent, model, attempt, duration, tokens, prompt hash
-- **Sections**: errors & blockers, accomplished, remaining, files changed, agent activity
-- **Tool activity**: tool call counts by type with collapsed failed command details
+- **Sections**: errors & blockers, accomplished, remaining, files changed
 - **Collapsed sections**: stderr output and full prompt (with hash)
 - **Content-hash dedup**: identical comments not re-posted
 
 ### Labels
 
-- `status:<status>` label synced from task status
-- `blocked` (red) label applied when task is blocked, removed when unblocked
-- `scheduled` and `job:{id}` labels for job-created tasks
+- `status:<status>` — task status (`new`, `routed`, `in_progress`, `done`, `needs_review`, `blocked`)
+- `agent:<agent>` — assigned agent
+- `complexity:<level>` — routing complexity
+- `blocked` (red) — applied when task is blocked, removed when unblocked
+- `scheduled` and `job:{id}` — for job-created tasks
 - When task is `done`, `auto_close` controls whether to close the issue
 
-### Error Comments
+### Local Sidecar
 
-When a task fails, the orchestrator:
-1. Posts a structured comment with error details
-2. Adds a red `blocked` label
-3. Tags `@owner` for attention
+Machine-specific fields (branch, worktree path, attempt count) are stored in `$STATE_DIR/tasks/{id}.json`. These are ephemeral and not synced.
 
 ## Backoff
 
@@ -79,8 +77,6 @@ gh:
     base_seconds: 30     # initial backoff duration
     max_seconds: 900     # maximum backoff duration
 ```
-
-The backoff is shared across all GitHub operations — a single rate limit event pauses all GitHub writes.
 
 ## Projects (Optional)
 
@@ -105,19 +101,14 @@ orch project info --fix  # auto-fill into config
 
 ## Owner Feedback
 
-When the repo owner (or `workflow.review_owner`) comments on a GitHub issue or PR linked to a completed task, the orchestrator detects the feedback and re-activates the task:
+When the repo owner comments on a GitHub issue linked to a completed task, the orchestrator detects the feedback and re-activates the task:
 
-1. During `gh pull`, tasks with status `done`, `in_review`, or `needs_review` are checked for new owner comments
+1. Tasks with status `done`, `in_review`, or `needs_review` are checked for new owner comments
 2. If new comments are found, the task is reset to `routed` (keeping its agent assignment)
 3. The feedback is appended to the task context so the agent sees it on re-run
-4. The `last_error` field is set to the feedback text for visibility
-
-This allows the owner to steer agents by commenting on GitHub — no manual task editing needed. The `gh_last_feedback_at` field prevents re-processing the same comment.
 
 ## Notes
 
 - The repo is resolved from `config.yml` or `gh repo view`
-- Issues are created for tasks without `gh_issue_number`
-- Tasks with `no_gh` or `local-only` labels are not synced
-- Task status is synced via `status:<status>` issue labels
+- Tasks with `no_gh` or `local-only` labels are skipped
 - Agents never call GitHub directly; the orchestrator handles all API calls so it can back off safely

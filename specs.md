@@ -8,22 +8,31 @@ Orchestrator is an autonomous task management system that delegates work to AI c
 
 ```
 serve.sh (10s tick loop)
-  ├── poll.sh          — pick new/routed tasks, detect stuck, unblock parents
+  ├── poll.sh              — pick new/routed tasks, detect stuck, unblock parents
   │     ├── route_task.sh  — LLM router assigns agent + complexity + profile
   │     └── run_task.sh    — build prompt, invoke agent, parse response, push branch, create PR
-  ├── jobs_tick.sh     — run scheduled jobs (cron-like)
-  └── gh_sync.sh       — bidirectional GitHub sync (every 60s)
-        ├── gh_pull.sh   — import open issues → local tasks, mark closed → done
-        └── gh_push.sh   — push task state → issues, post comments, create sub-issues, catch-all PRs
+  ├── jobs_tick.sh         — run scheduled jobs (cron-like)
+  ├── cleanup_worktrees.sh — remove merged worktrees + local branches
+  └── review_prs.sh        — auto-review open PRs
 ```
 
+### Backend Architecture
+
+Tasks are stored directly in **GitHub Issues** — no local database. A pluggable backend interface (`backend.sh`) sources the GitHub implementation (`backend_github.sh`), which maps task fields to issue properties:
+
+- **Status** → prefixed labels (`status:new`, `status:in_progress`, etc.)
+- **Agent/Complexity** → prefixed labels (`agent:claude`, `complexity:medium`)
+- **History/Response** → structured issue comments with `<!-- orch:* -->` markers
+- **Ephemeral fields** (branch, worktree, attempts) → local sidecar JSON (`$STATE_DIR/tasks/{id}.json`)
+
 ### Key Design Decisions
+- **GitHub Issues as source of truth** — no sync layer, no local DB
 - **One worktree per task** — agents never work in the main repo directory
 - **Complexity-based model routing** — router returns `simple|medium|complex`, config maps to agent-specific models
 - **Plan label for decomposition** — only manual `plan` label triggers subtask creation, not router
-- **Parent/child linking** — local `parent_id` + GitHub sub-issues API
-- **Lock-based concurrency** — mkdir locks for tasks.yml and per-task locks to prevent double-runs
-- **Config-driven** — `~/.orchestrator/config.yml` + per-project `.orchestrator.yml` (merged)
+- **Parent/child linking** — GitHub sub-issues API
+- **Lock-based concurrency** — mkdir locks for per-task locks to prevent double-runs
+- **Config-driven** — `~/.orchestrator/config.yml` + per-project `orchestrator.yml` (merged)
 
 ## What's Working
 
@@ -124,15 +133,7 @@ Optional enhancement. The current `gh` CLI approach works fine for single-user s
 ## What's Not Working / Known Issues
 
 ### PR Creation Gaps
-- PR creation only happens inside `run_task.sh` for `done|in_progress` status. If the script crashes between push and PR creation, the branch is orphaned. The catch-all in `gh_push.sh` mitigates this but runs on a 60s cycle.
-
-### Worktree Cleanup
-- No automated cleanup of merged worktrees and local branches. After a PR merges, the worktree and branch remain on disk indefinitely.
-- TODO: poll.sh should detect merged PRs for `done` tasks and `git worktree remove` + `git branch -D`.
-
-### GitHub Sync Edge Cases
-- `gh_pull.sh` makes one API call per local task to check if closed (N+1 queries). Should batch-check via a single `state=closed` query for known issue numbers.
-- No handling of issue reopens — if someone reopens a closed issue, the local task stays `done`.
+- PR creation only happens inside `run_task.sh` for `done|in_progress` status. If the script crashes between push and PR creation, the branch is orphaned.
 
 ### Agent Reliability
 - Agents sometimes produce empty or malformed responses, especially on timeout. Current fallback is `needs_review` but no automatic retry with a different model.
@@ -238,16 +239,17 @@ gh:
 |------|---------|
 | `justfile` | CLI entrypoint, dispatches to scripts |
 | `scripts/lib.sh` | Shared helpers (log, lock, yq, config, model_for_complexity) |
+| `scripts/backend.sh` | Backend interface loader + jobs CRUD (YAML-backed) |
+| `scripts/backend_github.sh` | GitHub Issues backend implementation |
 | `scripts/serve.sh` | Main loop (10s tick) |
 | `scripts/poll.sh` | Pick tasks, detect stuck, unblock parents |
 | `scripts/route_task.sh` | LLM router → agent + complexity + profile |
 | `scripts/run_task.sh` | Invoke agent, parse response, push, PR |
-| `scripts/gh_pull.sh` | Import GitHub issues → local tasks |
-| `scripts/gh_push.sh` | Push task state → GitHub issues + comments |
 | `scripts/output.sh` | Shared formatting (tables, sections) |
 | `prompts/route.md` | Router prompt template |
 | `prompts/system.md` | Agent system prompt template |
 | `prompts/agent.md` | Agent message template |
 | `prompts/review.md` | Review agent prompt template |
 | `prompts/plan.md` | Plan/decompose prompt template |
-| `tests/orchestrator.bats` | 150 bats tests |
+| `tests/orchestrator.bats` | 200 bats tests |
+| `tests/gh_mock.sh` | Comprehensive gh CLI mock for testing |

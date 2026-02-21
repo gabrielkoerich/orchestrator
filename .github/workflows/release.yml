@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -22,13 +26,6 @@ jobs:
           sudo ln -sf "$(which fdfind)" /usr/local/bin/fd
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
-
-      - name: Install beads (bd)
-        run: |
-          BD_VERSION=$(curl -sL https://api.github.com/repos/steveyegge/beads/releases/latest | jq -r '.tag_name // "v0.52.0"' | sed 's/^v//')
-          curl -sL "https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin bd 2>/dev/null || echo "beads install skipped (binary not found)"
-          bd --version 2>/dev/null || true
 
       - name: Run tests
         run: bats tests

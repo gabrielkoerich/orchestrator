@@ -308,10 +308,11 @@ MAX=$(max_attempts)
 # Detect retry loops: if 4+ attempts and last 3 blocked comments have identical text, stop
 if [ "$ATTEMPTS" -ge 4 ]; then
   # Strip timestamp prefix (e.g. "[2026-01-01T00:00:00Z] ") before comparing for uniqueness
-  BLOCKED_NOTES=$(_bd_json comments "$TASK_ID" 2>/dev/null \
-    | jq -r '[.[] | select((.text // .body) | test("blocked:"; "i"))] | .[-3:] | [.[] | ((.text // .body) | sub("^\\[\\d{4}-[^]]+\\] "; ""))] | unique | length' 2>/dev/null || echo "0")
-  BLOCKED_COUNT=$(_bd_json comments "$TASK_ID" 2>/dev/null \
-    | jq '[.[] | select((.text // .body) | test("blocked:"; "i"))] | .[-3:] | length' 2>/dev/null || echo "0")
+  _COMMENTS_JSON=$(gh_api -X GET "repos/$(_gh_ensure_repo 2>/dev/null; echo "$_GH_REPO")/issues/$TASK_ID/comments" -f per_page=100 2>/dev/null || echo '[]')
+  BLOCKED_NOTES=$(printf '%s' "$_COMMENTS_JSON" \
+    | jq -r '[.[] | select(.body | test("blocked:"; "i"))] | .[-3:] | [.[] | (.body | sub("^\\[\\d{4}-[^]]+\\] "; ""))] | unique | length' 2>/dev/null || echo "0")
+  BLOCKED_COUNT=$(printf '%s' "$_COMMENTS_JSON" \
+    | jq '[.[] | select(.body | test("blocked:"; "i"))] | .[-3:] | length' 2>/dev/null || echo "0")
   if [ "$BLOCKED_COUNT" -ge 3 ] && [ "$BLOCKED_NOTES" -eq 1 ]; then
     log_err "[run] task=$TASK_ID retry loop detected (same error 3x)"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
@@ -751,7 +752,7 @@ if [ "$CMD_STATUS" -ne 0 ]; then
       if [ "$NEXT_AGENT" = "opencode" ]; then
         FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
         if [ -n "$FREE_MODELS" ]; then
-          FREE_IDX=$(_bd_json comments "$TASK_ID" 2>/dev/null | jq '[.[] | select(.body | test("switched to opencode"))] | length' 2>/dev/null || echo "0")
+          FREE_IDX=$(db_task_history "$TASK_ID" 2>/dev/null | grep -c "switched to opencode" || echo "0")
           IFS=',' read -ra _fm <<< "$FREE_MODELS"
           if [ ${#_fm[@]} -gt 0 ]; then
             NEXT_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
@@ -778,7 +779,7 @@ ${STDERR_SNIPPET}
       if command -v opencode >/dev/null 2>&1; then
         FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
         if [ -n "$FREE_MODELS" ]; then
-          FREE_IDX=$(_bd_json comments "$TASK_ID" 2>/dev/null | jq '[.[] | select(.body | test("free model fallback"))] | length' 2>/dev/null || echo "0")
+          FREE_IDX=$(db_task_history "$TASK_ID" 2>/dev/null | grep -c "free model fallback" || echo "0")
           IFS=',' read -ra _fm <<< "$FREE_MODELS"
           if [ ${#_fm[@]} -gt 0 ]; then
             FREE_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"

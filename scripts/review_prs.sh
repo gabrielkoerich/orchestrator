@@ -48,7 +48,7 @@ ensure_state_dir
 REVIEW_STATE="${STATE_DIR}/pr_reviews.tsv"
 touch "$REVIEW_STATE"
 
-# Agent badge helper (inline to avoid sourcing gh_push.sh)
+# Agent badge helper (inline for minimal dependencies)
 _review_badge() {
   case "${1:-}" in
     claude)   echo "🟣" ;;
