@@ -745,7 +745,7 @@ reroute_on_usage_limit() {
   if [ -n "$TASK_AGENT" ]; then
     if [ -z "$chain" ]; then
       chain="$TASK_AGENT"
-    elif ! printf ',%s,' "$chain" | grep -q ",${TASK_AGENT},"; then
+    elif ! printf ',%s,' "$chain" | grep -qF ",${TASK_AGENT},"; then
       chain="${chain},${TASK_AGENT}"
     fi
   fi
@@ -772,6 +772,9 @@ ${snippet}
   fi
 
   local next_model=""
+  local FREE_MODELS=""
+  local -a _fm=()
+  local -a _chain=()
   if [ "$next_agent" = "opencode" ]; then
     FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
     if [ -n "${FREE_MODELS:-}" ]; then
@@ -982,8 +985,12 @@ db_store_agent_response "$TASK_ID" "$AGENT_STATUS" "$SUMMARY" "$REASON" \
 
 db_store_agent_arrays "$TASK_ID" "$ACCOMPLISHED_STR" "$REMAINING_STR" "$BLOCKERS_STR" "$FILES_CHANGED_STR"
 
-# Clear usage-limit reroute chain on any non-rerouted completion path.
-db_task_update "$TASK_ID" "limit_reroute_chain=NULL" 2>/dev/null || true
+# Clear usage-limit reroute chain only when task reaches a terminal success state.
+# Do NOT clear on in_progress — the next iteration could still hit a limit and we
+# need the chain intact to prevent ping-pong back to an already-exhausted agent.
+if [ "$AGENT_STATUS" = "done" ]; then
+  db_task_update "$TASK_ID" "limit_reroute_chain=NULL" 2>/dev/null || true
+fi
 
 # Fallback: auto-commit any uncommitted changes the agent left behind
 if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
