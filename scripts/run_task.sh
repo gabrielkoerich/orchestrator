@@ -734,6 +734,75 @@ if [ -f "$STDERR_FILE" ] && [ -s "$STDERR_FILE" ]; then
   log_err "[run] task=$TASK_ID stderr: $(printf '%s' "$AGENT_STDERR" | head -c 200)"
 fi
 
+reroute_on_usage_limit() {
+  local combined_output="$1"
+  local hint="${2:-usage/rate limit}"
+
+  local chain
+  chain=$(db_task_field "$TASK_ID" "limit_reroute_chain" 2>/dev/null || true)
+  chain=$(printf '%s' "$chain" | tr -d '[:space:]')
+
+  if [ -n "$TASK_AGENT" ]; then
+    if [ -z "$chain" ]; then
+      chain="$TASK_AGENT"
+    elif ! printf ',%s,' "$chain" | grep -q ",${TASK_AGENT},"; then
+      chain="${chain},${TASK_AGENT}"
+    fi
+  fi
+
+  local next_agent
+  next_agent=$(pick_fallback_agent "$TASK_AGENT" "$chain" 2>/dev/null || true)
+
+  local snippet
+  snippet=$(printf '%s' "$combined_output" | tail -c 300)
+
+  if [ -z "$next_agent" ]; then
+    error_log "[run] task=$TASK_ID $hint for agent=$TASK_AGENT; no fallback agents available (chain=$chain)"
+    db_task_update "$TASK_ID" "limit_reroute_chain=$chain" \
+      "last_error=$TASK_AGENT hit usage/rate limit; no fallback agents available"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "$TASK_AGENT hit usage/rate limit; no fallback agents available"
+    comment_on_issue "$TASK_ID" "🚨 **Usage/rate limit**: \`$TASK_AGENT\` hit a limit and no fallback agent is available.
+
+Tried: \`${chain:-$TASK_AGENT}\`
+
+\`\`\`
+${snippet}
+\`\`\`"
+    return 1
+  fi
+
+  local next_model=""
+  if [ "$next_agent" = "opencode" ]; then
+    FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
+    if [ -n "${FREE_MODELS:-}" ]; then
+      IFS=',' read -ra _fm <<< "$FREE_MODELS"
+      if [ ${#_fm[@]} -gt 0 ]; then
+        local chain_count=1
+        if [ -n "$chain" ]; then
+          IFS=',' read -ra _chain <<< "$chain"
+          chain_count=${#_chain[@]}
+        fi
+        next_model="${_fm[$(((chain_count - 1) % ${#_fm[@]}))]}"
+      fi
+    fi
+  fi
+
+  error_log "[run] task=$TASK_ID $hint; rerouting $TASK_AGENT → $next_agent${next_model:+ (model=$next_model)} (chain=$chain)"
+  db_task_update "$TASK_ID" \
+    "agent=$next_agent" \
+    "agent_model=${next_model:-}" \
+    "status=new" \
+    "limit_reroute_chain=$chain" \
+    "last_error=$TASK_AGENT hit usage/rate limit; rerouted to $next_agent"
+  append_history "$TASK_ID" "new" "$TASK_AGENT usage/rate limit — rerouted to $next_agent${next_model:+ (model=$next_model)}"
+  comment_on_issue "$TASK_ID" "⚠️ **Auto-reroute**: \`$TASK_AGENT\` hit a usage/rate limit. Rerouting to \`$next_agent\`${next_model:+ with model \`$next_model\`}.
+
+\`\`\`
+${snippet}
+\`\`\`"
+  return 0
+}
+
 # Classify error from exit code, stderr, and stdout
 if [ "$CMD_STATUS" -ne 0 ]; then
   COMBINED_OUTPUT="${RESPONSE}${AGENT_STDERR}"
@@ -750,27 +819,24 @@ if [ "$CMD_STATUS" -ne 0 ]; then
     exit 0
   fi
 
-  if printf '%s' "$COMBINED_OUTPUT" | rg -qi 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|quota|rate.limit|insufficient.*credit|payment.*required|hit.*usage.limit|usage.limit|credit.balance.*too.low|overloaded_error'; then
+  if is_usage_limit_error "$COMBINED_OUTPUT"; then
+    reroute_on_usage_limit "$COMBINED_OUTPUT" "agent command usage/rate limit" || true
+    exit 0
+  fi
+
+  if printf '%s' "$COMBINED_OUTPUT" | rg -qi 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|no.*(api|key|token)|expired.*(key|token|plan)|billing|insufficient.*credit|payment.*required|credit.balance.*too.low'; then
     error_log "[run] task=$TASK_ID AUTH/BILLING ERROR for agent=$TASK_AGENT"
     AVAILABLE=$(available_agents)
-    NEXT_AGENT=""
-    IFS=',' read -ra _agents <<< "$AVAILABLE"
-    for _a in "${_agents[@]}"; do
-      if [ "$_a" != "$TASK_AGENT" ]; then
-        NEXT_AGENT="$_a"
-        break
-      fi
-    done
+    NEXT_AGENT=$(pick_fallback_agent "$TASK_AGENT" "" 2>/dev/null || true)
     if [ -n "$NEXT_AGENT" ]; then
       # If switching to opencode, pick a free model via round-robin
       NEXT_MODEL=""
       if [ "$NEXT_AGENT" = "opencode" ]; then
         FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
         if [ -n "$FREE_MODELS" ]; then
-          FREE_IDX=$(db_task_history "$TASK_ID" 2>/dev/null | grep -c "switched to opencode" || echo "0")
           IFS=',' read -ra _fm <<< "$FREE_MODELS"
           if [ ${#_fm[@]} -gt 0 ]; then
-            NEXT_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
+            NEXT_MODEL="${_fm[$(((ATTEMPTS - 1) % ${#_fm[@]}))]}"
           fi
         fi
       fi
@@ -851,6 +917,10 @@ else
 fi
 
 if [ -z "$RESPONSE_JSON" ]; then
+  if is_usage_limit_error "${RESPONSE}${AGENT_STDERR}"; then
+    reroute_on_usage_limit "${RESPONSE}${AGENT_STDERR}" "invalid/empty response (likely due to usage limit)" || true
+    exit 0
+  fi
   log_err "[run] task=$TASK_ID invalid JSON response"
   mkdir -p "$CONTEXTS_DIR"
   printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/${FILE_PREFIX}-response-${ATTEMPTS}.md"
@@ -879,12 +949,23 @@ REASON=$(printf '%s' "$RESPONSE_JSON" | jq -r '.reason // ""')
 DELEGATIONS_JSON=$(printf '%s' "$RESPONSE_JSON" | jq -c '.delegations // []')
 
 if [ -z "$AGENT_STATUS" ] || [ "$AGENT_STATUS" = "null" ]; then
+  if is_usage_limit_error "${RESPONSE}${AGENT_STDERR}"; then
+    reroute_on_usage_limit "${RESPONSE}${AGENT_STDERR}" "agent response missing status (likely due to usage limit)" || true
+    exit 0
+  fi
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response missing status"
   exit 0
 fi
 
 NOW=$(now_iso)
 export AGENT_STATUS SUMMARY NEEDS_HELP NOW FILES_CHANGED_STR ACCOMPLISHED_STR REMAINING_STR BLOCKERS_STR REASON
+
+# If the agent reports needs_review/blocked due to usage limits, auto-reroute.
+if { [ "$AGENT_STATUS" = "needs_review" ] || [ "$AGENT_STATUS" = "blocked" ]; } && \
+   is_usage_limit_error "${REASON}${AGENT_STDERR}"; then
+  reroute_on_usage_limit "${REASON}${AGENT_STDERR}" "agent reported usage/rate limit" || true
+  exit 0
+fi
 
 # Store agent metadata
 RESP_AGENT=$(printf '%s' "$RESPONSE_JSON" | jq -r '.agent // ""')
@@ -900,6 +981,9 @@ db_store_agent_response "$TASK_ID" "$AGENT_STATUS" "$SUMMARY" "$REASON" \
   "$STDERR_SNIPPET" "$PROMPT_HASH"
 
 db_store_agent_arrays "$TASK_ID" "$ACCOMPLISHED_STR" "$REMAINING_STR" "$BLOCKERS_STR" "$FILES_CHANGED_STR"
+
+# Clear usage-limit reroute chain on any non-rerouted completion path.
+db_task_update "$TASK_ID" "limit_reroute_chain=NULL" 2>/dev/null || true
 
 # Fallback: auto-commit any uncommitted changes the agent left behind
 if [ "$AGENT_STATUS" = "done" ] || [ "$AGENT_STATUS" = "in_progress" ]; then
