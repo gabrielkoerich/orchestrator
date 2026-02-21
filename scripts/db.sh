@@ -710,10 +710,16 @@ db_task_usage_tsv() {
     | jq -r "[.[] | select(${dir_filter}) | select(.metadata.input_tokens != null and (.metadata.input_tokens | tonumber) > 0)] | .[] | [.metadata.input_tokens, (.metadata.output_tokens // \"0\"), (.metadata.duration // \"0\"), (.metadata.agent_model // \"sonnet\")] | @tsv" 2>/dev/null || true
 }
 
-# Unique project dirs.
+# Unique project dirs — from jobs config + PROJECT_DIR.
 db_task_projects() {
-  _bd_json list -n 0 --all 2>/dev/null \
-    | jq -r '[.[].metadata.dir // empty] | unique | .[] | select(length > 0)' 2>/dev/null || true
+  {
+    # From jobs file
+    _read_jobs | jq -r '.[].dir // empty' 2>/dev/null || true
+    # Current project dir
+    [ -n "${PROJECT_DIR:-}" ] && echo "$PROJECT_DIR"
+  } | sort -u | while IFS= read -r d; do
+    [ -n "$d" ] && [ "$d" != "null" ] && [ -d "$d" ] && echo "$d"
+  done
 }
 
 # Active task count for a specific dir.
@@ -824,7 +830,7 @@ db_job_set() {
 }
 
 db_job_list() {
-  _read_jobs | jq -r '.[] | [.id, .title, .schedule, .type, (if .enabled then "1" else "0" end), (.active_task_id // ""), (.last_run // "")] | @tsv'
+  _read_jobs | jq -r '.[] | [.id, (.task.title // .title // ""), .schedule, .type, (if .enabled then "1" else "0" end), (.active_task_id // ""), (.last_run // "")] | @tsv'
 }
 
 db_job_delete() {
@@ -852,10 +858,11 @@ db_load_job() {
   JOB_SCHEDULE=$(printf '%s' "$row" | jq -r '.schedule')
   JOB_TYPE=$(printf '%s' "$row" | jq -r '.type')
   JOB_CMD=$(printf '%s' "$row" | jq -r '.command // ""')
-  JOB_TITLE=$(printf '%s' "$row" | jq -r '.title')
-  JOB_BODY=$(printf '%s' "$row" | jq -r '.body // ""')
-  JOB_LABELS=$(printf '%s' "$row" | jq -r '.labels // ""')
-  JOB_AGENT=$(printf '%s' "$row" | jq -r '.agent // ""')
+  # Task fields may be nested under .task or at top level (backwards compat)
+  JOB_TITLE=$(printf '%s' "$row" | jq -r '.task.title // .title // ""')
+  JOB_BODY=$(printf '%s' "$row" | jq -r '.task.body // .body // ""')
+  JOB_LABELS=$(printf '%s' "$row" | jq -r '(.task.labels // .labels // []) | if type == "array" then join(",") else . end')
+  JOB_AGENT=$(printf '%s' "$row" | jq -r '.task.agent // .agent // ""')
   JOB_DIR=$(printf '%s' "$row" | jq -r '.dir // ""')
   JOB_ACTIVE_TASK_ID=$(printf '%s' "$row" | jq -r '.active_task_id // ""')
   JOB_LAST_RUN=$(printf '%s' "$row" | jq -r '.last_run // ""')
