@@ -13,6 +13,7 @@ workflow:
   #   medium: 1800
   #   complex: 3600
 router:
+  mode: "llm"  # "llm" (default) or "round_robin"
   agent: "claude"
   model: "haiku"
   timeout_seconds: 120

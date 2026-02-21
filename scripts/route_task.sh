@@ -38,6 +38,7 @@ trap 'rm -f "$TMP_PROFILE"' EXIT
 TASK_TITLE=$(db_task_field "$TASK_ID" "title")
 TASK_BODY=$(db_task_field "$TASK_ID" "body")
 TASK_LABELS=$(db_task_labels_csv "$TASK_ID")
+ROUTING_MODE=${ROUTING_MODE:-$(config_get '.router.mode // "llm"')}
 ROUTER_AGENT=${ROUTER_AGENT:-$(config_get '.router.agent // "claude"')}
 ROUTER_MODEL=${ROUTER_MODEL:-$(config_get '.router.model // ""')}
 ROUTER_TIMEOUT=${ROUTER_TIMEOUT:-$(config_get '.router.timeout_seconds // ""')}
@@ -70,6 +71,50 @@ if [ -z "$AVAILABLE_AGENTS" ]; then
 fi
 
 export TASK_ID TASK_TITLE TASK_LABELS TASK_BODY SKILLS_CATALOG AVAILABLE_AGENTS
+
+# ── Round-robin mode: skip LLM router, cycle through agents ──
+if [ "$ROUTING_MODE" = "round_robin" ]; then
+  IFS=',' read -ra _agents <<< "$AVAILABLE_AGENTS"
+  _agent_count=${#_agents[@]}
+  ROUTED_AGENT="${_agents[$((TASK_ID % _agent_count))]}"
+  REASON="round_robin (task $TASK_ID % $_agent_count agents)"
+  COMPLEXITY="medium"
+  PROFILE_JSON='{}'
+  SELECTED_SKILLS_CSV=""
+  ROUTE_WARNING=""
+
+  if [ -n "$ALLOWED_TOOLS_CSV" ]; then
+    PROFILE_JSON=$(printf '%s' "$PROFILE_JSON" | jq -c --arg tools "$ALLOWED_TOOLS_CSV" '.tools = ($tools | split(",") | map(select(length > 0)))')
+  fi
+  if [ -n "$DEFAULT_SKILLS_CSV" ]; then
+    SELECTED_SKILLS_CSV="$DEFAULT_SKILLS_CSV"
+  fi
+
+  log_err "[route] round_robin: task=$TASK_ID → $ROUTED_AGENT (${TASK_ID} % ${_agent_count})"
+
+  db_task_update "$TASK_ID" \
+    "agent=$ROUTED_AGENT" \
+    "complexity=$COMPLEXITY" \
+    "status=routed" \
+    "route_reason=$REASON" \
+    "agent_profile=$PROFILE_JSON" \
+    "dir=$PROJECT_DIR"
+
+  if [ -n "$SELECTED_SKILLS_CSV" ]; then
+    db_set_selected_skills "$TASK_ID" "$SELECTED_SKILLS_CSV"
+  fi
+
+  db_add_label "$TASK_ID" "agent:${ROUTED_AGENT}"
+  append_history "$TASK_ID" "routed" "routed to $ROUTED_AGENT ($REASON)"
+
+  log_err "[route] task=$TASK_ID routed to $ROUTED_AGENT"
+  export TASK_AGENT="$ROUTED_AGENT"
+  run_hook on_task_routed
+  echo "$ROUTED_AGENT"
+  exit 0
+fi
+
+# ── LLM router mode (default) ──
 PROMPT=$(render_template "$SCRIPT_DIR/../prompts/route.md")
 PROMPT_FILE=".orchestrator/route-prompt-${TASK_ID}.txt"
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
