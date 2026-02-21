@@ -65,7 +65,7 @@ for JOB_ID in $JOB_IDS; do
     else
       continue
     fi
-  elif python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE" --since "$(date -u -v-24H +"%Y-%m-%dT%H:%MZ" 2>/dev/null || date -u -d '24 hours ago' +"%Y-%m-%dT%H:%MZ")"; then
+  elif python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE" --since "$(date -u -v-24H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '24 hours ago' +"%Y-%m-%dT%H:%M:%SZ")"; then
     # No last_run: catch up if the schedule would have fired in the last 24 hours
     job_log "[jobs] job=$JOB_ID catch-up (first run): missed schedule in last 24h"
   else
