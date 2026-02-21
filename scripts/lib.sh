@@ -905,7 +905,7 @@ fetch_owner_feedback() {
 
   printf '%s' "$raw" | jq -c \
     --arg owner "$owner_login" --arg since "${since:-}" \
-    '[.[] 
+    '[.[]
       | select(.user.login == $owner)
       # Exclude orchestrator-generated comments (agent response, acks, etc.)
       | select((.body | test("via \\[Orchestrator\\]")) | not)
