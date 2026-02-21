@@ -134,10 +134,7 @@ if [ "${CMD_STATUS:-0}" -ne 0 ]; then
       "status=routed" \
       "route_reason=$REASON" \
       "agent_profile=$PROFILE_JSON"
-    # Add labels
     db_add_label "$TASK_ID" "agent:${ROUTED_AGENT}"
-    db_add_label "$TASK_ID" "role:general"
-    db_add_label "$TASK_ID" "complexity:${COMPLEXITY}"
 
     append_history "$TASK_ID" "routed" "$REASON"
     log_err "[route] task=$TASK_ID fallback to ${ROUTED_AGENT}"
@@ -239,8 +236,6 @@ fi
 
 # Add routing labels
 db_add_label "$TASK_ID" "agent:${ROUTED_AGENT}"
-db_add_label "$TASK_ID" "role:${ROLE}"
-db_add_label "$TASK_ID" "complexity:${COMPLEXITY}"
 if [ -n "$DECOMPOSE_LABEL" ]; then
   db_add_label "$TASK_ID" "$DECOMPOSE_LABEL"
 fi

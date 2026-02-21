@@ -2898,7 +2898,7 @@ STUB
   [ -z "$output" ]
 }
 
-@test "route_task.sh stores complexity label instead of model" {
+@test "route_task.sh stores complexity in sidecar not as label" {
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Route Complexity" "Test complexity routing" "")
   TASK2_ID=$(_task_id "$TASK_OUTPUT")
 
@@ -2914,15 +2914,15 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" "${REPO_DIR}/scripts/route_task.sh" "$TASK2_ID"
   [ "$status" -eq 0 ]
 
-  # Complexity should be stored on the task
+  # Complexity should be stored in sidecar
   run tdb_field "$TASK2_ID" complexity
   [ "$status" -eq 0 ]
   [ "$output" = "simple" ]
 
-  # Label should be complexity:simple, not model:*
+  # complexity: should NOT be a label (stored in sidecar only)
   run _task_labels "$TASK2_ID"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"complexity:simple"* ]]
+  [[ "$output" != *"complexity:"* ]]
   [[ "$output" != *"model:"* ]]
 }
 
@@ -2955,10 +2955,10 @@ SH
   [ "$status" -eq 0 ]
   [ "$output" = "medium" ]
 
-  # Label should include complexity:medium
+  # complexity should NOT be a label (sidecar only)
   run _task_labels "$TASK2_ID"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"complexity:medium"* ]]
+  [[ "$output" != *"complexity:"* ]]
 }
 
 @test "create_task_entry includes complexity field" {
@@ -4135,4 +4135,182 @@ SH
   [[ "$output" == *"feature content"* ]]
   [[ "$output" == *"Commits since develop:"* ]]
   [[ "$output" == *"add feat"* ]]
+}
+
+# ─── Label Validation tests ───
+
+@test "_gh_validate_label accepts valid status labels" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'status:new'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'status:done'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'status:in_progress'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'status:needs_review'"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_label rejects invalid status labels" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'status:invalid'"
+  [ "$status" -eq 1 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'status:open'"
+  [ "$status" -eq 1 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'status:pending'"
+  [ "$status" -eq 1 ]
+}
+
+@test "_gh_validate_label accepts valid agent labels" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'agent:claude'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'agent:codex'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'agent:opencode'"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_label rejects invalid agent labels" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'agent:gpt'"
+  [ "$status" -eq 1 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'agent:invalid'"
+  [ "$status" -eq 1 ]
+}
+
+@test "_gh_validate_label allows complexity and role as user labels" {
+  # complexity: and role: are NOT reserved prefixes — they are stored in sidecar only
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'complexity:simple'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'role:backend'"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_label allows any skill: and job: values" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'skill:anything'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'job:cron-123'"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_label allows any model: label" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'model:opus'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'model:gpt-4o'"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_label allows user labels without reserved prefix" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'bug'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'frontend'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'my-custom-label'"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_label allows empty label" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label ''"
+  [ "$status" -eq 0 ]
+}
+
+# ─── Agent-Model Cross-Validation tests ───
+
+@test "_gh_validate_agent_model accepts valid claude models" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model claude opus"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model claude sonnet"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model claude haiku"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model claude claude-3-opus"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_agent_model rejects invalid claude models" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model claude gpt-4o"
+  [ "$status" -eq 1 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model claude o3-mini"
+  [ "$status" -eq 1 ]
+}
+
+@test "_gh_validate_agent_model accepts valid codex models" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model codex o3-mini"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model codex o4-mini"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model codex gpt-4o"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model codex codex-mini"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_agent_model rejects invalid codex models" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model codex opus"
+  [ "$status" -eq 1 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model codex sonnet"
+  [ "$status" -eq 1 ]
+}
+
+@test "_gh_validate_agent_model allows any model for opencode" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model opencode anything-goes"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model opencode opus"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_agent_model allows empty model" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model claude ''"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_agent_model claude null"
+  [ "$status" -eq 0 ]
+}
+
+# ─── Label Validation Integration tests ───
+
+@test "db_create_task rejects reserved prefix in user labels" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # status:invalid should be silently skipped
+  local id
+  id=$(db_create_task "Test task" "body" "" "bug,status:invalid,frontend" "" "")
+  [ -n "$id" ]
+  # The issue should have bug and frontend but not status:invalid
+  local labels
+  labels=$(db_task_labels_csv "$id")
+  [[ "$labels" == *"bug"* ]]
+  [[ "$labels" == *"frontend"* ]]
+  [[ "$labels" != *"status:invalid"* ]]
+}
+
+@test "db_create_task allows valid labels" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  local id
+  id=$(db_create_task "Test valid" "body" "" "bug,skill:docker" "" "claude")
+  [ -n "$id" ]
+  local labels
+  labels=$(db_task_labels_csv "$id")
+  [[ "$labels" == *"bug"* ]]
+  [[ "$labels" == *"skill:docker"* ]]
+  [[ "$labels" == *"agent:claude"* ]]
+}
+
+@test "db_add_label rejects invalid prefixed label" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  run db_add_label "$INIT_TASK_ID" "status:bogus"
+  [ "$status" -eq 1 ]
+}
+
+@test "db_add_label accepts valid user label" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  run db_add_label "$INIT_TASK_ID" "enhancement"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_set_status_label rejects invalid status" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  run _gh_set_status_label "$INIT_TASK_ID" "invalid_status"
+  [ "$status" -eq 1 ]
+}
+
+@test "_gh_set_status_label accepts valid status" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  run _gh_set_status_label "$INIT_TASK_ID" "routed"
+  [ "$status" -eq 0 ]
 }
