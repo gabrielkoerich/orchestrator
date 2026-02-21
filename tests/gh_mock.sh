@@ -457,6 +457,8 @@ _handle_add_comment() {
   body=$(_field_val "body")
   local now
   now=$(_now_iso)
+  local login
+  login="${GH_MOCK_LOGIN:-mock}"
 
   local comment_id
   comment_id=$(printf '%s' "$state" | jq -r '.next_comment_id')
@@ -466,7 +468,8 @@ _handle_add_comment() {
     --argjson id "$comment_id" \
     --arg body "${body:-}" \
     --arg now "$now" \
-    '{id: $id, body: $body, created_at: $now}')
+    --arg login "$login" \
+    '{id: $id, body: $body, created_at: $now, user: {login: $login}}')
 
   state=$(printf '%s' "$state" | jq -c \
     --arg n "$num" \
