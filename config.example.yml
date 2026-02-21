@@ -5,6 +5,10 @@ workflow:
   enable_review_agent: false
   review_agent: "claude"
   max_attempts: 10
+  # Only accept issues from these GitHub users. Repo owner is always included.
+  # allowed_authors:
+  #   - my-bot
+  #   - trusted-collaborator
   # Default task timeout (seconds). Set to 0 to disable timeouts entirely.
   timeout_seconds: 1800
   # Optional: per-complexity overrides (takes precedence over timeout_seconds).

@@ -4652,6 +4652,103 @@ SH
   [[ "$labels" != *"status:new"* ]]
 }
 
+@test "db_normalize_new_issues skips issues from non-owner authors" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue as a stranger
+  export GH_MOCK_LOGIN="stranger"
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Spam issue")
+  unset GH_MOCK_LOGIN
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+
+  _GH_ALLOWED_AUTHORS=""  # reset cache
+  db_normalize_new_issues
+
+  local labels
+  labels=$(jq -r '.issues["'"$id"'"].labels // [] | map(.name) | join(",")' "$GH_MOCK_STATE")
+  [[ "$labels" != *"status:new"* ]]
+}
+
+@test "db_normalize_new_issues accepts issues from allowed_authors config" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue as a collaborator
+  export GH_MOCK_LOGIN="trusted-bot"
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Bot issue")
+  unset GH_MOCK_LOGIN
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+
+  # Add trusted-bot to allowed_authors in config
+  yq -i '.workflow.allowed_authors = ["trusted-bot"]' "$CONFIG_PATH"
+
+  _GH_ALLOWED_AUTHORS=""  # reset cache
+  db_normalize_new_issues
+
+  local labels
+  labels=$(db_task_labels_csv "$id")
+  [[ "$labels" == *"status:new"* ]]
+
+  # Cleanup
+  yq -i 'del(.workflow.allowed_authors)' "$CONFIG_PATH"
+}
+
+@test "db_task_ids_by_status filters out non-owner issues" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue as stranger with status:new label
+  export GH_MOCK_LOGIN="attacker"
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Attack issue")
+  unset GH_MOCK_LOGIN
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+  gh_api "repos/$ORCH_GH_REPO/issues/$id/labels" \
+    --input - <<< '{"labels":["status:new"]}' >/dev/null 2>&1
+
+  _GH_ALLOWED_AUTHORS=""  # reset cache
+  local ids
+  ids=$(db_task_ids_by_status "new")
+  # Should contain the init task (by owner) but not the attacker's
+  [[ "$ids" == *"$INIT_TASK_ID"* ]]
+  [[ "$ids" != *"$id"* ]]
+}
+
+@test "_gh_is_allowed_author accepts repo owner" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  _gh_is_allowed_author "mock"
+}
+
+@test "_gh_is_allowed_author rejects strangers" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  run _gh_is_allowed_author "stranger"
+  [ "$status" -eq 1 ]
+}
+
+@test "db_normalize_new_issues fails closed when repo unknown" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue as stranger
+  export GH_MOCK_LOGIN="stranger"
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Sneaky issue")
+  unset GH_MOCK_LOGIN
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+
+  # Break repo detection — fail closed means no issues get status:new
+  local saved_repo="$_GH_REPO"
+  _GH_REPO=""
+  _GH_ALLOWED_AUTHORS=""
+
+  db_normalize_new_issues
+
+  local labels
+  labels=$(jq -r '.issues["'"$id"'"].labels // [] | map(.name) | join(",")' "$GH_MOCK_STATE")
+  [[ "$labels" != *"status:new"* ]]
+
+  _GH_REPO="$saved_repo"
+}
+
 @test "_gh_set_status_label rejects invalid status" {
   source "${REPO_DIR}/scripts/lib.sh"
   run _gh_set_status_label "$INIT_TASK_ID" "invalid_status"

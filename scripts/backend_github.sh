@@ -25,6 +25,41 @@ _GH_RESERVED_PREFIXES="status: agent: model: skill: job:"
 _GH_CLAUDE_MODELS="haiku sonnet opus claude-"
 _GH_CODEX_MODELS="o1 o3 o4 gpt-4 codex-"
 
+# Allowed issue authors — repo owner + configured collaborators
+_GH_ALLOWED_AUTHORS=""
+_gh_allowed_authors() {
+  if [ -n "$_GH_ALLOWED_AUTHORS" ]; then echo "$_GH_ALLOWED_AUTHORS"; return 0; fi
+  _gh_ensure_repo || return 1
+  # Repo owner is always allowed
+  local owner="${_GH_REPO%%/*}"
+  _GH_ALLOWED_AUTHORS="$owner"
+  # Add configured collaborators
+  local extra
+  extra=$(config_get '.workflow.allowed_authors // [] | .[]' 2>/dev/null || true)
+  if [ -n "$extra" ]; then
+    while IFS= read -r _auth; do
+      [ -n "$_auth" ] && [ "$_auth" != "null" ] && _GH_ALLOWED_AUTHORS="${_GH_ALLOWED_AUTHORS},$_auth"
+    done <<< "$extra"
+  fi
+  echo "$_GH_ALLOWED_AUTHORS"
+}
+
+# Check if an author is allowed to create tasks
+# Usage: _gh_is_allowed_author <login>
+_gh_is_allowed_author() {
+  local login="$1"
+  [ -n "$login" ] || return 1
+  local allowed
+  allowed=$(_gh_allowed_authors) || return 1
+  # Check each allowed author (comma-separated)
+  local IFS=','
+  local _auth
+  for _auth in $allowed; do
+    [ "$_auth" = "$login" ] && return 0
+  done
+  return 1
+}
+
 # Sidecar dir is computed dynamically to pick up project-local STATE_DIR
 _gh_sidecar_dir() {
   echo "${STATE_DIR:-${ORCH_HOME:-.}/.orchestrator}/tasks"
@@ -546,21 +581,29 @@ db_task_ids_by_status() {
   # Handle pagination: flatten arrays
   json=$(printf '%s' "$json" | jq -s 'if type == "array" and length > 0 and (.[0] | type) == "array" then [.[][]] else . end' 2>/dev/null || echo "$json")
 
+  # Build allowed-authors filter for jq (fail closed: empty = reject all)
+  local allowed_csv
+  allowed_csv=$(_gh_allowed_authors 2>/dev/null) || allowed_csv="__NONE__"
+
   if [ -n "$exclude_label" ]; then
-    printf '%s' "$json" | jq -r --arg lbl "$exclude_label" --arg expected "$expected_label" --arg nr "$needs_review_label" '
+    printf '%s' "$json" | jq -r --arg lbl "$exclude_label" --arg expected "$expected_label" --arg nr "$needs_review_label" --arg allowed "$allowed_csv" '
       def label_names: (.labels // []) | map(.name);
+      def is_allowed: .user.login as $u | $allowed | split(",") | any(. == $u);
       [.[]
         | select(.pull_request == null)
+        | select(is_allowed)
         | select(label_names | any(. == $expected))
         | select(($expected == $nr) or ((label_names | any(. == $nr)) | not))
         | select(label_names | all(. != $lbl))
       ]
       | .[].number' 2>/dev/null || true
   else
-    printf '%s' "$json" | jq -r --arg expected "$expected_label" --arg nr "$needs_review_label" '
+    printf '%s' "$json" | jq -r --arg expected "$expected_label" --arg nr "$needs_review_label" --arg allowed "$allowed_csv" '
       def label_names: (.labels // []) | map(.name);
+      def is_allowed: .user.login as $u | $allowed | split(",") | any(. == $u);
       .[]
       | select(.pull_request == null)
+      | select(is_allowed)
       | select(label_names | any(. == $expected))
       | select(($expected == $nr) or ((label_names | any(. == $nr)) | not))
       | .number' 2>/dev/null || true
@@ -576,23 +619,33 @@ db_normalize_new_issues() {
   json=$(gh_api -X GET "repos/$_GH_REPO/issues" \
     -f state=open -f per_page=50 -f sort=created -f direction=desc 2>/dev/null) || return 0
 
+  # Fail closed: if we can't determine allowed authors, skip all issues
+  if ! _gh_allowed_authors >/dev/null 2>&1; then
+    log_err "[normalize] could not determine allowed authors — skipping all issues"
+    return 0
+  fi
+
   # Find issues (not PRs) without any status: label, excluding no-agent, blocked, and needs_review
-  local unlabeled_ids
-  unlabeled_ids=$(printf '%s' "$json" | jq -r --arg p "$_GH_STATUS_PREFIX" '
+  local unlabeled
+  unlabeled=$(printf '%s' "$json" | jq -r --arg p "$_GH_STATUS_PREFIX" '
     [.[] | select(.pull_request == null)
          | select((.labels // []) | map(.name) | all(startswith($p) | not))
          | select((.labels // []) | map(.name) | all(. != "no-agent" and . != "blocked" and . != "needs_review"))]
-    | .[].number' 2>/dev/null || true)
+    | .[] | "\(.number)\t\(.user.login)"' 2>/dev/null || true)
 
-  [ -n "$unlabeled_ids" ] || return 0
+  [ -n "$unlabeled" ] || return 0
 
-  local _norm_id
-  while IFS= read -r _norm_id; do
+  local _norm_id _norm_author
+  while IFS=$'\t' read -r _norm_id _norm_author; do
     [ -n "$_norm_id" ] || continue
+    if ! _gh_is_allowed_author "$_norm_author"; then
+      log_err "[normalize] issue #$_norm_id by '$_norm_author' — not an allowed author, skipping"
+      continue
+    fi
     log_err "[normalize] issue #$_norm_id missing status label, adding status:new"
     gh_api "repos/$_GH_REPO/issues/$_norm_id/labels" \
       -f "labels[]=${_GH_STATUS_PREFIX}new" >/dev/null 2>&1 || true
-  done <<< "$unlabeled_ids"
+  done <<< "$unlabeled"
 }
 
 # Create a new task. Returns the new task ID (issue number).

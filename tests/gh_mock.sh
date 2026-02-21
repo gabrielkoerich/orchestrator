@@ -217,6 +217,8 @@ _handle_create_issue() {
   local node_id="MOCK_NODE_${num}"
   local html_url="https://github.com/mock/repo/issues/${num}"
 
+  local login="${GH_MOCK_LOGIN:-mock}"
+
   local issue
   issue=$(jq -nc \
     --argjson num "$num" \
@@ -226,6 +228,7 @@ _handle_create_issue() {
     --arg now "$now" \
     --arg node_id "$node_id" \
     --arg html_url "$html_url" \
+    --arg login "$login" \
     '{
       number: $num,
       title: $title,
@@ -236,6 +239,7 @@ _handle_create_issue() {
       updated_at: $now,
       html_url: $html_url,
       node_id: $node_id,
+      user: {login: $login},
       pull_request: null
     }')
 
