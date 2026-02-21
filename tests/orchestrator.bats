@@ -2581,6 +2581,20 @@ JSON
   [ "$ID_A" != "$ID_C" ]
 }
 
+@test "add_task.sh --dry-run prints preview without creating issue" {
+  BEFORE=$(tdb_count)
+
+  run "${REPO_DIR}/scripts/add_task.sh" --dry-run "Dry Run Title" "Dry run body" "label1,label2"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Dry run: would create GitHub issue"* ]]
+  [[ "$output" == *"title: Dry Run Title"* ]]
+  [[ "$output" == *"body: Dry run body"* ]]
+  [[ "$output" == *"labels: status:new, label1, label2"* ]]
+
+  AFTER=$(tdb_count)
+  [ "$AFTER" -eq "$BEFORE" ]
+}
+
 # --- task_set helper ---
 
 @test "task_set updates a task field" {

@@ -4,10 +4,12 @@ source "$(dirname "$0")/lib.sh"
 
 # Parse flags
 PROJECT_SLUG=""
+DRY_RUN=false
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p|--project) PROJECT_SLUG="$2"; shift 2 ;;
+    --dry-run)    DRY_RUN=true; shift ;;
     *)            POSITIONAL+=("$1"); shift ;;
   esac
 done
@@ -17,7 +19,7 @@ BODY="${POSITIONAL[1]:-}"
 LABELS="${POSITIONAL[2]:-}"
 
 if [ -z "$TITLE" ]; then
-  echo "usage: add_task.sh [-p owner/repo] \"title\" [\"body\"] [\"label1,label2\"]" >&2
+  echo "usage: add_task.sh [--dry-run] [-p owner/repo] \"title\" [\"body\"] [\"label1,label2\"]" >&2
   exit 1
 fi
 
@@ -72,6 +74,44 @@ fi
 
 NOW=$(now_iso)
 export NOW PROJECT_DIR
+
+if [ "$DRY_RUN" = true ]; then
+  repo=""
+  if type -t _gh_ensure_repo >/dev/null 2>&1; then
+    _gh_ensure_repo >/dev/null 2>&1 || true
+    repo="${_GH_REPO:-}"
+  fi
+
+  labels_preview=("status:new")
+  if [ -n "$LABELS" ]; then
+    IFS=',' read -ra _labels <<< "$LABELS"
+    for _l in "${_labels[@]}"; do
+      _l=$(printf '%s' "$_l" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [ -z "$_l" ] && continue
+      if type -t _gh_validate_label >/dev/null 2>&1; then
+        if _gh_validate_label "$_l"; then
+          labels_preview+=("$_l")
+        else
+          log_err "[create_task] skipping invalid label: $_l"
+        fi
+      else
+        labels_preview+=("$_l")
+      fi
+    done
+  fi
+
+  labels_str="${labels_preview[0]}"
+  for _l in "${labels_preview[@]:1}"; do
+    labels_str+=", ${_l}"
+  done
+
+  echo "Dry run: would create GitHub issue${repo:+ in $repo}"
+  echo "title: $TITLE"
+  echo "body: $BODY"
+  echo "labels: $labels_str"
+  echo "dir: ${PROJECT_DIR:-}"
+  exit 0
+fi
 
 NEXT_ID=$(db_create_task "$TITLE" "$BODY" "${PROJECT_DIR:-}" "$LABELS" "" "")
 export TASK_ID="$NEXT_ID" TASK_TITLE="$TITLE"
