@@ -1,6 +1,6 @@
 # Agent Orchestrator (bash, YAML + yq)
 
-[![CI](https://github.com/gabrielkoerich/orchestrator/actions/workflows/release.yml/badge.svg)](https://github.com/gabrielkoerich/orchestrator/actions/workflows/release.yml)
+[![CI](https://github.com/gabrielkoerich/orchestrator/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/gabrielkoerich/orchestrator/actions/workflows/release.yml?query=branch%3Amain)
 
 A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex`, `claude`, and `opencode`) in full agentic mode with tool access, and can delegate subtasks dynamically.
 
