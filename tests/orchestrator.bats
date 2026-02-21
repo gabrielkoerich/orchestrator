@@ -764,6 +764,61 @@ SH
   [ "$output" = "stdout mode" ]
 }
 
+@test "run_task.sh detects missing tooling in agent output and marks needs_review" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Missing Tool" "Detect missing tool patterns" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  # Stub prints a missing-tool line before valid JSON.
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"status":"done","summary":"finished","reason":"zsh: command not found: bun","accomplished":[],"remaining":[],"blockers":[],"files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  tdb_set "$TASK2_ID" agent "codex"
+
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "needs_review" ]
+
+  run tdb_field "$TASK2_ID" reason
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"env/tooling failure: missing bun"* ]]
+}
+
+@test "run_task.sh detects missing tooling when agent command fails (exit != 0)" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Missing Tool Fail" "Detect missing tool on non-zero exit" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  # Stub fails like a missing binary would.
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "zsh: command not found: bun" >&2
+exit 127
+SH
+  chmod +x "$CODEX_STUB"
+
+  tdb_set "$TASK2_ID" agent "codex"
+
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "needs_review" ]
+
+  run tdb_field "$TASK2_ID" last_error
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"env/tooling failure: missing bun"* ]]
+}
+
 @test "cron_match.py matches wildcard expression" {
   # "* * * * *" always matches
   run python3 "${REPO_DIR}/scripts/cron_match.py" "* * * * *"
