@@ -9,6 +9,48 @@ init_config_file
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 
+# Detect missing tooling in agent output to avoid retry loops.
+# Prints: "<tool>\t<kind>" (kind is "command not found" or "no such file")
+detect_missing_tooling() {
+  python3 -c '
+import re
+import sys
+
+text = sys.stdin.read()
+known = {
+    # JS/TS
+    "bun","node","npm","pnpm","yarn","deno","tsc","eslint","prettier","jest","vitest",
+    # Rust/Go/Python
+    "cargo","rustc","go","python","python3","pip","pip3","uv","poetry","pytest","ruff","black","mypy",
+    # Build tools
+    "make","cmake","ninja","just","bats",
+    # Containers/infra
+    "docker","docker-compose","podman","kubectl","helm","terraform",
+    # Solana/Anchor
+    "anchor","avm","solana","solana-test-validator",
+}
+
+patterns = [
+    ("command not found", re.compile(r"(?im)^\s*(?:zsh|bash|sh|/bin/sh|env)(?:\[[0-9]+\])?:\s*(?:line\s+\d+:\s*)?command not found:\s*([^\s]+)\s*$")),
+    ("command not found", re.compile(r"(?im)^\s*(?:bash|sh|/bin/sh)(?:\[[0-9]+\])?:\s*([^\s:]+):\s*command not found\s*$")),
+    ("command not found", re.compile(r"(?im)^\s*(?:zsh|bash|sh|/bin/sh|env)(?:\[[0-9]+\])?:\s*(?:line\s+\d+:\s*)?([^\s:]+):\s*not found\s*$")),
+    ("no such file", re.compile(r"(?im)^\s*env:\s*([^\s:]+):\s*No such file or directory\s*$")),
+    ("no such file", re.compile(r"(?im)^\s*([^\s:]+):\s*No such file or directory\s*$")),
+    ("no such file", re.compile(r"(?im)\bspawn\s+([^\s]+)\s+ENOENT\b")),
+]
+
+for kind, pat in patterns:
+    for m in pat.finditer(text):
+        cmd = m.group(1).strip().strip("\"").strip("\x27")
+        base = cmd.rsplit("/", 1)[-1].lower()
+        if base in known:
+            sys.stdout.write(f"{base}\t{kind}")
+            sys.exit(0)
+
+sys.exit(1)
+'
+}
+
 # Brew service starts with CWD / — detect and fix
 if [ "$PROJECT_DIR" = "/" ] || { [ ! -d "$PROJECT_DIR/.git" ] && ! is_bare_repo "$PROJECT_DIR" 2>/dev/null; }; then
   _cfg_dir=$(config_get '.project_dir // ""' 2>/dev/null || true)
@@ -782,6 +824,17 @@ fi
 if [ "$CMD_STATUS" -ne 0 ]; then
   COMBINED_OUTPUT="${RESPONSE}${AGENT_STDERR}"
 
+  ENV_FAIL_INFO=$(printf '%s' "$COMBINED_OUTPUT" | detect_missing_tooling 2>/dev/null || true)
+  if [ -n "$ENV_FAIL_INFO" ]; then
+    ENV_TOOL=""
+    ENV_KIND=""
+    IFS=$'\t' read -r ENV_TOOL ENV_KIND <<< "$ENV_FAIL_INFO"
+    ENV_FAIL_MSG="env/tooling failure: missing ${ENV_TOOL} (${ENV_KIND})"
+    error_log "[run] task=$TASK_ID $ENV_FAIL_MSG"
+    mark_needs_review "$TASK_ID" "$ATTEMPTS" "$ENV_FAIL_MSG"
+    exit 0
+  fi
+
   if [ "$CMD_STATUS" -eq 124 ]; then
     TIMEOUT_REASON="agent timed out (exit 124)"
     if [ -f "$STDERR_FILE" ] && rg -qi 'waiting.*approv|passphrase|unlock|1password|biometric|touch.id|press.*button|enter.*password|interactive.*auth|permission.*denied.*publickey|sign_and_send_pubkey' "$STDERR_FILE" 2>/dev/null; then
@@ -922,6 +975,25 @@ NEEDS_HELP=$(printf '%s' "$RESPONSE_JSON" | jq -r '.needs_help // false')
 REASON=$(printf '%s' "$RESPONSE_JSON" | jq -r '.reason // ""')
 DELEGATIONS_JSON=$(printf '%s' "$RESPONSE_JSON" | jq -c '.delegations // []')
 
+# If the agent output indicates missing tooling, mark as needs_review and
+# surface the missing tool in the error message to prevent retry loops.
+ENV_FAIL_INFO=$(printf '%s\n%s\n%s\n%s\n' "$RESPONSE" "$AGENT_STDERR" "$REASON" "$BLOCKERS_STR" | detect_missing_tooling 2>/dev/null || true)
+ENV_FAIL_MSG=""
+if [ -n "$ENV_FAIL_INFO" ]; then
+  ENV_TOOL=""
+  ENV_KIND=""
+  IFS=$'\t' read -r ENV_TOOL ENV_KIND <<< "$ENV_FAIL_INFO"
+  ENV_FAIL_MSG="env/tooling failure: missing ${ENV_TOOL} (${ENV_KIND})"
+  if [ -z "$REASON" ] || [ "$REASON" = "null" ]; then
+    REASON="$ENV_FAIL_MSG"
+  elif ! printf '%s' "$REASON" | rg -qi '^env/tooling failure:'; then
+    REASON="${ENV_FAIL_MSG} — ${REASON}"
+  fi
+  if [ "$AGENT_STATUS" != "needs_review" ] && [ "$AGENT_STATUS" != "blocked" ]; then
+    AGENT_STATUS="needs_review"
+  fi
+fi
+
 if [ -z "$AGENT_STATUS" ] || [ "$AGENT_STATUS" = "null" ]; then
   mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response missing status"
   exit 0
@@ -942,6 +1014,11 @@ fi
 db_store_agent_response "$TASK_ID" "$AGENT_STATUS" "$SUMMARY" "$REASON" \
   "$NEEDS_HELP" "$RESP_MODEL" "$AGENT_DURATION" "$INPUT_TOKENS" "$OUTPUT_TOKENS" \
   "$STDERR_SNIPPET" "$PROMPT_HASH"
+
+# Preserve a clear last_error for env/tooling failures (used by operators and retry-loop tooling).
+if [ -n "$ENV_FAIL_MSG" ]; then
+  db_task_update "$TASK_ID" "last_error=$ENV_FAIL_MSG"
+fi
 
 db_store_agent_arrays "$TASK_ID" "$ACCOMPLISHED_STR" "$REMAINING_STR" "$BLOCKERS_STR" "$FILES_CHANGED_STR"
 
