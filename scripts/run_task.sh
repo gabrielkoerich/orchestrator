@@ -119,10 +119,12 @@ if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
   exit 1
 fi
 
+# Ensure TASK_STATUS is set before checking it (some backends may not export it)
+TASK_STATUS="${TASK_STATUS:-$(db_task_field "$TASK_ID" "status" 2>/dev/null || true)}"
+
 # Guard: never re-run tasks that need human review
-if [ "${TASK_STATUS:-}" = "needs_review" ]; then
+if [ "$TASK_STATUS" = "needs_review" ]; then
   log_err "[run] task=$TASK_ID status=needs_review, skipping (requires human review before retry)"
-  TASK_LOCK_OWNED=false  # don't trigger crash handler
   exit 0
 fi
 
