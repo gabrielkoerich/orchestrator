@@ -31,9 +31,7 @@ if [ -n "$IN_PROGRESS_IDS" ]; then
     if [ ! -d "$TASK_LOCK" ]; then
       UPDATED_AT=$(db_task_field "$sid" "updated_at")
       if [ -n "$UPDATED_AT" ] && [ "$UPDATED_AT" != "null" ]; then
-        # SQLite datetime() produces "YYYY-MM-DD HH:MM:SS", not ISO 8601
-        UPDATED_EPOCH=$(date -u -jf "%Y-%m-%d %H:%M:%S" "$UPDATED_AT" +%s 2>/dev/null \
-          || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$UPDATED_AT" +%s 2>/dev/null \
+        UPDATED_EPOCH=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$UPDATED_AT" +%s 2>/dev/null \
           || date -d "$UPDATED_AT" +%s 2>/dev/null \
           || echo 0)
         ELAPSED=$((NOW_EPOCH - UPDATED_EPOCH))
@@ -69,12 +67,17 @@ if [ -n "$IN_REVIEW_IDS" ] && command -v gh >/dev/null 2>&1; then
 fi
 
 # Worktree janitor: clean up done tasks with worktrees
-DONE_WITH_WORKTREE=$(db_row "SELECT id, worktree, COALESCE(branch, ''), COALESCE(dir, '') FROM tasks WHERE status = 'done' AND worktree IS NOT NULL AND worktree != '';")
-if [ -n "$DONE_WITH_WORKTREE" ]; then
-  while IFS=$'\x1f' read -r tid wt branch task_dir; do
+# bd list doesn't include metadata, so get done IDs then show each
+DONE_IDS_WT=$(_bd_json list -n 0 --all 2>/dev/null | jq -r '.[] | select(.status == "done") | .id' 2>/dev/null || true)
+if [ -n "$DONE_IDS_WT" ]; then
+  while IFS= read -r tid; do
     [ -n "$tid" ] || continue
+    _tj=$(_bd_json show "$tid" 2>/dev/null) || continue
+    wt=$(printf '%s' "$_tj" | jq -r '.[0].metadata.worktree // empty' 2>/dev/null)
     [ -n "$wt" ] || continue
     [ -d "$wt" ] || continue
+    branch=$(printf '%s' "$_tj" | jq -r '.[0].metadata.branch // empty' 2>/dev/null)
+    task_dir=$(printf '%s' "$_tj" | jq -r '.[0].metadata.dir // empty' 2>/dev/null)
 
     MAIN_DIR="${task_dir:-.}"
     if [ ! -d "$MAIN_DIR/.git" ] && [ ! -f "$MAIN_DIR/.git" ]; then
@@ -90,28 +93,43 @@ if [ -n "$DONE_WITH_WORKTREE" ]; then
 
     db_task_update "$tid" worktree=NULL branch=NULL
     db_append_history "$tid" "done" "cleaned up worktree and branch"
-  done <<< "$DONE_WITH_WORKTREE"
+  done <<< "$DONE_IDS_WT"
 fi
 
 # Run all new/routed tasks in parallel (skip tasks with no-agent label)
-NEW_IDS=$(db_scalar "SELECT t.id FROM tasks t
-  WHERE t.status IN ('new', 'routed')
-    AND t.id NOT IN (SELECT task_id FROM task_labels WHERE label = 'no-agent')
-  ORDER BY t.id;")
-if [ -n "$NEW_IDS" ]; then
-  printf '%s\n' "$NEW_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
+NEW_IDS=$(db_task_ids_by_status "new" "no-agent")
+ROUTED_IDS=$(db_task_ids_by_status "routed" "no-agent")
+ALL_IDS=$(printf '%s\n%s' "$NEW_IDS" "$ROUTED_IDS" | grep -v '^$' || true)
+if [ -n "$ALL_IDS" ]; then
+  printf '%s\n' "$ALL_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
 fi
 
 # Collect blocked parents ready to rejoin (all children done)
-READY_IDS=$(db_scalar "SELECT t.id FROM tasks t
-  WHERE t.status = 'blocked'
-    AND (SELECT COUNT(*) FROM task_children tc WHERE tc.parent_id = t.id) > 0
-    AND NOT EXISTS (
-      SELECT 1 FROM task_children tc
-      JOIN tasks c ON c.id = tc.child_id
-      WHERE tc.parent_id = t.id AND c.status != 'done'
-    )
-  ORDER BY t.id;")
-if [ -n "$READY_IDS" ]; then
-  printf '%s\n' "$READY_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
+# Query beads for blocked tasks that have children, check if all children are done
+BLOCKED_IDS=$(db_task_ids_by_status "blocked")
+if [ -n "$BLOCKED_IDS" ]; then
+  READY_IDS=""
+  while IFS= read -r bid; do
+    [ -n "$bid" ] || continue
+    # Get children of this task
+    CHILDREN=$(_bd_json show "$bid" --children 2>/dev/null | jq -r '.[][] | .id' 2>/dev/null || true)
+    [ -z "$CHILDREN" ] && continue
+    # Check if ALL children are done
+    ALL_DONE=true
+    while IFS= read -r cid; do
+      [ -n "$cid" ] || continue
+      CSTATUS=$(db_task_field "$cid" "status")
+      if [ "$CSTATUS" != "done" ]; then
+        ALL_DONE=false
+        break
+      fi
+    done <<< "$CHILDREN"
+    if $ALL_DONE; then
+      READY_IDS="${READY_IDS:+$READY_IDS$'\n'}$bid"
+    fi
+  done <<< "$BLOCKED_IDS"
+
+  if [ -n "$READY_IDS" ]; then
+    printf '%s\n' "$READY_IDS" | xargs -n1 -P "$JOBS" -I{} "$SCRIPT_DIR/run_task.sh" "{}"
+  fi
 fi

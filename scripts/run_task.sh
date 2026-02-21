@@ -28,9 +28,9 @@ load_project_config
 
 TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
-  TASK_ID=$(db_scalar "SELECT id FROM tasks WHERE status = 'new' ORDER BY id LIMIT 1;" 2>/dev/null || true)
+  TASK_ID=$(db_task_ids_by_status "new" | head -1)
   if [ -z "$TASK_ID" ]; then
-    TASK_ID=$(db_scalar "SELECT id FROM tasks WHERE status = 'routed' ORDER BY id LIMIT 1;" 2>/dev/null || true)
+    TASK_ID=$(db_task_ids_by_status "routed" | head -1)
   fi
   if [ -z "$TASK_ID" ]; then
     log_err "No runnable tasks found"
@@ -305,16 +305,15 @@ export NOW ATTEMPTS
 # Check max attempts before starting
 MAX=$(max_attempts)
 
-# Detect retry loops: if 4+ attempts and last 3 blocked entries have identical notes, stop
+# Detect retry loops: if 4+ attempts and last 3 blocked comments have identical text, stop
 if [ "$ATTEMPTS" -ge 4 ]; then
-  BLOCKED_NOTES=$(db_scalar "SELECT COUNT(DISTINCT note) FROM (
-    SELECT note FROM task_history WHERE task_id = $TASK_ID AND status = 'blocked'
-    ORDER BY id DESC LIMIT 3);" 2>/dev/null || echo "0")
-  BLOCKED_COUNT=$(db_scalar "SELECT COUNT(*) FROM (
-    SELECT id FROM task_history WHERE task_id = $TASK_ID AND status = 'blocked'
-    ORDER BY id DESC LIMIT 3);" 2>/dev/null || echo "0")
+  # Strip timestamp prefix (e.g. "[2026-01-01T00:00:00Z] ") before comparing for uniqueness
+  BLOCKED_NOTES=$(_bd_json comments "$TASK_ID" 2>/dev/null \
+    | jq -r '[.[] | select((.text // .body) | test("blocked:"; "i"))] | .[-3:] | [.[] | ((.text // .body) | sub("^\\[\\d{4}-[^]]+\\] "; ""))] | unique | length' 2>/dev/null || echo "0")
+  BLOCKED_COUNT=$(_bd_json comments "$TASK_ID" 2>/dev/null \
+    | jq '[.[] | select((.text // .body) | test("blocked:"; "i"))] | .[-3:] | length' 2>/dev/null || echo "0")
   if [ "$BLOCKED_COUNT" -ge 3 ] && [ "$BLOCKED_NOTES" -eq 1 ]; then
-    error_log "[run] task=$TASK_ID retry loop detected (same error 3x)"
+    log_err "[run] task=$TASK_ID retry loop detected (same error 3x)"
     mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
     exit 0
   fi
@@ -752,7 +751,7 @@ if [ "$CMD_STATUS" -ne 0 ]; then
       if [ "$NEXT_AGENT" = "opencode" ]; then
         FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
         if [ -n "$FREE_MODELS" ]; then
-          FREE_IDX=$(db_scalar "SELECT COUNT(*) FROM task_history WHERE task_id = $TASK_ID AND note LIKE '%switched to opencode%';" 2>/dev/null || echo "0")
+          FREE_IDX=$(_bd_json comments "$TASK_ID" 2>/dev/null | jq '[.[] | select(.body | test("switched to opencode"))] | length' 2>/dev/null || echo "0")
           IFS=',' read -ra _fm <<< "$FREE_MODELS"
           if [ ${#_fm[@]} -gt 0 ]; then
             NEXT_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
@@ -779,7 +778,7 @@ ${STDERR_SNIPPET}
       if command -v opencode >/dev/null 2>&1; then
         FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
         if [ -n "$FREE_MODELS" ]; then
-          FREE_IDX=$(db_scalar "SELECT COUNT(*) FROM task_history WHERE task_id = $TASK_ID AND note LIKE '%free model fallback%';" 2>/dev/null || echo "0")
+          FREE_IDX=$(_bd_json comments "$TASK_ID" 2>/dev/null | jq '[.[] | select(.body | test("free model fallback"))] | length' 2>/dev/null || echo "0")
           IFS=',' read -ra _fm <<< "$FREE_MODELS"
           if [ ${#_fm[@]} -gt 0 ]; then
             FREE_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"

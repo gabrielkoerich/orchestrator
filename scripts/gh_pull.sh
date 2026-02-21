@@ -18,6 +18,23 @@ require_gh() {
   fi
 }
 
+# Override db_task_id_by_gh_issue: bd list doesn't include metadata,
+# so iterate all task IDs and check each via bd show
+_find_task_by_gh_issue() {
+  local issue_num="$1"
+  local _all_ids
+  _all_ids=$(_bd_json list -n 0 --all 2>/dev/null | jq -r '.[].id' 2>/dev/null || true)
+  while IFS= read -r _fid; do
+    [ -n "$_fid" ] || continue
+    local _gn
+    _gn=$(db_task_field "$_fid" "gh_issue_number")
+    if [ "$_gn" = "$issue_num" ]; then
+      echo "$_fid"
+      return 0
+    fi
+  done <<< "$_all_ids"
+}
+
 require_gh
 
 REPO=${GITHUB_REPO:-$(config_get '.gh.repo // ""')}
@@ -53,8 +70,14 @@ fi
 
 # Check local tasks linked to GitHub issues — mark done if issue was closed
 OPEN_NUMS=$(printf '%s' "$FILTERED" | jq -r '.[].number')
-LOCAL_GH_TASKS=$(db_scalar "SELECT gh_issue_number FROM tasks
-  WHERE gh_issue_number IS NOT NULL AND gh_issue_number != '' AND status != 'done';" 2>/dev/null || true)
+# bd list doesn't include metadata — iterate non-done task IDs and show each
+LOCAL_GH_TASKS=""
+_ALL_NONDONE_IDS=$(_bd_json list -n 0 --all 2>/dev/null | jq -r '.[] | select(.status != "done") | .id' 2>/dev/null || true)
+while IFS= read -r _lid; do
+  [ -n "$_lid" ] || continue
+  _gh_num=$(db_task_field "$_lid" "gh_issue_number")
+  [ -n "$_gh_num" ] && LOCAL_GH_TASKS="${LOCAL_GH_TASKS:+$LOCAL_GH_TASKS$'\n'}$_gh_num"
+done <<< "$_ALL_NONDONE_IDS"
 MISSING_NUMS=()
 for _GH_NUM in $LOCAL_GH_TASKS; do
   if ! printf '%s\n' "$OPEN_NUMS" | grep -qx "$_GH_NUM"; then
@@ -75,7 +98,7 @@ if [ ${#MISSING_NUMS[@]} -gt 0 ]; then
   for _num in "${MISSING_NUMS[@]}"; do
     _STATE=$(printf '%s' "$BATCH_RESULT" | jq -r ".data.repository.issue_${_num}.state // \"\"" 2>/dev/null || true)
     if [ "$_STATE" = "CLOSED" ]; then
-      _TASK_ID=$(db_task_id_by_gh_issue "$_num")
+      _TASK_ID=$(_find_task_by_gh_issue "$_num")
       if [ -n "$_TASK_ID" ]; then
         db_task_update "$_TASK_ID" "status=done" "gh_state=closed"
         log "[gh_pull] [$PROJECT_NAME] issue #$_num closed on GitHub — marked task done"
@@ -97,7 +120,7 @@ for i in $([ "$COUNT" -gt 0 ] && seq 0 $((COUNT - 1)) || true); do
   URL=$(printf '%s' "$FILTERED" | jq -r ".[$i].html_url")
   UPDATED=$(printf '%s' "$FILTERED" | jq -r ".[$i].updated_at")
 
-  EXISTS=$(db_task_id_by_gh_issue "$NUM")
+  EXISTS=$(_find_task_by_gh_issue "$NUM")
   if [ -n "$EXISTS" ] && [ "$EXISTS" != "null" ]; then
     # Skip updating tasks that are already done with closed issues
     EXISTING_STATUS=$(db_task_field "$EXISTS" "status")
@@ -173,13 +196,21 @@ if [ -z "$REVIEW_OWNER" ] || [ "$REVIEW_OWNER" = "null" ]; then
 fi
 
 if [ -n "$REVIEW_OWNER" ] && [ "$REVIEW_OWNER" != "null" ]; then
-  FEEDBACK_TASKS=$(db_row "SELECT id, gh_issue_number, COALESCE(gh_last_feedback_at, gh_synced_at, '') FROM tasks
-    WHERE gh_issue_number IS NOT NULL AND gh_issue_number != ''
-      AND dir = '$(sql_escape "$PROJECT_DIR")'
-      AND status IN ('done', 'in_review', 'needs_review')
-    ORDER BY id;" 2>/dev/null || true)
+  # bd list doesn't include metadata — iterate done/in_review/needs_review task IDs and show each
+  FEEDBACK_TASKS=""
+  _FB_STATUS_IDS=$(_bd_json list -n 0 --all 2>/dev/null | jq -r '.[] | select(.status == "done" or .status == "in_review" or .status == "needs_review") | .id' 2>/dev/null || true)
+  while IFS= read -r _fid; do
+    [ -n "$_fid" ] || continue
+    _fj=$(_bd_json show "$_fid" 2>/dev/null) || continue
+    _f_gh=$(printf '%s' "$_fj" | jq -r '.[0].metadata.gh_issue_number // empty' 2>/dev/null)
+    [ -n "$_f_gh" ] || continue
+    _f_dir=$(printf '%s' "$_fj" | jq -r '.[0].metadata.dir // empty' 2>/dev/null)
+    [ "$_f_dir" = "$PROJECT_DIR" ] || continue
+    _f_since=$(printf '%s' "$_fj" | jq -r '.[0].metadata.gh_last_feedback_at // .[0].metadata.gh_synced_at // empty' 2>/dev/null)
+    FEEDBACK_TASKS="${FEEDBACK_TASKS:+$FEEDBACK_TASKS$'\n'}${_fid}	${_f_gh}	${_f_since}"
+  done <<< "$_FB_STATUS_IDS"
 
-  while IFS=$'\x1f' read -r _FB_ID _FB_ISSUE _FB_SINCE; do
+  while IFS=$'\t' read -r _FB_ID _FB_ISSUE _FB_SINCE; do
     [ -z "$_FB_ID" ] && continue
 
     local_feedback=$(fetch_owner_feedback "$REPO" "$_FB_ISSUE" "$REVIEW_OWNER" "$_FB_SINCE")

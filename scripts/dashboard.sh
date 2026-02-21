@@ -25,7 +25,7 @@ else
     "$TOTAL" "$NEW" "$ROUTED" "$INPROG" "$IN_REVIEW" "$BLOCKED" "$DONE" "$NEEDS_REVIEW"
 
   # Show active tasks (non-done)
-  ACTIVE_TSV=$(db_task_display_tsv "status != 'done'" "status ASC, id ASC")
+  ACTIVE_TSV=$(db_task_display_tsv '.status != "done"' "id")
   if [ -n "$ACTIVE_TSV" ]; then
     section "Active tasks:"
     printf '%s\n' "$ACTIVE_TSV" | table_with_header "$TASK_HEADER"

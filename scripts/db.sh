@@ -1,53 +1,69 @@
 #!/usr/bin/env bash
-# SQLite database wrapper for orchestrator.
-# Sourced by lib.sh — provides task/job CRUD that replaces yq-based YAML operations.
-# All functions are prefixed with db_ to avoid collision during the transition period.
+# Beads-backed database layer for orchestrator.
+# Sourced by lib.sh — provides db_* functions that delegate to the bd CLI.
+# Task data is stored in .beads/ (Dolt-backed), jobs in a JSON file.
+#
+# All task IDs are beads hash strings (e.g., "orchestrator-abc").
+# shellcheck disable=SC2155
 
-DB_PATH="${DB_PATH:-${ORCH_HOME}/orchestrator.db}"
-SCHEMA_PATH="${SCHEMA_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/schema.sql}"
+JOBS_FILE="${JOBS_FILE:-${ORCH_HOME}/jobs.yml}"
 
 # ============================================================
-# Core database helpers
+# Core helpers
 # ============================================================
 
-# Check if SQLite database exists and is initialized
-db_exists() {
-  [ -f "$DB_PATH" ] && sqlite3 "$DB_PATH" "SELECT 1 FROM tasks LIMIT 0" 2>/dev/null
+# Run bd in project context (stdout suppressed — fire-and-forget)
+_bd() {
+  local dir="${PROJECT_DIR:-.}"
+  (cd "$dir" && bd --quiet "$@") >/dev/null 2>/dev/null
 }
 
-# Initialize database from schema if it doesn't exist
+# Run bd in project context (stdout captured — for create --silent etc.)
+_bd_out() {
+  local dir="${PROJECT_DIR:-.}"
+  (cd "$dir" && bd --quiet "$@") 2>/dev/null
+}
+
+# Run bd with JSON output
+_bd_json() {
+  local dir="${PROJECT_DIR:-.}"
+  (cd "$dir" && bd --json --quiet "$@") 2>/dev/null
+}
+
+# Initialize beads in project directory
 db_init() {
-  if [ ! -f "$DB_PATH" ]; then
-    sqlite3 "$DB_PATH" < "$SCHEMA_PATH" >/dev/null
+  local dir="${PROJECT_DIR:-.}"
+  if [ ! -d "$dir/.beads" ]; then
+    (cd "$dir" && bd init --quiet >/dev/null 2>/dev/null) || true
+    _bd config set status.custom "new,routed,in_progress,blocked,needs_review,in_review,done" || true
+  fi
+  # Ensure jobs file exists
+  if [ ! -f "$JOBS_FILE" ]; then
+    printf 'jobs: []\n' > "$JOBS_FILE"
   fi
 }
 
-# busy_timeout must be set per-connection (not persisted in WAL mode).
-_DB_PRAGMA=".timeout 5000"
-
-# Run a query, tab-separated output (default)
-db() {
-  sqlite3 -separator $'\t' "$DB_PATH" "$_DB_PRAGMA" "$@"
+db_exists() {
+  local dir="${PROJECT_DIR:-.}"
+  [ -d "$dir/.beads" ]
 }
 
-# Run a query with unit separator (safe for bash read with empty fields)
-db_row() {
-  sqlite3 -separator $'\x1f' "$DB_PATH" "$_DB_PRAGMA" "$@"
+# Merge metadata: reads existing, deep-merges with new JSON, writes back.
+# Usage: _bd_meta_merge <id> <new_metadata_json>
+_bd_meta_merge() {
+  local id="$1" new_meta="$2"
+  local dir="${PROJECT_DIR:-.}"
+  local existing
+  existing=$(cd "$dir" && bd --json --quiet show "$id" 2>/dev/null | jq -c '.[0].metadata // {}' 2>/dev/null) || existing='{}'
+  [ -z "$existing" ] || [ "$existing" = "null" ] && existing='{}'
+  local merged
+  merged=$(printf '%s' "$existing" | jq -c --argjson n "$new_meta" '. * $n') || merged="$new_meta"
+  (cd "$dir" && bd --quiet update "$id" --metadata "$merged") >/dev/null 2>/dev/null
 }
 
-# Run a query, JSON output
-db_json() {
-  sqlite3 -json "$DB_PATH" "$_DB_PRAGMA" "$@"
-}
-
-# Run a query expecting a single scalar value
-db_scalar() {
-  sqlite3 "$DB_PATH" "$_DB_PRAGMA" "$@"
-}
-
-# Escape a string for SQL single quotes (double up single quotes)
-sql_escape() {
-  printf '%s' "${1:-}" | sed "s/'/''/g"
+# Escape for jq string embedding
+_jq_escape() {
+  printf '%s' "${1:-}" | jq -Rs '.' 2>/dev/null
 }
 
 # ============================================================
@@ -56,70 +72,80 @@ sql_escape() {
 
 # Read a single field from a task.
 # Usage: db_task_field <id> <column>
-# Example: db_task_field 3 status  →  "done"
+# Core fields: title, status, description (body alias)
+# Extended fields stored in metadata: agent, branch, worktree, gh_issue_number, etc.
 db_task_field() {
   local id="$1" field="$2"
-  db_scalar "SELECT \`$field\` FROM tasks WHERE id = $id;"
+  local json
+  json=$(_bd_json show "$id" 2>/dev/null) || return 0
+
+  case "$field" in
+    title)       printf '%s' "$json" | jq -r '.[0].title // empty' ;;
+    body)        printf '%s' "$json" | jq -r '.[0].description // empty' ;;
+    description) printf '%s' "$json" | jq -r '.[0].description // empty' ;;
+    status)      printf '%s' "$json" | jq -r '.[0].status // empty' ;;
+    created_at)  printf '%s' "$json" | jq -r '.[0].created_at // empty' ;;
+    updated_at)  printf '%s' "$json" | jq -r '.[0].updated_at // empty' ;;
+    dir)         printf '%s' "$json" | jq -r '.[0].metadata.dir // empty' ;;
+    *)           printf '%s' "$json" | jq -r ".[0].metadata.${field} // empty" ;;
+  esac
 }
 
-# Update a single field on a task (also bumps updated_at).
+# Update a single field on a task.
 # Usage: db_task_set <id> <column> <value>
-# Example: db_task_set 3 status "done"
 db_task_set() {
   local id="$1" field="$2" value="$3"
-  local escaped
-  escaped=$(sql_escape "$value")
-  db "UPDATE tasks SET \`$field\` = '$escaped', updated_at = datetime('now') WHERE id = $id;"
+  case "$field" in
+    title)       _bd update "$id" --title "$value" ;;
+    body|description) _bd update "$id" -d "$value" ;;
+    status)      _bd update "$id" -s "$value" ;;
+    *)
+      # Store in metadata (merge, don't replace)
+      local meta_json
+      meta_json=$(printf '{}' | jq -c --arg k "$field" --arg v "$value" '.[$k] = $v')
+      _bd_meta_merge "$id" "$meta_json"
+      ;;
+  esac
 }
 
 # Atomically claim a task — returns 1 if someone else already claimed it.
-# This eliminates the YAML race condition where two poll cycles pick the same task.
 # Usage: db_task_claim <id> <from_status> <to_status>
 db_task_claim() {
   local id="$1" from_status="$2" to_status="$3"
-  local changed
-  changed=$(db_scalar "UPDATE tasks SET status = '$to_status', updated_at = datetime('now') WHERE id = $id AND status = '$from_status'; SELECT changes();")
-  [ "$changed" -gt 0 ]
+  local current
+  current=$(db_task_field "$id" "status")
+  if [ "$current" = "$from_status" ]; then
+    _bd update "$id" -s "$to_status"
+    return 0
+  fi
+  return 1
 }
 
 # Count tasks, optionally filtered by status and/or dir.
 # Usage: db_task_count [status] [dir]
 db_task_count() {
   local _tc_status="${1:-}" _tc_dir="${2:-}"
-  local where="1=1"
-  [ -n "$_tc_status" ] && where="$where AND status = '$(sql_escape "$_tc_status")'"
-  [ -n "$_tc_dir" ] && where="$where AND (dir = '$(sql_escape "$_tc_dir")' OR dir IS NULL OR dir = '')"
-  db_scalar "SELECT COUNT(*) FROM tasks WHERE $where;"
-}
+  local all_json
+  all_json=$(_bd_json list -n 0 --all 2>/dev/null) || all_json='[]'
 
-# List tasks as TSV rows.
-# Usage: db_task_list <columns> [where_clause] [order]
-# Example: db_task_list "id, status, title" "status = 'new'" "id ASC"
-db_task_list() {
-  local columns="${1:-id, status, title}" where="${2:-1=1}" order="${3:-id ASC}"
-  db "SELECT $columns FROM tasks WHERE $where ORDER BY $order;"
+  local filter="true"
+  [ -n "$_tc_status" ] && filter="${filter} and .status == \"${_tc_status}\""
+  [ -n "$_tc_dir" ] && filter="${filter} and (.metadata.dir == \"${_tc_dir}\" or .metadata.dir == null or .metadata.dir == \"\")"
+
+  printf '%s' "$all_json" | jq "[.[] | select(${filter})] | length" 2>/dev/null || echo 0
 }
 
 # Get task IDs matching a status, excluding tasks with a specific label.
 # Usage: db_task_ids_by_status <status> [exclude_label]
-# Example: db_task_ids_by_status "new" "no-agent"
 db_task_ids_by_status() {
-  local status="$1" exclude_label="${2:-}"
+  local _ids_status="$1" exclude_label="${2:-}"
+  local json
+  json=$(_bd_json list -n 0 --all 2>/dev/null) || json='[]'
   if [ -n "$exclude_label" ]; then
-    db_scalar "SELECT t.id FROM tasks t
-      WHERE t.status = '$status'
-        AND t.id NOT IN (SELECT task_id FROM task_labels WHERE label = '$(sql_escape "$exclude_label")')
-      ORDER BY t.id;"
+    printf '%s' "$json" | jq -r --arg s "$_ids_status" --arg lbl "$exclude_label" '.[] | select(.status == $s) | select((.labels // []) | map(select(. == $lbl)) | length == 0) | .id'
   else
-    db_scalar "SELECT id FROM tasks WHERE status = '$status' ORDER BY id;"
+    printf '%s' "$json" | jq -r --arg s "$_ids_status" '.[] | select(.status == $s) | .id'
   fi
-}
-
-# Get next available ID.
-db_next_id() {
-  local max
-  max=$(db_scalar "SELECT COALESCE(MAX(id), 0) FROM tasks;")
-  echo $((max + 1))
 }
 
 # Create a new task. Returns the new task ID.
@@ -127,32 +153,31 @@ db_next_id() {
 db_create_task() {
   local title="$1" body="${2:-}" dir="${3:-${PROJECT_DIR:-}}"
   local labels_csv="${4:-}" parent_id="${5:-}" agent="${6:-}"
-  local now
-  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-  local parent_val="NULL"
-  [ -n "$parent_id" ] && parent_val="$parent_id"
-
-  local agent_val="NULL"
-  [ -n "$agent" ] && agent_val="'$(sql_escape "$agent")'"
+  local args=(create "$title" --silent)
+  [ -n "$body" ] && args+=(-d "$body")
+  [ -n "$parent_id" ] && args+=(--parent "$parent_id")
 
   local new_id
-  new_id=$(db_scalar "INSERT INTO tasks (title, body, dir, status, parent_id, agent, attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
-    VALUES ('$(sql_escape "$title")', '$(sql_escape "$body")', '$(sql_escape "$dir")', 'new', $parent_val, $agent_val, 0, 0, 0, 0, '$now', '$now')
-    RETURNING id;")
+  new_id=$(_bd_out "${args[@]}") || return 1
 
-  # Insert labels
+  # Store extended fields in metadata
+  local meta='{}'
+  [ -n "$dir" ] && meta=$(printf '%s' "$meta" | jq -c --arg v "$dir" '.dir = $v')
+  [ -n "$agent" ] && meta=$(printf '%s' "$meta" | jq -c --arg v "$agent" '.agent = $v')
+  meta=$(printf '%s' "$meta" | jq -c '.attempts = 0 | .needs_help = false | .worktree_cleaned = false | .gh_archived = false')
+
+  _bd update "$new_id" -s "new"
+  _bd_meta_merge "$new_id" "$meta"
+
+  # Add labels
   if [ -n "$labels_csv" ]; then
-    printf '%s\n' "$labels_csv" | tr ',' '\n' | while IFS= read -r label; do
-      label=$(printf '%s' "$label" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      [ -z "$label" ] && continue
-      db "INSERT OR IGNORE INTO task_labels (task_id, label) VALUES ($new_id, '$(sql_escape "$label")');"
+    IFS=',' read -ra _labels <<< "$labels_csv"
+    for _l in "${_labels[@]}"; do
+      _l=$(printf '%s' "$_l" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [ -z "$_l" ] && continue
+      _bd label add "$new_id" "$_l"
     done
-  fi
-
-  # Link parent → child
-  if [ -n "$parent_id" ]; then
-    db "INSERT OR IGNORE INTO task_children (parent_id, child_id) VALUES ($parent_id, $new_id);"
   fi
 
   echo "$new_id"
@@ -162,135 +187,136 @@ db_create_task() {
 # Task array fields (labels, history, files, children, etc.)
 # ============================================================
 
-# Append a history entry.
+# Append a history entry as a beads comment.
 # Usage: db_append_history <task_id> <status> <note>
 db_append_history() {
   local task_id="$1" _ah_status="$2" note="$3"
   local now
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  db "INSERT INTO task_history (task_id, ts, status, note)
-    VALUES ($task_id, '$now', '$(sql_escape "$_ah_status")', '$(sql_escape "$note")');"
+  _bd comments add "$task_id" "[$now] $_ah_status: $note" 2>/dev/null || true
 }
 
-# Get task history as TSV (ts, status, note).
+# Get task history from comments (formatted).
 db_task_history() {
   local task_id="$1"
-  db "SELECT ts, status, note FROM task_history WHERE task_id = $task_id ORDER BY id;"
+  _bd_json comments "$task_id" 2>/dev/null | jq -r '.[] | (.text // .body)' 2>/dev/null || true
 }
 
 # Get task labels as newline-separated list.
 db_task_labels() {
   local task_id="$1"
-  db_scalar "SELECT label FROM task_labels WHERE task_id = $task_id ORDER BY label;"
+  _bd_json show "$task_id" 2>/dev/null | jq -r '.[0].labels // [] | .[]' 2>/dev/null || true
 }
 
 # Get task labels as comma-separated string.
 db_task_labels_csv() {
   local task_id="$1"
-  db_scalar "SELECT GROUP_CONCAT(label, ',') FROM task_labels WHERE task_id = $task_id;"
+  _bd_json show "$task_id" 2>/dev/null | jq -r '.[0].labels // [] | join(",")' 2>/dev/null || true
+}
+
+# Get task labels as JSON array.
+db_task_labels_json() {
+  local task_id="$1"
+  _bd_json show "$task_id" 2>/dev/null | jq -c '.[0].labels // []' 2>/dev/null || echo '[]'
 }
 
 # Set labels for a task (replaces existing).
 # Usage: db_set_labels <task_id> <labels_csv>
 db_set_labels() {
   local task_id="$1" labels_csv="$2"
-  db "DELETE FROM task_labels WHERE task_id = $task_id;"
-  if [ -n "$labels_csv" ]; then
-    printf '%s\n' "$labels_csv" | tr ',' '\n' | while IFS= read -r label; do
-      label=$(printf '%s' "$label" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      [ -z "$label" ] && continue
-      db "INSERT OR IGNORE INTO task_labels (task_id, label) VALUES ($task_id, '$(sql_escape "$label")');"
-    done
+  IFS=',' read -ra _labels <<< "$labels_csv"
+  local args=()
+  for _l in "${_labels[@]}"; do
+    _l=$(printf '%s' "$_l" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [ -z "$_l" ] && continue
+    args+=("$_l")
+  done
+  if [ ${#args[@]} -gt 0 ]; then
+    _bd update "$task_id" --set-labels "$(IFS=,; echo "${args[*]}")"
+  else
+    _bd update "$task_id" --set-labels ""
   fi
 }
 
 # Add a label to a task.
 db_add_label() {
   local task_id="$1" label="$2"
-  db "INSERT OR IGNORE INTO task_labels (task_id, label) VALUES ($task_id, '$(sql_escape "$label")');"
+  _bd label add "$task_id" "$label" 2>/dev/null || true
 }
 
 # Remove a label from a task.
 db_remove_label() {
   local task_id="$1" label="$2"
-  db "DELETE FROM task_labels WHERE task_id = $task_id AND label = '$(sql_escape "$label")';"
+  _bd label remove "$task_id" "$label" 2>/dev/null || true
 }
 
-# Set files_changed for a task (replaces existing).
+# Check if a task has a specific label.
+db_task_has_label() {
+  local task_id="$1" label="$2"
+  local labels
+  labels=$(db_task_labels_csv "$task_id")
+  printf '%s' ",$labels," | grep -q ",$label,"
+}
+
+# Set files_changed for a task (stored in metadata).
 db_set_files() {
   local task_id="$1" files_csv="$2"
-  db "DELETE FROM task_files WHERE task_id = $task_id;"
-  if [ -n "$files_csv" ]; then
-    printf '%s\n' "$files_csv" | tr ',' '\n' | while IFS= read -r f; do
-      f=$(printf '%s' "$f" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      [ -z "$f" ] && continue
-      db "INSERT OR IGNORE INTO task_files (task_id, file_path) VALUES ($task_id, '$(sql_escape "$f")');"
-    done
-  fi
+  local meta
+  meta=$(printf '{}' | jq -c --arg f "$files_csv" '.files_changed = ($f | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))')
+  _bd_meta_merge "$task_id" "$meta"
 }
 
 # Get files_changed as comma-separated string.
 db_task_files_csv() {
   local task_id="$1"
-  db_scalar "SELECT GROUP_CONCAT(file_path, ', ') FROM task_files WHERE task_id = $task_id;"
+  _bd_json show "$task_id" 2>/dev/null | jq -r '.[0].metadata.files_changed // [] | join(", ")' 2>/dev/null || true
 }
 
 # Get child task IDs.
 db_task_children() {
   local parent_id="$1"
-  db_scalar "SELECT child_id FROM task_children WHERE parent_id = $parent_id ORDER BY child_id;"
+  _bd_json show "$parent_id" --children 2>/dev/null | jq -r '.[].id' 2>/dev/null || true
 }
 
-# Add a child to a parent task.
-db_add_child() {
-  local parent_id="$1" child_id="$2"
-  db "INSERT OR IGNORE INTO task_children (parent_id, child_id) VALUES ($parent_id, $child_id);"
-}
-
-# Set accomplished items (replaces existing).
+# Set accomplished items (in metadata).
 db_set_accomplished() {
-  local task_id="$1"
-  shift
-  db "DELETE FROM task_accomplished WHERE task_id = $task_id;"
+  local task_id="$1"; shift
+  local items_json='[]'
   for item in "$@"; do
     [ -z "$item" ] && continue
-    db "INSERT INTO task_accomplished (task_id, item) VALUES ($task_id, '$(sql_escape "$item")');"
+    items_json=$(printf '%s' "$items_json" | jq -c --arg i "$item" '. + [$i]')
   done
+  _bd_meta_merge "$task_id" "$(printf '{}' | jq -c --argjson a "$items_json" '.accomplished = $a')"
 }
 
-# Set remaining items.
+# Set remaining items (in metadata).
 db_set_remaining() {
-  local task_id="$1"
-  shift
-  db "DELETE FROM task_remaining WHERE task_id = $task_id;"
+  local task_id="$1"; shift
+  local items_json='[]'
   for item in "$@"; do
     [ -z "$item" ] && continue
-    db "INSERT INTO task_remaining (task_id, item) VALUES ($task_id, '$(sql_escape "$item")');"
+    items_json=$(printf '%s' "$items_json" | jq -c --arg i "$item" '. + [$i]')
   done
+  _bd_meta_merge "$task_id" "$(printf '{}' | jq -c --argjson a "$items_json" '.remaining = $a')"
 }
 
-# Set blockers.
+# Set blockers (in metadata).
 db_set_blockers() {
-  local task_id="$1"
-  shift
-  db "DELETE FROM task_blockers WHERE task_id = $task_id;"
+  local task_id="$1"; shift
+  local items_json='[]'
   for item in "$@"; do
     [ -z "$item" ] && continue
-    db "INSERT INTO task_blockers (task_id, item) VALUES ($task_id, '$(sql_escape "$item")');"
+    items_json=$(printf '%s' "$items_json" | jq -c --arg i "$item" '. + [$i]')
   done
+  _bd_meta_merge "$task_id" "$(printf '{}' | jq -c --argjson a "$items_json" '.blockers = $a')"
 }
 
-# Set selected_skills.
+# Set selected_skills (in metadata).
 db_set_selected_skills() {
   local task_id="$1" skills_csv="$2"
-  db "DELETE FROM task_selected_skills WHERE task_id = $task_id;"
-  if [ -n "$skills_csv" ]; then
-    printf '%s\n' "$skills_csv" | tr ',' '\n' | while IFS= read -r skill; do
-      skill=$(printf '%s' "$skill" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      [ -z "$skill" ] && continue
-      db "INSERT OR IGNORE INTO task_selected_skills (task_id, skill) VALUES ($task_id, '$(sql_escape "$skill")');"
-    done
-  fi
+  local meta
+  meta=$(printf '{}' | jq -c --arg s "$skills_csv" '.selected_skills = ($s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))')
+  _bd_meta_merge "$task_id" "$meta"
 }
 
 # ============================================================
@@ -299,289 +325,221 @@ db_set_selected_skills() {
 
 # Update multiple fields on a task at once.
 # Usage: db_task_update <id> <field1>=<value1> [field2=value2] ...
-# Example: db_task_update 3 status=done summary="All tests pass" agent=claude
 db_task_update() {
-  local id="$1"
-  shift
-  local sets=""
+  local id="$1"; shift
+  local meta='{}'
+  local bd_args=()
+
   for pair in "$@"; do
     local field="${pair%%=*}"
     local value="${pair#*=}"
-    if [ -n "$sets" ]; then
-      sets="$sets, "
-    fi
-    if [ "$value" = "NULL" ] || [ "$value" = "null" ]; then
-      sets="$sets\`$field\` = NULL"
-    else
-      sets="$sets\`$field\` = '$(sql_escape "$value")'"
-    fi
+
+    case "$field" in
+      title)       bd_args+=(--title "$value") ;;
+      body|description) bd_args+=(-d "$value") ;;
+      status)
+        if [ "$value" = "NULL" ] || [ "$value" = "null" ]; then
+          bd_args+=(-s "new")
+        else
+          bd_args+=(-s "$value")
+        fi
+        ;;
+      *)
+        if [ "$value" = "NULL" ] || [ "$value" = "null" ]; then
+          meta=$(printf '%s' "$meta" | jq -c --arg k "$field" '.[$k] = null')
+        else
+          meta=$(printf '%s' "$meta" | jq -c --arg k "$field" --arg v "$value" '.[$k] = $v')
+        fi
+        ;;
+    esac
   done
-  if [ -n "$sets" ]; then
-    db "UPDATE tasks SET $sets, updated_at = datetime('now') WHERE id = $id;"
+
+  # Apply core fields (title, status, etc.) first
+  if [ ${#bd_args[@]} -gt 0 ]; then
+    _bd update "$id" "${bd_args[@]}"
+  fi
+
+  # Merge metadata if any extended fields were set
+  if [ "$meta" != '{}' ]; then
+    _bd_meta_merge "$id" "$meta"
   fi
 }
 
 # ============================================================
-# Task query helpers (match common yq patterns)
+# Task query helpers
 # ============================================================
 
-# Get a full task as JSON (for passing to agents or gh_push).
+# Get a full task as JSON.
 db_task_json() {
   local id="$1"
-  local task_json labels_json history_json files_json children_json
-  local accomplished_json remaining_json blockers_json skills_json
+  local json
+  json=$(_bd_json show "$id" 2>/dev/null) || return 1
+  local comments
+  comments=$(_bd_json comments "$id" 2>/dev/null) || comments='[]'
 
-  task_json=$(db_json "SELECT * FROM tasks WHERE id = $id;")
-  labels_json=$(db_json "SELECT label FROM task_labels WHERE task_id = $id ORDER BY label;")
-  history_json=$(db_json "SELECT ts, status, note FROM task_history WHERE task_id = $id ORDER BY id;")
-  files_json=$(db_json "SELECT file_path FROM task_files WHERE task_id = $id;")
-  children_json=$(db_json "SELECT child_id FROM task_children WHERE parent_id = $id ORDER BY child_id;")
-  accomplished_json=$(db_json "SELECT item FROM task_accomplished WHERE task_id = $id;")
-  remaining_json=$(db_json "SELECT item FROM task_remaining WHERE task_id = $id;")
-  blockers_json=$(db_json "SELECT item FROM task_blockers WHERE task_id = $id;")
-  skills_json=$(db_json "SELECT skill FROM task_selected_skills WHERE task_id = $id;")
-
-  # Merge into a single JSON object using jq
-  printf '%s' "$task_json" | jq --argjson labels "$(printf '%s' "$labels_json" | jq '[.[].label] // []' 2>/dev/null || echo '[]')" \
-    --argjson history "$(printf '%s' "$history_json" | jq '. // []' 2>/dev/null || echo '[]')" \
-    --argjson files "$(printf '%s' "$files_json" | jq '[.[].file_path] // []' 2>/dev/null || echo '[]')" \
-    --argjson children "$(printf '%s' "$children_json" | jq '[.[].child_id] // []' 2>/dev/null || echo '[]')" \
-    --argjson accomplished "$(printf '%s' "$accomplished_json" | jq '[.[].item] // []' 2>/dev/null || echo '[]')" \
-    --argjson remaining "$(printf '%s' "$remaining_json" | jq '[.[].item] // []' 2>/dev/null || echo '[]')" \
-    --argjson blockers "$(printf '%s' "$blockers_json" | jq '[.[].item] // []' 2>/dev/null || echo '[]')" \
-    --argjson selected_skills "$(printf '%s' "$skills_json" | jq '[.[].skill] // []' 2>/dev/null || echo '[]')" \
-    '.[0] + {labels: $labels, history: $history, files_changed: $files, children: $children, accomplished: $accomplished, remaining: $remaining, blockers: $blockers, selected_skills: $selected_skills}'
+  printf '%s' "$json" | jq --argjson comments "$comments" '
+    .[0] + {
+      history: ($comments // []),
+      labels: (.labels // [])
+    }'
 }
 
-# Build env-var export block for a task (used by run_task.sh prompt builder).
-# Returns lines like: export TASK_ID=3; export TASK_TITLE="Fix bug"; ...
-db_task_env_exports() {
-  local id="$1"
-  db "SELECT
-    'export TASK_ID=' || id ||
-    char(10) || 'export TASK_TITLE=' || quote(title) ||
-    char(10) || 'export TASK_BODY=' || quote(COALESCE(body, '')) ||
-    char(10) || 'export TASK_STATUS=' || quote(status) ||
-    char(10) || 'export TASK_AGENT=' || quote(COALESCE(agent, '')) ||
-    char(10) || 'export AGENT_MODEL=' || quote(COALESCE(agent_model, '')) ||
-    char(10) || 'export TASK_COMPLEXITY=' || quote(COALESCE(complexity, 'medium')) ||
-    char(10) || 'export TASK_SUMMARY=' || quote(COALESCE(summary, '')) ||
-    char(10) || 'export TASK_DIR=' || quote(COALESCE(dir, ''))
-    FROM tasks WHERE id = $id;"
-}
-
-# ============================================================
-# Job CRUD
-# ============================================================
-
-# Create a job.
-db_create_job() {
-  local id="$1" title="$2" schedule="$3" type="${4:-task}"
-  local body="${5:-}" labels="${6:-}" agent="${7:-}" dir="${8:-}" command="${9:-}"
-  local now
-  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  db "INSERT INTO jobs (id, title, schedule, type, command, body, labels, agent, dir, enabled, created_at)
-    VALUES ('$(sql_escape "$id")', '$(sql_escape "$title")', '$(sql_escape "$schedule")', '$(sql_escape "$type")',
-            $([ -n "$command" ] && echo "'$(sql_escape "$command")'" || echo "NULL"),
-            '$(sql_escape "$body")', '$(sql_escape "$labels")', $([ -n "$agent" ] && echo "'$(sql_escape "$agent")'" || echo "NULL"),
-            '$(sql_escape "$dir")', 1, '$now');"
-}
-
-# Get a job field.
-db_job_field() {
-  local id="$1" field="$2"
-  db_scalar "SELECT \`$field\` FROM jobs WHERE id = '$(sql_escape "$id")';"
-}
-
-# Update a job field.
-db_job_set() {
-  local id="$1" field="$2" value="$3"
-  db "UPDATE jobs SET \`$field\` = '$(sql_escape "$value")' WHERE id = '$(sql_escape "$id")';"
-}
-
-# List all jobs as TSV.
-db_job_list() {
-  db "SELECT id, title, schedule, type, enabled, active_task_id, last_run FROM jobs ORDER BY id;"
-}
-
-# Delete a job.
-db_job_delete() {
-  local id="$1"
-  db "DELETE FROM jobs WHERE id = '$(sql_escape "$id")';"
-}
-
-# ============================================================
-# Task query helpers for script migration
-# ============================================================
-
-# Load all task fields into exported shell variables (replaces yq-based load_task).
+# Load all task fields into exported shell variables.
 # Usage: db_load_task <id>
-# Sets: TASK_TITLE, TASK_BODY, TASK_LABELS, TASK_AGENT, AGENT_MODEL, etc.
 db_load_task() {
   local id="$1"
-  local row
-  row=$(db_row "SELECT title, body, status, agent, agent_model, complexity,
-    COALESCE(agent_profile, '{}'), COALESCE(attempts, 0), parent_id,
-    COALESCE(gh_issue_number, ''), COALESCE(dir, ''), COALESCE(branch, ''),
-    COALESCE(worktree, ''), COALESCE(summary, ''), COALESCE(reason, ''),
-    COALESCE(last_error, ''), COALESCE(prompt_hash, ''), COALESCE(updated_at, ''),
-    COALESCE(gh_synced_at, ''), COALESCE(gh_state, ''), COALESCE(gh_url, ''),
-    COALESCE(gh_updated_at, ''), COALESCE(gh_last_feedback_at, ''),
-    COALESCE(gh_project_item_id, ''), COALESCE(gh_archived, 0),
-    COALESCE(needs_help, 0), COALESCE(last_comment_hash, ''),
-    COALESCE(review_decision, ''), COALESCE(review_notes, ''),
-    COALESCE(retry_at, ''), COALESCE(created_at, ''),
-    COALESCE(worktree_cleaned, 0), COALESCE(route_reason, ''),
-    COALESCE(route_warning, ''),
-    COALESCE(duration, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-    COALESCE(stderr_snippet, ''), COALESCE(gh_synced_status, ''),
-    COALESCE(decompose, 0)
-    FROM tasks WHERE id = $id;")
-  [ -z "$row" ] && return 1
-  # Use -d '' to read until NUL so that newlines inside fields (e.g. body)
-  # don't truncate the remaining variables.  read returns non-zero at EOF
-  # without NUL, so || true is required.
-  IFS=$'\x1f' read -r -d '' _t_title _t_body _t_status _t_agent _t_agent_model _t_complexity \
-    _t_agent_profile _t_attempts _t_parent_id _t_gh_issue _t_dir _t_branch \
-    _t_worktree _t_summary _t_reason _t_last_error _t_prompt_hash _t_updated_at \
-    _t_gh_synced_at _t_gh_state _t_gh_url _t_gh_updated_at _t_gh_last_feedback_at \
-    _t_gh_project_item_id _t_gh_archived _t_needs_help _t_last_comment_hash \
-    _t_review_decision _t_review_notes _t_retry_at _t_created_at \
-    _t_worktree_cleaned _t_route_reason _t_route_warning \
-    _t_duration _t_input_tokens _t_output_tokens \
-    _t_stderr_snippet _t_gh_synced_status _t_decompose <<< "$row" || true
-  # Strip trailing newline that <<< appends (read -d '' doesn't remove it)
-  _t_decompose="${_t_decompose%$'\n'}"
+  local json
+  json=$(_bd_json show "$id" 2>/dev/null) || return 1
+  [ "$(printf '%s' "$json" | jq 'length')" -eq 0 ] && return 1
 
-  export TASK_TITLE="$_t_title"
-  export TASK_BODY="$_t_body"
-  export TASK_STATUS="$_t_status"
-  export TASK_AGENT="$_t_agent"
-  export AGENT_MODEL="$_t_agent_model"
-  export TASK_COMPLEXITY="${_t_complexity:-medium}"
-  export AGENT_PROFILE_JSON="$_t_agent_profile"
-  export ATTEMPTS="$_t_attempts"
-  export TASK_PARENT_ID="$_t_parent_id"
-  export GH_ISSUE_NUMBER="$_t_gh_issue"
-  export TASK_DIR="$_t_dir"
-  export TASK_BRANCH="$_t_branch"
-  export TASK_WORKTREE="$_t_worktree"
-  export TASK_SUMMARY="$_t_summary"
-  export TASK_REASON="$_t_reason"
-  export TASK_LAST_ERROR="$_t_last_error"
-  export TASK_PROMPT_HASH="$_t_prompt_hash"
-  export TASK_UPDATED_AT="$_t_updated_at"
-  export TASK_GH_SYNCED_AT="$_t_gh_synced_at"
-  export TASK_GH_STATE="$_t_gh_state"
-  export TASK_GH_URL="$_t_gh_url"
-  export TASK_GH_UPDATED_AT="$_t_gh_updated_at"
-  export TASK_GH_LAST_FEEDBACK_AT="$_t_gh_last_feedback_at"
-  export TASK_GH_PROJECT_ITEM_ID="$_t_gh_project_item_id"
-  export TASK_GH_ARCHIVED="$_t_gh_archived"
-  export TASK_NEEDS_HELP="$_t_needs_help"
-  export TASK_LAST_COMMENT_HASH="$_t_last_comment_hash"
-  export TASK_REVIEW_DECISION="$_t_review_decision"
-  export TASK_REVIEW_NOTES="$_t_review_notes"
-  export TASK_RETRY_AT="$_t_retry_at"
-  export TASK_CREATED_AT="$_t_created_at"
-  export TASK_WORKTREE_CLEANED="$_t_worktree_cleaned"
-  export TASK_ROUTE_REASON="$_t_route_reason"
-  export TASK_ROUTE_WARNING="$_t_route_warning"
-  export TASK_DURATION="${_t_duration:-0}"
-  export TASK_INPUT_TOKENS="${_t_input_tokens:-0}"
-  export TASK_OUTPUT_TOKENS="${_t_output_tokens:-0}"
-  export TASK_STDERR_SNIPPET="$_t_stderr_snippet"
-  export TASK_GH_SYNCED_STATUS="$_t_gh_synced_status"
-  export TASK_DECOMPOSE="${_t_decompose:-0}"
+  export TASK_TITLE=$(printf '%s' "$json" | jq -r '.[0].title // ""')
+  export TASK_BODY=$(printf '%s' "$json" | jq -r '.[0].description // ""')
+  export TASK_STATUS=$(printf '%s' "$json" | jq -r '.[0].status // "new"')
+  export TASK_LABELS=$(db_task_labels_csv "$id")
 
-  # Labels and skills as CSV
-  export TASK_LABELS
-  TASK_LABELS=$(db_task_labels_csv "$id")
-  export SELECTED_SKILLS
-  SELECTED_SKILLS=$(db_scalar "SELECT GROUP_CONCAT(skill, ',') FROM task_selected_skills WHERE task_id = $id;")
+  # Extended fields from metadata
+  local m='.[0].metadata'
+  export TASK_AGENT=$(printf '%s' "$json" | jq -r "${m}.agent // empty")
+  export AGENT_MODEL=$(printf '%s' "$json" | jq -r "${m}.agent_model // empty")
+  export TASK_COMPLEXITY=$(printf '%s' "$json" | jq -r "${m}.complexity // \"medium\"")
+  export AGENT_PROFILE_JSON=$(printf '%s' "$json" | jq -r "${m}.agent_profile // \"{}\"")
+  export ATTEMPTS=$(printf '%s' "$json" | jq -r "${m}.attempts // \"0\"")
+  export TASK_PARENT_ID=$(printf '%s' "$json" | jq -r '.[0].parent // empty')
+  export GH_ISSUE_NUMBER=$(printf '%s' "$json" | jq -r "${m}.gh_issue_number // empty")
+  export TASK_DIR=$(printf '%s' "$json" | jq -r "${m}.dir // empty")
+  export TASK_BRANCH=$(printf '%s' "$json" | jq -r "${m}.branch // empty")
+  export TASK_WORKTREE=$(printf '%s' "$json" | jq -r "${m}.worktree // empty")
+  export TASK_SUMMARY=$(printf '%s' "$json" | jq -r "${m}.summary // empty")
+  export TASK_REASON=$(printf '%s' "$json" | jq -r "${m}.reason // empty")
+  export TASK_LAST_ERROR=$(printf '%s' "$json" | jq -r "${m}.last_error // empty")
+  export TASK_PROMPT_HASH=$(printf '%s' "$json" | jq -r "${m}.prompt_hash // empty")
+  export TASK_UPDATED_AT=$(printf '%s' "$json" | jq -r '.[0].updated_at // empty')
+  export TASK_GH_SYNCED_AT=$(printf '%s' "$json" | jq -r "${m}.gh_synced_at // empty")
+  export TASK_GH_STATE=$(printf '%s' "$json" | jq -r "${m}.gh_state // empty")
+  export TASK_GH_URL=$(printf '%s' "$json" | jq -r "${m}.gh_url // empty")
+  export TASK_GH_UPDATED_AT=$(printf '%s' "$json" | jq -r "${m}.gh_updated_at // empty")
+  export TASK_GH_LAST_FEEDBACK_AT=$(printf '%s' "$json" | jq -r "${m}.gh_last_feedback_at // empty")
+  export TASK_GH_PROJECT_ITEM_ID=$(printf '%s' "$json" | jq -r "${m}.gh_project_item_id // empty")
+  export TASK_GH_ARCHIVED=$(printf '%s' "$json" | jq -r "${m}.gh_archived // \"false\"")
+  export TASK_NEEDS_HELP=$(printf '%s' "$json" | jq -r "${m}.needs_help // \"false\"")
+  export TASK_LAST_COMMENT_HASH=$(printf '%s' "$json" | jq -r "${m}.last_comment_hash // empty")
+  export TASK_REVIEW_DECISION=$(printf '%s' "$json" | jq -r "${m}.review_decision // empty")
+  export TASK_REVIEW_NOTES=$(printf '%s' "$json" | jq -r "${m}.review_notes // empty")
+  export TASK_RETRY_AT=$(printf '%s' "$json" | jq -r "${m}.retry_at // empty")
+  export TASK_CREATED_AT=$(printf '%s' "$json" | jq -r '.[0].created_at // empty')
+  export TASK_WORKTREE_CLEANED=$(printf '%s' "$json" | jq -r "${m}.worktree_cleaned // \"false\"")
+  export TASK_ROUTE_REASON=$(printf '%s' "$json" | jq -r "${m}.route_reason // empty")
+  export TASK_ROUTE_WARNING=$(printf '%s' "$json" | jq -r "${m}.route_warning // empty")
+  export TASK_DURATION=$(printf '%s' "$json" | jq -r "${m}.duration // \"0\"")
+  export TASK_INPUT_TOKENS=$(printf '%s' "$json" | jq -r "${m}.input_tokens // \"0\"")
+  export TASK_OUTPUT_TOKENS=$(printf '%s' "$json" | jq -r "${m}.output_tokens // \"0\"")
+  export TASK_STDERR_SNIPPET=$(printf '%s' "$json" | jq -r "${m}.stderr_snippet // empty")
+  export TASK_GH_SYNCED_STATUS=$(printf '%s' "$json" | jq -r "${m}.gh_synced_status // empty")
+  export TASK_DECOMPOSE=$(printf '%s' "$json" | jq -r "${m}.decompose // \"0\"")
 
   # Role from agent profile
   ROLE=$(printf '%s' "$AGENT_PROFILE_JSON" | jq -r '.role // "general"' 2>/dev/null || echo "general")
   export ROLE
+
+  # Selected skills from metadata
+  export SELECTED_SKILLS
+  SELECTED_SKILLS=$(printf '%s' "$json" | jq -r "${m}.selected_skills // [] | join(\",\")" 2>/dev/null || true)
 }
 
 # Find task ID by GitHub issue number.
-# Returns empty string if not found.
 db_task_id_by_gh_issue() {
   local issue_num="$1"
-  db_scalar "SELECT id FROM tasks WHERE gh_issue_number = $issue_num LIMIT 1;"
+  # Search by label gh:<num> (faster than scanning metadata)
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq -r --arg n "$issue_num" '.[] | select(.metadata.gh_issue_number == $n or (.labels // [] | any(. == "gh:\($n)"))) | .id' \
+    | head -1
 }
 
-# Get dirty tasks that need GitHub sync (updated_at != gh_synced_at, or no issue yet).
-# Returns TSV: id
+# Find task ID by branch + dir.
+db_task_id_by_branch() {
+  local branch="$1" dir="$2"
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq -r --arg b "$branch" --arg d "$dir" '.[] | select(.metadata.branch == $b and .metadata.dir == $d) | .id' \
+    | head -1
+}
+
+# Get dirty tasks that need GitHub sync.
 db_dirty_task_ids() {
-  db_scalar "SELECT id FROM tasks
-    WHERE (gh_synced_at IS NULL OR gh_synced_at != updated_at OR gh_issue_number IS NULL)
-      AND NOT (status = 'done' AND gh_synced_at = updated_at)
-    ORDER BY id;"
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq -r '.[] | select(
+        (.metadata.gh_synced_at == null or .metadata.gh_synced_at != .updated_at or .metadata.gh_issue_number == null)
+        and (.status != "done" or .metadata.gh_synced_at != .updated_at)
+      ) | .id'
 }
 
 # Mark a task as synced to GitHub.
 db_task_set_synced() {
   local id="$1" status="$2"
-  db "UPDATE tasks SET gh_synced_at = updated_at, gh_synced_status = '$(sql_escape "$status")' WHERE id = $id;"
+  local updated_at
+  updated_at=$(db_task_field "$id" "updated_at")
+  _bd_meta_merge "$id" "$(printf '{}' | jq -c --arg s "$status" --arg t "$updated_at" '.gh_synced_at = $t | .gh_synced_status = $s')"
 }
 
 # Get task history as formatted strings (last N entries).
-# Usage: db_task_history_formatted <id> [limit]
 db_task_history_formatted() {
   local id="$1" limit="${2:-5}"
-  db_scalar "SELECT '[' || ts || '] ' || COALESCE(status, '') || ': ' || COALESCE(note, '')
-    FROM task_history WHERE task_id = $id ORDER BY id DESC LIMIT $limit;" | tac 2>/dev/null || \
-  db_scalar "SELECT '[' || ts || '] ' || COALESCE(status, '') || ': ' || COALESCE(note, '')
-    FROM task_history WHERE task_id = $id ORDER BY id DESC LIMIT $limit;" | tail -r 2>/dev/null || true
+  _bd_json comments "$id" 2>/dev/null \
+    | jq -r ".[-${limit}:] | .[].body" 2>/dev/null || true
 }
 
 # Get accomplished items as newline-separated list.
 db_task_accomplished() {
   local id="$1"
-  db_scalar "SELECT item FROM task_accomplished WHERE task_id = $id;"
+  _bd_json show "$id" 2>/dev/null | jq -r '.[0].metadata.accomplished // [] | .[]' 2>/dev/null || true
 }
 
 # Get remaining items.
 db_task_remaining() {
   local id="$1"
-  db_scalar "SELECT item FROM task_remaining WHERE task_id = $id;"
+  _bd_json show "$id" 2>/dev/null | jq -r '.[0].metadata.remaining // [] | .[]' 2>/dev/null || true
 }
 
 # Get blockers.
 db_task_blockers() {
   local id="$1"
-  db_scalar "SELECT item FROM task_blockers WHERE task_id = $id;"
+  _bd_json show "$id" 2>/dev/null | jq -r '.[0].metadata.blockers // [] | .[]' 2>/dev/null || true
 }
 
 # Get task files changed.
 db_task_files() {
   local id="$1"
-  db_scalar "SELECT file_path FROM task_files WHERE task_id = $id;"
+  _bd_json show "$id" 2>/dev/null | jq -r '.[0].metadata.files_changed // [] | .[]' 2>/dev/null || true
 }
 
 # Create task from GitHub issue (used by gh_pull.sh).
-# Returns the new task ID.
 db_create_task_from_gh() {
   local title="$1" body="$2" labels_csv="$3" gh_issue_number="$4"
   local gh_state="$5" gh_url="$6" gh_updated_at="$7" dir="${8:-${PROJECT_DIR:-}}"
-  local now
-  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  local args=(create "$title" --silent)
+  [ -n "$body" ] && args+=(-d "$body")
 
   local new_id
-  new_id=$(db_scalar "INSERT INTO tasks (title, body, status, dir, gh_issue_number, gh_state, gh_url, gh_updated_at,
-      attempts, needs_help, worktree_cleaned, gh_archived, created_at, updated_at)
-    VALUES ('$(sql_escape "$title")', '$(sql_escape "$body")', 'new', '$(sql_escape "$dir")',
-      $gh_issue_number, '$(sql_escape "$gh_state")', '$(sql_escape "$gh_url")', '$(sql_escape "$gh_updated_at")',
-      0, 0, 0, 0, '$now', '$now')
-    RETURNING id;")
+  new_id=$(_bd_out "${args[@]}") || return 1
 
+  # Store GH fields in metadata
+  local meta
+  meta=$(jq -nc --arg dir "$dir" --arg ghi "$gh_issue_number" --arg ghs "$gh_state" \
+    --arg ghu "$gh_url" --arg ghup "$gh_updated_at" \
+    '{dir: $dir, gh_issue_number: $ghi, gh_state: $ghs, gh_url: $ghu, gh_updated_at: $ghup,
+      attempts: 0, needs_help: false, worktree_cleaned: false, gh_archived: false}')
+
+  _bd update "$new_id" -s "new" --external-ref "gh-${gh_issue_number}"
+  _bd_meta_merge "$new_id" "$meta"
+
+  # Add labels + gh:<num> for quick lookup
+  _bd label add "$new_id" "gh:${gh_issue_number}" 2>/dev/null || true
   if [ -n "$labels_csv" ]; then
-    printf '%s\n' "$labels_csv" | tr ',' '\n' | while IFS= read -r label; do
-      label=$(printf '%s' "$label" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      [ -z "$label" ] && continue
-      db "INSERT OR IGNORE INTO task_labels (task_id, label) VALUES ($new_id, '$(sql_escape "$label")');"
+    IFS=',' read -ra _labels <<< "$labels_csv"
+    for _l in "${_labels[@]}"; do
+      _l=$(printf '%s' "$_l" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [ -z "$_l" ] && continue
+      _bd label add "$new_id" "$_l" 2>/dev/null || true
     done
   fi
 
@@ -589,7 +547,6 @@ db_create_task_from_gh() {
 }
 
 # Check if a comment body hash matches the stored hash (for dedup).
-# Returns 0 (skip) if hash matches, 1 (post) if new.
 db_should_skip_comment() {
   local task_id="$1" body="$2"
   local new_hash
@@ -607,26 +564,17 @@ db_store_comment_hash() {
   db_task_set "$task_id" "last_comment_hash" "$hash"
 }
 
-# Get all task IDs (for iteration).
+# Get all task IDs.
 db_all_task_ids() {
-  db_scalar "SELECT id FROM tasks ORDER BY id;"
+  _bd_json list -n 0 --all 2>/dev/null | jq -r '.[].id' 2>/dev/null || true
 }
 
-# Get task count.
+# Get total task count.
 db_total_task_count() {
-  db_scalar "SELECT COUNT(*) FROM tasks;"
-}
-
-# Check if a task has a specific label.
-db_task_has_label() {
-  local task_id="$1" label="$2"
-  local count
-  count=$(db_scalar "SELECT COUNT(*) FROM task_labels WHERE task_id = $task_id AND label = '$(sql_escape "$label")';")
-  [ "$count" -gt 0 ]
+  _bd_json list -n 0 --all 2>/dev/null | jq 'length' 2>/dev/null || echo 0
 }
 
 # Bulk update for run_task.sh response parsing.
-# Stores agent response fields + array data in one go.
 db_store_agent_response() {
   local id="$1" status="$2" summary="$3" reason="$4"
   local needs_help="$5" agent_model="$6" duration="$7"
@@ -634,314 +582,303 @@ db_store_agent_response() {
   shift 9
   local stderr_snippet="${1:-}" prompt_hash="${2:-}"
 
-  local nh=0
-  [ "$needs_help" = "true" ] && nh=1
+  local meta
+  meta=$(jq -nc --arg s "$summary" --arg r "$reason" --arg nh "$needs_help" \
+    --arg am "$agent_model" --arg d "$duration" --arg it "$input_tokens" \
+    --arg ot "$output_tokens" --arg ss "$stderr_snippet" --arg ph "$prompt_hash" \
+    '{summary: $s, reason: $r, needs_help: $nh, agent_model: $am,
+      duration: $d, input_tokens: $it, output_tokens: $ot,
+      stderr_snippet: $ss, prompt_hash: $ph,
+      last_error: null, retry_at: null}')
 
-  db "UPDATE tasks SET
-    status = '$(sql_escape "$status")',
-    summary = '$(sql_escape "$summary")',
-    reason = '$(sql_escape "$reason")',
-    needs_help = $nh,
-    last_error = NULL,
-    retry_at = NULL,
-    agent_model = '$(sql_escape "$agent_model")',
-    duration = ${duration:-0},
-    input_tokens = ${input_tokens:-0},
-    output_tokens = ${output_tokens:-0},
-    stderr_snippet = '$(sql_escape "$stderr_snippet")',
-    prompt_hash = '$(sql_escape "$prompt_hash")',
-    updated_at = datetime('now')
-    WHERE id = $id;"
+  _bd update "$id" -s "$status"
+  _bd_meta_merge "$id" "$meta"
 }
 
-# Store array data from agent response (accomplished, remaining, blockers, files).
+# Store array data from agent response.
 db_store_agent_arrays() {
   local id="$1" accomplished="$2" remaining="$3" blockers="$4" files_changed="$5"
+  local meta='{}'
 
-  # Accomplished
-  db "DELETE FROM task_accomplished WHERE task_id = $id;"
   if [ -n "$accomplished" ]; then
-    while IFS= read -r item; do
-      [ -z "$item" ] && continue
-      db "INSERT INTO task_accomplished (task_id, item) VALUES ($id, '$(sql_escape "$item")');"
-    done <<< "$accomplished"
+    meta=$(printf '%s' "$meta" | jq -c --arg a "$accomplished" '.accomplished = ($a | split("\n") | map(select(length > 0)))')
+  else
+    meta=$(printf '%s' "$meta" | jq -c '.accomplished = []')
   fi
 
-  # Remaining
-  db "DELETE FROM task_remaining WHERE task_id = $id;"
   if [ -n "$remaining" ]; then
-    while IFS= read -r item; do
-      [ -z "$item" ] && continue
-      db "INSERT INTO task_remaining (task_id, item) VALUES ($id, '$(sql_escape "$item")');"
-    done <<< "$remaining"
+    meta=$(printf '%s' "$meta" | jq -c --arg r "$remaining" '.remaining = ($r | split("\n") | map(select(length > 0)))')
+  else
+    meta=$(printf '%s' "$meta" | jq -c '.remaining = []')
   fi
 
-  # Blockers
-  db "DELETE FROM task_blockers WHERE task_id = $id;"
   if [ -n "$blockers" ]; then
-    while IFS= read -r item; do
-      [ -z "$item" ] && continue
-      db "INSERT INTO task_blockers (task_id, item) VALUES ($id, '$(sql_escape "$item")');"
-    done <<< "$blockers"
+    meta=$(printf '%s' "$meta" | jq -c --arg b "$blockers" '.blockers = ($b | split("\n") | map(select(length > 0)))')
+  else
+    meta=$(printf '%s' "$meta" | jq -c '.blockers = []')
   fi
 
-  # Files changed
-  db "DELETE FROM task_files WHERE task_id = $id;"
   if [ -n "$files_changed" ]; then
-    while IFS= read -r item; do
-      [ -z "$item" ] && continue
-      db "INSERT OR IGNORE INTO task_files (task_id, file_path) VALUES ($id, '$(sql_escape "$item")');"
-    done <<< "$files_changed"
+    meta=$(printf '%s' "$meta" | jq -c --arg f "$files_changed" '.files_changed = ($f | split("\n") | map(select(length > 0)))')
+  else
+    meta=$(printf '%s' "$meta" | jq -c '.files_changed = []')
   fi
+
+  _bd_meta_merge "$id" "$meta"
 }
 
 # ============================================================
-# Job helpers for jobs_tick.sh
+# Display helpers
 # ============================================================
 
-# Get enabled jobs count.
-db_enabled_job_count() {
-  db_scalar "SELECT COUNT(*) FROM jobs WHERE enabled = 1;"
-}
-
-# Iterate enabled jobs with unit separator (safe for bash read with empty fields).
-db_enabled_jobs() {
-  db_row "SELECT id, schedule, type, COALESCE(command,''), title, COALESCE(body,''), COALESCE(labels,''), COALESCE(agent,''), COALESCE(dir,''), COALESCE(active_task_id,''), COALESCE(last_run,'')
-    FROM jobs WHERE enabled = 1 ORDER BY id;"
-}
-
-# List enabled job IDs (one per line).
-db_enabled_job_ids() {
-  db_scalar "SELECT id FROM jobs WHERE enabled = 1 ORDER BY id;"
-}
-
-# Load a single job into shell variables (handles multiline body/command).
-# Usage: db_load_job <id>
-db_load_job() {
-  local jid="$1"
-  local row
-  row=$(db_row "SELECT id, schedule, type, COALESCE(command,''), title,
-    COALESCE(body,''), COALESCE(labels,''), COALESCE(agent,''),
-    COALESCE(dir,''), COALESCE(active_task_id,''), COALESCE(last_run,'')
-    FROM jobs WHERE id = '$(sql_escape "$jid")' AND enabled = 1;")
-  [ -z "$row" ] && return 1
-  IFS=$'\x1f' read -r -d '' JOB_ID JOB_SCHEDULE JOB_TYPE JOB_CMD JOB_TITLE \
-    JOB_BODY JOB_LABELS JOB_AGENT JOB_DIR JOB_ACTIVE_TASK_ID JOB_LAST_RUN \
-    <<< "$row" || true
-  # Strip trailing newline that <<< appends (read -d '' doesn't remove it)
-  JOB_LAST_RUN="${JOB_LAST_RUN%$'\n'}"
-}
-
-# ============================================================
-# Schema migration helpers
-# ============================================================
-
-# Add columns that may not exist yet (for schema evolution).
-db_ensure_columns() {
-  # These columns were added after the initial schema
-  for col_def in \
-    "duration INTEGER DEFAULT 0" \
-    "input_tokens INTEGER DEFAULT 0" \
-    "output_tokens INTEGER DEFAULT 0" \
-    "stderr_snippet TEXT" \
-    "gh_synced_status TEXT" \
-    "decompose INTEGER DEFAULT 0"; do
-    local col="${col_def%% *}"
-    db "ALTER TABLE tasks ADD COLUMN $col_def;" 2>/dev/null || true
-  done
-}
-
-# Get task labels as JSON array. E.g.: ["bug","feat"]
-db_task_labels_json() {
-  local task_id="$1"
-  db_scalar "SELECT COALESCE(json_group_array(label), '[]') FROM task_labels WHERE task_id = $task_id;"
-}
-
-# Get accomplished items formatted as markdown bullet list.
+# Formatted list items
 db_task_accomplished_list() {
   local id="$1"
-  db_scalar "SELECT '- ' || item FROM task_accomplished WHERE task_id = $id;"
+  _bd_json show "$id" 2>/dev/null | jq -r '.[0].metadata.accomplished // [] | .[] | "- " + .' 2>/dev/null || true
 }
 
-# Get remaining items formatted as markdown bullet list.
 db_task_remaining_list() {
   local id="$1"
-  db_scalar "SELECT '- ' || item FROM task_remaining WHERE task_id = $id;"
+  _bd_json show "$id" 2>/dev/null | jq -r '.[0].metadata.remaining // [] | .[] | "- " + .' 2>/dev/null || true
 }
 
-# Get blockers formatted as markdown bullet list.
 db_task_blockers_list() {
   local id="$1"
-  db_scalar "SELECT '- ' || item FROM task_blockers WHERE task_id = $id;"
+  _bd_json show "$id" 2>/dev/null | jq -r '.[0].metadata.blockers // [] | .[] | "- " + .' 2>/dev/null || true
 }
 
-# Get files changed formatted as markdown bullet list with backticks.
 db_task_files_list() {
   local id="$1"
-  db_scalar "SELECT '- \`' || file_path || '\`' FROM task_files WHERE task_id = $id;"
+  _bd_json show "$id" 2>/dev/null | jq -r '.[0].metadata.files_changed // [] | .[] | "- `" + . + "`"' 2>/dev/null || true
 }
 
-# Get task IDs that have a branch and are in specified statuses (for catch-all PR creation).
-db_tasks_with_branches() {
-  db_row "SELECT id, branch, status, COALESCE(title,''), COALESCE(summary,''), COALESCE(worktree,''), COALESCE(agent,''), COALESCE(gh_issue_number,'')
-    FROM tasks
-    WHERE branch IS NOT NULL AND branch != '' AND branch != 'main' AND branch != 'master'
-      AND status IN ('done', 'in_review', 'in_progress', 'blocked')
-    ORDER BY id;"
-}
-
-# Get dirty task count (tasks needing GitHub sync).
-db_dirty_task_count() {
-  db_scalar "SELECT COUNT(*) FROM tasks
-    WHERE (gh_synced_at IS NULL OR gh_synced_at != updated_at OR gh_issue_number IS NULL)
-      AND NOT (status = 'done' AND gh_synced_at = updated_at);"
-}
-
-# ============================================================
-# Display helpers (for dashboard, status, list, tree)
-# ============================================================
-
-# Build WHERE clause for dir filtering (SQLite equivalent of dir_filter).
-# Usage: local where; where=$(db_dir_where)
-# Returns: e.g. "(dir = '/path' OR dir IS NULL OR dir = '')" or "1=1"
+# DIR filter: returns jq filter expression
 db_dir_where() {
   local project_dir="${PROJECT_DIR:-}"
   local orch_home="${ORCH_HOME:-$HOME/.orchestrator}"
   if [ -z "$project_dir" ] || [ "$project_dir" = "$orch_home" ]; then
-    echo "1=1"
+    echo "true"  # no filter
   else
-    echo "(dir = '$(sql_escape "$project_dir")' OR dir IS NULL OR dir = '')"
+    echo "(.metadata.dir == \"$project_dir\" or .metadata.dir == null or .metadata.dir == \"\")"
   fi
 }
 
-# Global dir where: always 1=1 (no filtering).
-db_dir_where_global() {
-  echo "1=1"
-}
-
 # Count tasks by status within current dir filter.
-# Usage: db_status_count <status>
 db_status_count() {
   local status="$1"
-  local where
-  where=$(db_dir_where)
-  db_scalar "SELECT COUNT(*) FROM tasks WHERE $where AND status = '$(sql_escape "$status")';"
+  local dir_filter
+  dir_filter=$(db_dir_where)
+  _bd_json query "status=${status}" -n 0 2>/dev/null \
+    | jq --arg s "$status" "[.[] | select(${dir_filter})] | length" 2>/dev/null || echo 0
 }
 
 # Total task count within current dir filter.
 db_total_filtered_count() {
-  local where
-  where=$(db_dir_where)
-  db_scalar "SELECT COUNT(*) FROM tasks WHERE $where;"
+  local dir_filter
+  dir_filter=$(db_dir_where)
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq "[.[] | select(${dir_filter})] | length" 2>/dev/null || echo 0
 }
 
 # List tasks as TSV for table display: ID STATUS AGENT ISSUE TITLE
-# Usage: db_task_display_tsv [extra_where] [order] [limit]
 db_task_display_tsv() {
-  local extra_where="${1:-1=1}" order="${2:-id ASC}" limit="${3:-}"
-  local where
-  where=$(db_dir_where)
-  local limit_clause=""
-  [ -n "$limit" ] && limit_clause="LIMIT $limit"
-  db "SELECT id,
-    status,
-    COALESCE(agent, '-'),
-    CASE WHEN gh_issue_number IS NOT NULL AND gh_issue_number > 0
-      THEN '#' || gh_issue_number ELSE '-' END,
-    title
-    FROM tasks WHERE $where AND $extra_where
-    ORDER BY $order $limit_clause;"
+  local extra_filter="${1:-true}" order="${2:-id}" limit="${3:-}"
+  local dir_filter
+  dir_filter=$(db_dir_where)
+  local jq_expr
+  jq_expr="[.[] | select(${dir_filter}) | select(${extra_filter})]"
+  [ -n "$limit" ] && jq_expr="${jq_expr} | .[:${limit}]"
+  jq_expr="${jq_expr} | .[] | [.id, .status, (.metadata.agent // \"-\"), (if .metadata.gh_issue_number then \"#\" + .metadata.gh_issue_number else \"-\" end), .title] | @tsv"
+
+  _bd_json list -n 0 --all 2>/dev/null | jq -r "$jq_expr" 2>/dev/null || true
 }
 
-# List tasks as TSV with project column: ID STATUS AGENT ISSUE PROJECT TITLE
+# List tasks as TSV with project column
 db_task_display_tsv_global() {
-  local extra_where="${1:-1=1}" order="${2:-updated_at DESC}" limit="${3:-10}"
-  db "SELECT id,
-    status,
-    COALESCE(agent, '-'),
-    CASE WHEN gh_issue_number IS NOT NULL AND gh_issue_number > 0
-      THEN '#' || gh_issue_number ELSE '-' END,
-    CASE WHEN dir IS NOT NULL AND dir != '' THEN
-      SUBSTR(dir, INSTR(dir || '/', '/') + 1)
-    ELSE '-' END,
-    title
-    FROM tasks WHERE $extra_where
-    ORDER BY $order LIMIT $limit;"
+  local extra_filter="${1:-true}" order="${2:-updated_at}" limit="${3:-10}"
+  local jq_expr
+  jq_expr="[.[] | select(${extra_filter})] | sort_by(.updated_at) | reverse | .[:${limit}] | .[] | [.id, .status, (.metadata.agent // \"-\"), (if .metadata.gh_issue_number then \"#\" + .metadata.gh_issue_number else \"-\" end), (.metadata.dir // \"-\" | split(\"/\") | .[-1:] | join(\"/\")), .title] | @tsv"
+
+  _bd_json list -n 0 --all 2>/dev/null | jq -r "$jq_expr" 2>/dev/null || true
 }
 
-# Token usage TSV: input_tokens, output_tokens, duration, agent_model
+# Token usage TSV
 db_task_usage_tsv() {
-  local where
-  where=$(db_dir_where)
-  db "SELECT input_tokens, COALESCE(output_tokens, 0), COALESCE(duration, 0),
-    COALESCE(agent_model, 'sonnet')
-    FROM tasks WHERE $where AND input_tokens IS NOT NULL AND input_tokens > 0;"
+  local dir_filter
+  dir_filter=$(db_dir_where)
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq -r "[.[] | select(${dir_filter}) | select(.metadata.input_tokens != null and (.metadata.input_tokens | tonumber) > 0)] | .[] | [.metadata.input_tokens, (.metadata.output_tokens // \"0\"), (.metadata.duration // \"0\"), (.metadata.agent_model // \"sonnet\")] | @tsv" 2>/dev/null || true
 }
 
 # Unique project dirs.
 db_task_projects() {
-  db_scalar "SELECT DISTINCT dir FROM tasks WHERE dir IS NOT NULL AND dir != '' ORDER BY dir;"
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq -r '[.[].metadata.dir // empty] | unique | .[] | select(length > 0)' 2>/dev/null || true
 }
 
 # Active task count for a specific dir.
 db_task_active_count_for_dir() {
   local dir="$1"
-  db_scalar "SELECT COUNT(*) FROM tasks WHERE dir = '$(sql_escape "$dir")' AND status != 'done';"
+  _bd_json list -n 0 2>/dev/null \
+    | jq --arg d "$dir" '[.[] | select(.metadata.dir == $d and .status != "done")] | length' 2>/dev/null || echo 0
 }
 
-# Root task IDs (no parent) within current dir filter.
+# Root task IDs (no parent).
 db_task_roots() {
-  local where
-  where=$(db_dir_where)
-  db_scalar "SELECT id FROM tasks WHERE $where AND parent_id IS NULL ORDER BY id;"
+  local dir_filter
+  dir_filter=$(db_dir_where)
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq -r "[.[] | select(${dir_filter}) | select(.parent == null)] | .[].id" 2>/dev/null || true
 }
 
-# Find task ID by branch + dir (for review_prs.sh).
-db_task_id_by_branch() {
-  local branch="$1" dir="$2"
-  db_scalar "SELECT id FROM tasks WHERE branch = '$(sql_escape "$branch")' AND dir = '$(sql_escape "$dir")' LIMIT 1;"
-}
-
-# Status JSON output (for status.sh --json).
+# Status JSON output
 db_status_json() {
-  local where="$1"
-  db_scalar "SELECT json_object(
-    'total', (SELECT COUNT(*) FROM tasks WHERE $where),
-    'counts', json_object(
-      'new', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'new'),
-      'routed', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'routed'),
-      'in_progress', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'in_progress'),
-      'blocked', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'blocked'),
-      'done', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'done'),
-      'needs_review', (SELECT COUNT(*) FROM tasks WHERE $where AND status = 'needs_review')
-    ),
-    'recent', (SELECT json_group_array(json_object(
-      'id', id, 'title', title, 'status', status,
-      'agent', agent, 'gh_issue_number', gh_issue_number,
-      'updated_at', updated_at
-    )) FROM (SELECT * FROM tasks WHERE $where ORDER BY updated_at DESC LIMIT 10))
-  );"
+  local _dummy="$1"  # was SQL where clause, now ignored
+  local dir_filter
+  dir_filter=$(db_dir_where)
+  local all
+  all=$(_bd_json list -n 0 --all 2>/dev/null) || all='[]'
+
+  printf '%s' "$all" | jq --arg df "$dir_filter" "
+    [.[] | select(${dir_filter})] as \$filtered |
+    {
+      total: (\$filtered | length),
+      counts: {
+        new: ([.[] | select(${dir_filter}) | select(.status == \"new\")] | length),
+        routed: ([.[] | select(${dir_filter}) | select(.status == \"routed\")] | length),
+        in_progress: ([.[] | select(${dir_filter}) | select(.status == \"in_progress\")] | length),
+        blocked: ([.[] | select(${dir_filter}) | select(.status == \"blocked\")] | length),
+        done: ([.[] | select(${dir_filter}) | select(.status == \"done\")] | length),
+        needs_review: ([.[] | select(${dir_filter}) | select(.status == \"needs_review\")] | length)
+      },
+      recent: (\$filtered | sort_by(.updated_at) | reverse | .[:10] | [.[] | {
+        id: .id, title: .title, status: .status,
+        agent: .metadata.agent, gh_issue_number: .metadata.gh_issue_number,
+        updated_at: .updated_at
+      }])
+    }" 2>/dev/null || echo '{"total":0,"counts":{},"recent":[]}'
+}
+
+# Tasks with branches (for review_prs.sh)
+db_tasks_with_branches() {
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq -r '.[] | select(.metadata.branch != null and .metadata.branch != "" and .metadata.branch != "main" and .metadata.branch != "master" and (.status == "done" or .status == "in_review" or .status == "in_progress" or .status == "blocked")) | [.id, .metadata.branch, .status, .title, (.metadata.summary // ""), (.metadata.worktree // ""), (.metadata.agent // ""), (.metadata.gh_issue_number // "")] | @tsv' 2>/dev/null || true
+}
+
+# Dirty task count.
+db_dirty_task_count() {
+  _bd_json list -n 0 --all 2>/dev/null \
+    | jq '[.[] | select(
+        (.metadata.gh_synced_at == null or .metadata.gh_synced_at != .updated_at or .metadata.gh_issue_number == null)
+        and (.status != "done" or .metadata.gh_synced_at != .updated_at)
+      )] | length' 2>/dev/null || echo 0
 }
 
 # ============================================================
-# Locking (SQLite replaces file-based locking)
+# Job CRUD (YAML file backed — jobs.yml)
 # ============================================================
 
-# With SQLite WAL mode + busy_timeout, we don't need external locking.
-# These are compatibility shims during the transition.
-db_acquire_lock() { :; }   # no-op — SQLite handles concurrency
-db_release_lock() { :; }   # no-op
-db_with_lock() { "$@"; }   # just run the command directly
-
-# ============================================================
-# Export for YAML compatibility (transition period)
-# ============================================================
-
-# Export all tasks to YAML format (for backward compatibility during migration).
-db_export_tasks_yaml() {
-  local output="${1:-/dev/stdout}"
-  local tasks_json
-  tasks_json=$(db_json "SELECT * FROM tasks ORDER BY id;")
-  # Convert to YAML via yq
-  printf '{"tasks": %s}' "$tasks_json" | yq -P -o=yaml > "$output"
+# Read jobs array from YAML as JSON
+_read_jobs() {
+  if [ -f "$JOBS_FILE" ]; then
+    yq -o=json '.jobs // []' "$JOBS_FILE" 2>/dev/null || echo '[]'
+  else
+    echo '[]'
+  fi
 }
+
+# Write JSON array back to YAML
+_write_jobs() {
+  local json="$1"
+  printf '%s' "$json" | yq -P '{"jobs": .}' > "$JOBS_FILE"
+}
+
+db_create_job() {
+  local id="$1" title="$2" schedule="$3" type="${4:-task}"
+  local body="${5:-}" labels="${6:-}" agent="${7:-}" dir="${8:-}" command="${9:-}"
+  local now
+  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  local jobs
+  jobs=$(_read_jobs)
+  local new_job
+  new_job=$(jq -nc --arg id "$id" --arg t "$title" --arg s "$schedule" --arg ty "$type" \
+    --arg b "$body" --arg l "$labels" --arg a "$agent" --arg d "$dir" --arg c "$command" --arg n "$now" \
+    '{id: $id, title: $t, schedule: $s, type: $ty, command: (if $c == "" then null else $c end),
+      body: $b, labels: $l, agent: (if $a == "" then null else $a end),
+      dir: $d, enabled: true, active_task_id: null, last_run: null,
+      last_task_status: null, created_at: $n}')
+  _write_jobs "$(printf '%s' "$jobs" | jq --argjson j "$new_job" '. + [$j]')"
+}
+
+db_job_field() {
+  local id="$1" field="$2"
+  _read_jobs | jq -r --arg id "$id" --arg f "$field" '.[] | select(.id == $id) | .[$f] // empty'
+}
+
+db_job_set() {
+  local id="$1" field="$2" value="$3"
+  local jobs
+  jobs=$(_read_jobs)
+  _write_jobs "$(printf '%s' "$jobs" | jq --arg id "$id" --arg f "$field" --arg v "$value" \
+    '[.[] | if .id == $id then .[$f] = $v else . end]')"
+}
+
+db_job_list() {
+  _read_jobs | jq -r '.[] | [.id, .title, .schedule, .type, (if .enabled then "1" else "0" end), (.active_task_id // ""), (.last_run // "")] | @tsv'
+}
+
+db_job_delete() {
+  local id="$1"
+  local jobs
+  jobs=$(_read_jobs)
+  _write_jobs "$(printf '%s' "$jobs" | jq --arg id "$id" '[.[] | select(.id != $id)]')"
+}
+
+db_enabled_job_count() {
+  _read_jobs | jq '[.[] | select(.enabled == true)] | length'
+}
+
+db_enabled_job_ids() {
+  _read_jobs | jq -r '.[] | select(.enabled == true) | .id'
+}
+
+db_load_job() {
+  local jid="$1"
+  local row
+  row=$(_read_jobs | jq -c --arg id "$jid" '.[] | select(.id == $id and .enabled == true)') || return 1
+  [ -z "$row" ] && return 1
+
+  JOB_ID=$(printf '%s' "$row" | jq -r '.id')
+  JOB_SCHEDULE=$(printf '%s' "$row" | jq -r '.schedule')
+  JOB_TYPE=$(printf '%s' "$row" | jq -r '.type')
+  JOB_CMD=$(printf '%s' "$row" | jq -r '.command // ""')
+  JOB_TITLE=$(printf '%s' "$row" | jq -r '.title')
+  JOB_BODY=$(printf '%s' "$row" | jq -r '.body // ""')
+  JOB_LABELS=$(printf '%s' "$row" | jq -r '.labels // ""')
+  JOB_AGENT=$(printf '%s' "$row" | jq -r '.agent // ""')
+  JOB_DIR=$(printf '%s' "$row" | jq -r '.dir // ""')
+  JOB_ACTIVE_TASK_ID=$(printf '%s' "$row" | jq -r '.active_task_id // ""')
+  JOB_LAST_RUN=$(printf '%s' "$row" | jq -r '.last_run // ""')
+}
+
+# ============================================================
+# Locking (no-ops — beads handles concurrency via Dolt)
+# ============================================================
+
+db_acquire_lock() { :; }
+db_release_lock() { :; }
+db_with_lock() { "$@"; }
+
+# ============================================================
+# Legacy helpers (compatibility shims)
+# ============================================================
+
+# No-op (was SQL helper)
+sql_escape() { printf '%s' "${1:-}"; }
+db() { :; }
+db_row() { :; }
+db_json() { echo '[]'; }
+db_scalar() { :; }
+db_ensure_columns() { :; }
+db_export_tasks_yaml() { :; }
+db_next_id() { echo "0"; }

@@ -12,7 +12,7 @@ load_project_config
 
 TASK_ID=${1:-}
 if [ -z "$TASK_ID" ]; then
-  TASK_ID=$(db_scalar "SELECT id FROM tasks WHERE status = 'new' ORDER BY id LIMIT 1;" 2>/dev/null || true)
+  TASK_ID=$(db_task_ids_by_status "new" | head -1)
   if [ -z "$TASK_ID" ]; then
     log_err "No new tasks to route"
     exit 1

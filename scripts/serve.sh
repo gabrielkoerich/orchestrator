@@ -80,23 +80,7 @@ cleanup() {
 trap '_on_signal; cleanup' INT TERM
 trap cleanup EXIT
 
-# Auto-migrate YAML → SQLite on first run after upgrade
-# This runs once: if tasks.yml exists and orchestrator.db doesn't, migrate.
-TASKS_FILE="${TASKS_PATH:-${ORCH_HOME:-$HOME/.orchestrator}/tasks.yml}"
-if [ -f "$TASKS_FILE" ] && [ ! -f "$DB_PATH" ] && command -v sqlite3 >/dev/null 2>&1; then
-  _log "[serve] SQLite database not found, running auto-migration from YAML..."
-  if "$SCRIPT_DIR/migrate_to_sqlite.sh" 2>&1; then
-    _log "[serve] Migration complete. Backing up YAML files..."
-    cp "$TASKS_FILE" "${TASKS_FILE}.bak" 2>/dev/null || true
-    JOBS_FILE="${JOBS_PATH:-${ORCH_HOME:-$HOME/.orchestrator}/jobs.yml}"
-    [ -f "$JOBS_FILE" ] && cp "$JOBS_FILE" "${JOBS_FILE}.bak" 2>/dev/null || true
-    _log "[serve] YAML backups created (.bak). SQLite is now the active backend."
-  else
-    _log "[serve] Migration failed."
-  fi
-fi
-
-# Ensure SQLite database exists
+# Ensure beads is initialized
 db_init
 
 # Rotate log on start

@@ -5,22 +5,15 @@ ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
 mkdir -p "$ORCH_HOME"
 
 ORCH_WORKTREES="${ORCH_WORKTREES:-${ORCH_HOME}/worktrees}"
-TASKS_PATH=${TASKS_PATH:-"${ORCH_HOME}/tasks.yml"}
-LOCK_PATH=${LOCK_PATH:-"${TASKS_PATH}.lock"}
+LOCK_PATH=${LOCK_PATH:-"${ORCH_HOME}/.orchestrator/locks"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
-JOBS_PATH=${JOBS_PATH:-"${ORCH_HOME}/jobs.yml"}
 STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
-DB_PATH=${DB_PATH:-"${ORCH_HOME}/orchestrator.db"}
-
-# Source SQLite wrapper if available
+# Source beads-backed database layer
 _LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [ -f "${_LIB_DIR}/db.sh" ]; then
   source "${_LIB_DIR}/db.sh"
 fi
-
-# Legacy compat — always returns true (SQLite is the only backend now).
-_use_sqlite() { return 0; }
 
 now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -678,7 +671,8 @@ build_parent_context() {
     fi
 
     local siblings
-    siblings=$(db "SELECT id || ': ' || title || ' [' || status || ']' FROM tasks WHERE parent_id = $parent_id AND id != $task_id;")
+    siblings=$(_bd_json show "$parent_id" --children 2>/dev/null \
+      | jq -r --arg tid "$task_id" '.[] | select(.id != $tid) | .id + ": " + .title + " [" + .status + "]"' 2>/dev/null || true)
     if [ -n "$siblings" ]; then
       out+="\nSibling tasks:\n${siblings}\n"
     fi

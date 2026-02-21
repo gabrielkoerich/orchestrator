@@ -16,19 +16,16 @@ for arg in "$@"; do
   esac
 done
 
-# Determine dir filter
-if [ "$IS_GLOBAL" = true ]; then
-  DIR_WHERE="1=1"
-else
-  DIR_WHERE=$(db_dir_where)
-fi
-
 if [ "$IS_JSON" = true ]; then
-  db_status_json "$DIR_WHERE"
+  db_status_json ""
   exit 0
 fi
 
-TOTAL=$(db_scalar "SELECT COUNT(*) FROM tasks WHERE $DIR_WHERE;")
+if [ "$IS_GLOBAL" = true ]; then
+  TOTAL=$(db_total_task_count)
+else
+  TOTAL=$(db_total_filtered_count)
+fi
 
 if [ "$TOTAL" -eq 0 ]; then
   echo "No tasks. Add one with: orchestrator task add \"title\""
@@ -36,7 +33,7 @@ if [ "$TOTAL" -eq 0 ]; then
 fi
 
 _count() {
-  db_scalar "SELECT COUNT(*) FROM tasks WHERE $DIR_WHERE AND status = '$1';"
+  db_status_count "$1"
 }
 
 NEW=$(_count "new")
@@ -60,9 +57,9 @@ NEEDS_REVIEW=$(_count "needs_review")
 
 section "Recent tasks:"
 if [ "$IS_GLOBAL" = true ]; then
-  db_task_display_tsv_global "1=1" "updated_at DESC" "10" \
+  db_task_display_tsv_global "true" "updated_at" "10" \
     | table_with_header "$TASK_HEADER_GLOBAL"
 else
-  db_task_display_tsv "1=1" "updated_at DESC" "10" \
+  db_task_display_tsv "true" "id" "10" \
     | table_with_header "$TASK_HEADER"
 fi
