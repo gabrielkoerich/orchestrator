@@ -859,7 +859,7 @@ SH
   CLAUDE_STUB="${TMP_DIR}/claude"
   cat > "$CLAUDE_STUB" <<'SH'
 #!/usr/bin/env bash
-echo "rate-limit: try again later"
+echo "rate limit exceeded: temporarily unavailable"
 exit 0
 SH
   chmod +x "$CLAUDE_STUB"
@@ -886,6 +886,57 @@ SH
   [ "$status" -eq 0 ]
   [[ "$output" == *"codex"* ]]
   [[ "$output" == *"claude"* ]]
+}
+
+@test "run_task.sh preserves limit_reroute_chain when agent returns in_progress" {
+  # Regression: chain was previously cleared unconditionally after each run, which
+  # allowed a ping-pong back to an exhausted agent on the very next in_progress cycle.
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Usage Limit In-Progress Chain" "Chain must survive in_progress" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+
+  # codex reports rate limit → triggers reroute to claude
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "429 Too Many Requests: usage limit"
+exit 0
+SH
+  chmod +x "$CODEX_STUB"
+
+  # claude does some work but is not done yet (in_progress)
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"status":"in_progress","summary":"partial","reason":"","accomplished":[],"remaining":["more work"],"blockers":[],"files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  tdb_set "$TASK2_ID" agent "codex"
+
+  # First run: codex hits limit → rerouted to claude
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" agent
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+
+  # Second run: claude returns in_progress — chain must still contain codex
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" limit_reroute_chain
+  [ "$status" -eq 0 ]
+  # Chain must still include codex — not cleared by in_progress completion
+  [[ "$output" == *"codex"* ]]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "in_progress" ]
 }
 
 @test "cron_match.py matches wildcard expression" {

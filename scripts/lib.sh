@@ -348,7 +348,7 @@ available_agents() {
 is_usage_limit_error() {
   local text="${1:-}"
   [ -n "$text" ] || return 1
-  printf '%s' "$text" | rg -qi '(?:\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|quota exceeded|insufficient[_ -]?quota|exceeded[_ -]?quota|limit (?:reached|exceeded)|overloaded[_ -]?error|service (?:overloaded|unavailable)|temporarily unavailable|try again later)'
+  printf '%s' "$text" | rg -qi '(?:\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|quota exceeded|insufficient[_ -]?quota|exceeded[_ -]?quota|limit (?:reached|exceeded)|overloaded[_ -]?error|service (?:overloaded|unavailable)|temporarily unavailable)'
 }
 
 # Pick a fallback agent from the locally available agents, rotating after the
@@ -364,7 +364,9 @@ pick_fallback_agent() {
   local list=()
   IFS=',' read -ra list <<< "$agents"
 
-  local start=0
+  local n="${#list[@]}"
+  # Default start so that when current is not found we begin from list[0].
+  local start=$(( n - 1 ))
   for i in "${!list[@]}"; do
     if [ "${list[$i]}" = "$current" ]; then
       start="$i"
@@ -372,7 +374,6 @@ pick_fallback_agent() {
     fi
   done
 
-  local n="${#list[@]}"
   local offset idx candidate
   for offset in $(seq 1 "$n"); do
     idx=$(((start + offset) % n))
@@ -381,7 +382,7 @@ pick_fallback_agent() {
     if [ -n "$current" ] && [ "$candidate" = "$current" ]; then
       continue
     fi
-    if [ -n "$exclude_csv" ] && printf ',%s,' "$exclude_csv" | grep -q ",${candidate},"; then
+    if [ -n "$exclude_csv" ] && printf ',%s,' "$exclude_csv" | grep -qF ",${candidate},"; then
       continue
     fi
     printf '%s' "$candidate"
