@@ -116,6 +116,8 @@ See the [Review Agent](@/review-agent.md) page for full details.
 1. **No agent assigned** — task stuck `in_progress` without an agent → set to `needs_review`
 2. **Dead agent** — task has agent but no lock file and `updated_at` older than `stuck_timeout` (default 30min) → reset to `new`
 
+Note: `stuck_timeout` is separate from the task execution timeout. Task execution is limited by `workflow.timeout_seconds` (or `workflow.timeout_by_complexity`), which controls how long an agent run is allowed to execute before being killed (exit 124 / TIMEOUT).
+
 ## Max Attempts
 
 Default: 10 attempts per task (configurable via `config.yml`). After max attempts, task goes to `blocked` with error. Retry loop detection: if the same error repeats 3 times, task goes to `needs_review` instead of retrying.

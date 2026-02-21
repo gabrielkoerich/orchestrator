@@ -1183,6 +1183,31 @@ ${files_list}"
 
   gh_api "repos/$_GH_REPO/issues/$id/comments" -f body="$comment" >/dev/null 2>&1 || true
   _sidecar_write "$id" "last_comment_hash" "$new_hash"
+
+  # If this task was created from a GitHub mention, also mirror the result back
+  # to the original issue/PR thread (deduped separately from the task issue).
+  local mention_target_issue mention_target_repo
+  mention_target_issue=$(printf '%s' "$sc" | jq -r '.mention_target_issue // empty' 2>/dev/null || true)
+  mention_target_repo=$(printf '%s' "$sc" | jq -r '.mention_target_repo // empty' 2>/dev/null || true)
+  if [ -n "$mention_target_issue" ] && [ "$mention_target_issue" != "null" ] && [ "$mention_target_issue" != "$id" ]; then
+    local target_repo="${mention_target_repo:-$_GH_REPO}"
+    if [ -n "$target_repo" ] && [ "$target_repo" != "null" ]; then
+      local mirror_comment
+      mirror_comment="${_GH_COMMENT_MARKER}
+> Mention task: #${id}
+"
+      # Reuse the generated report without repeating the marker line.
+      mirror_comment+=$(printf '%s' "$comment" | sed '1d')
+
+      local mirror_hash old_mirror_hash
+      mirror_hash=$(printf '%s' "$mirror_comment" | shasum -a 256 | cut -c1-16)
+      old_mirror_hash=$(_sidecar_read "$id" "mention_last_mirror_hash")
+      if [ "$mirror_hash" != "$old_mirror_hash" ]; then
+        gh_api "repos/${target_repo}/issues/${mention_target_issue}/comments" -f body="$mirror_comment" >/dev/null 2>&1 || true
+        _sidecar_write "$id" "mention_last_mirror_hash" "$mirror_hash"
+      fi
+    fi
+  fi
 }
 
 # ============================================================

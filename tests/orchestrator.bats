@@ -101,6 +101,29 @@ teardown() {
   rm -rf "${TMP_DIR}"
 }
 
+@test "task timeout resolves from workflow config with sensible defaults" {
+  source "${REPO_DIR}/scripts/lib.sh"
+
+  # No workflow timeout configured: default is 1800s (30 minutes).
+  run task_timeout_seconds medium
+  [ "$status" -eq 0 ]
+  [ "$output" = "1800" ]
+
+  # workflow.timeout_seconds overrides the default.
+  run yq -i '.workflow.timeout_seconds = 1200' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+  run task_timeout_seconds medium
+  [ "$status" -eq 0 ]
+  [ "$output" = "1200" ]
+
+  # workflow.timeout_by_complexity takes precedence.
+  run yq -i '.workflow.timeout_by_complexity.medium = 2400' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+  run task_timeout_seconds medium
+  [ "$status" -eq 0 ]
+  [ "$output" = "2400" ]
+}
+
 # Helper: parse task ID from add_task.sh output
 _task_id() {
   echo "$1" | grep 'Added task' | sed 's/Added task //' | cut -d: -f1 | tr -d ' '
@@ -295,6 +318,37 @@ SH
   run _task_children_titles "$TASK2_ID"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+@test "run_task.sh blocks when required_tools are missing" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Needs Tools" "Run body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  cat > "${PROJECT_DIR}/.orchestrator.yml" <<'YAML'
+required_tools:
+  - __orch_missing_tool__
+YAML
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"status":"done","summary":"should not run","files_changed":[],"needs_help":false,"delegations":[]}'
+SH
+  chmod +x "$CODEX_STUB"
+  export PATH="${TMP_DIR}:${PATH}"
+
+  tdb_set "$TASK2_ID" agent "codex"
+
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "blocked" ]
+
+  run tdb_field "$TASK2_ID" reason
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"__orch_missing_tool__"* ]]
 }
 
 @test "poll.sh runs new tasks and rejoins blocked parents" {
@@ -1829,6 +1883,73 @@ SH
   [ "$output" = "POSTED" ]
 }
 
+@test "@orchestrator mention creates a task and mirrors agent result" {
+  # Create a mention comment on the init issue
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="hey @orchestrator please take a look"
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  # Should create a new task issue
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+
+  MENTION_TASK_ID=$(_task_id_by_title "Respond to @orchestrator mention in #${INIT_TASK_ID}")
+  [ -n "$MENTION_TASK_ID" ]
+
+  # Idempotent: re-running should not create another task
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+
+  # Simulate an agent completing the mention task; backend should mirror to target issue
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    db_task_set '$MENTION_TASK_ID' agent 'codex'
+    db_store_agent_response '$MENTION_TASK_ID' done 'mention handled' '' false '' 1 0 0 '' ''
+    db_store_agent_arrays '$MENTION_TASK_ID' 'did the thing' '' '' ''
+  "
+  [ "$status" -eq 0 ]
+
+  # Target issue should have at least the ack + mirrored agent comment
+  run bash -c "jq -r --arg n '${INIT_TASK_ID}' '(.comments[$n] // []) | length' '$GH_MOCK_STATE' | head -n1"
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 2 ]
+
+  run bash -c "jq -r --arg n '${INIT_TASK_ID}' '(.comments[$n] // []) | map(.body) | join(\"\\n---\\n\")' '$GH_MOCK_STATE'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Mention task: #${MENTION_TASK_ID}"* ]]
+  [[ "$output" == *"mention handled"* ]]
+}
+
+@test "@orchestrator mention inside blockquote is ignored" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'> @orchestrator please do not trigger\\n\\nthanks'
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
+@test "@orchestrator mention inside fenced code is ignored" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'```\\n@orchestrator do not trigger\\n```'
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
 @test "create_task_entry includes last_comment_hash field" {
   NOW="2026-01-01T00:00:00Z"
   export NOW PROJECT_DIR="$TMP_DIR"
@@ -2484,6 +2605,22 @@ JSON
   [ "$output" = "new" ]
 }
 
+@test "jobs_tick.sh catches up missed job when last_run is null" {
+  # Schedule for 3 hours ago; if last_run is null this should still fire via catch-up.
+  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
+
+  _create_job "test-null-catchup" "Null Catch Up Job" "0 ${MISSED_HOUR} * * *" "task" "Missed job body" "test" "true" "null" "null"
+
+  run env JOBS_FILE="$JOBS_FILE" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  NULL_CATCHUP_ID=$(_task_id_by_title "Null Catch Up Job")
+  [ -n "$NULL_CATCHUP_ID" ]
+  run tdb_field "$NULL_CATCHUP_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+}
+
 @test "jobs_tick.sh does not catch up if last_run is after scheduled time" {
   # last_run is 1 hour ago, schedule is for 3 hours ago — already ran
   LAST_RUN=$(date -u -v-1H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '1 hour ago' +"%Y-%m-%dT%H:%M:%SZ")
@@ -2579,6 +2716,20 @@ JSON
   [ "$ID_A" != "$ID_B" ]
   [ "$ID_B" != "$ID_C" ]
   [ "$ID_A" != "$ID_C" ]
+}
+
+@test "add_task.sh --dry-run prints preview without creating issue" {
+  BEFORE=$(tdb_count)
+
+  run "${REPO_DIR}/scripts/add_task.sh" --dry-run "Dry Run Title" "Dry run body" "label1,label2"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Dry run: would create GitHub issue"* ]]
+  [[ "$output" == *"title: Dry Run Title"* ]]
+  [[ "$output" == *"body: Dry run body"* ]]
+  [[ "$output" == *"labels: status:new, label1, label2"* ]]
+
+  AFTER=$(tdb_count)
+  [ "$AFTER" -eq "$BEFORE" ]
 }
 
 # --- task_set helper ---
@@ -4407,4 +4558,23 @@ SH
   source "${REPO_DIR}/scripts/lib.sh"
   run _gh_set_status_label "$INIT_TASK_ID" "routed"
   [ "$status" -eq 0 ]
+}
+
+@test "gh_project_list.sh lists managed bare-clone projects from ORCH_HOME/projects" {
+  mkdir -p "$ORCH_HOME/projects/acme/widget.git"
+  git -C "$ORCH_HOME/projects/acme/widget.git" init --bare --quiet
+  git -C "$ORCH_HOME/projects/acme/widget.git" config remote.origin.url "git@github.com:acme/widget.git"
+
+  mkdir -p "$ORCH_HOME/projects/foo/bar.git"
+  git -C "$ORCH_HOME/projects/foo/bar.git" init --bare --quiet
+
+  run "${REPO_DIR}/scripts/gh_project_list.sh"
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"REPO"* ]]
+  [[ "$output" == *"PATH"* ]]
+  [[ "$output" == *"acme/widget"* ]]
+  [[ "$output" == *"$ORCH_HOME/projects/acme/widget.git"* ]]
+  [[ "$output" == *"foo/bar"* ]]
+  [[ "$output" == *"$ORCH_HOME/projects/foo/bar.git"* ]]
 }

@@ -200,6 +200,22 @@ while true; do
         "$SCRIPT_DIR/review_prs.sh" >> "$LOG_FILE" 2>&1 || true
       fi
     fi
+
+    # Check for @orchestrator mentions in issue/PR comments
+    if ! $_stopping; then
+      DIRS=$(db_task_projects 2>/dev/null || true)
+      MENTIONED_DEFAULT=false
+      for dir in $DIRS; do
+        $_stopping && break
+        if [ -n "$dir" ] && [ "$dir" != "null" ] && [ -d "$dir" ]; then
+          PROJECT_DIR="$dir" "$SCRIPT_DIR/gh_mentions.sh" >> "$LOG_FILE" 2>&1 || true
+          MENTIONED_DEFAULT=true
+        fi
+      done
+      if [ "$MENTIONED_DEFAULT" = false ]; then
+        "$SCRIPT_DIR/gh_mentions.sh" >> "$LOG_FILE" 2>&1 || true
+      fi
+    fi
   fi
   $_stopping && break
 

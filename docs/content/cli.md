@@ -95,7 +95,9 @@ orch project add owner/repo  # bare clone + import issues
 orch project info            # show GitHub Project field IDs
 orch project info --fix      # auto-fill project config
 orch project create "name"   # create or link a GitHub Project v2
-orch project list             # list GitHub Projects
+orch project list             # list managed bare-clone projects
+orch project list org=ORG     # list GitHub Projects v2 + managed projects
+orch project list user=USER   # list GitHub Projects v2 + managed projects
 ```
 
 ## Agent Management

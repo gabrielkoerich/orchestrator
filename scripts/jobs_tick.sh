@@ -50,6 +50,15 @@ for JOB_ID in $JOB_IDS; do
   fi
 
   # Schedule matching with catch-up for missed runs during downtime
+  if [ -z "$LAST_RUN" ] || [ "$LAST_RUN" = "null" ]; then
+    # First run: synthesize last_run so catch-up logic can fire if we missed the scheduled time.
+    # Keep it capped to a 24h lookback (cron_match.py also caps --since at 24h).
+    LAST_RUN=$(
+      date -u -v-24H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+        || date -u -d '24 hours ago' +"%Y-%m-%dT%H:%M:%SZ"
+    )
+  fi
+
   if [ -n "$LAST_RUN" ] && [ "$LAST_RUN" != "null" ]; then
     # Prevent duplicate creation if tick runs multiple times in the same minute
     LAST_RUN_MINUTE=$(printf '%s' "$LAST_RUN" | cut -c1-16)

@@ -11,12 +11,15 @@ All runtime configuration lives in `~/.orchestrator/config.yml`.
 | Section | Key | Description | Default |
 |---------|-----|-------------|---------|
 | top-level | `project_dir` | Override project directory (auto-detected from CWD) | `""` |
+| top-level | `required_tools` | Tools that must exist on PATH before launching an agent | `[]` |
 | `workflow` | `auto_close` | Auto-close GitHub issues when tasks are `done` | `true` |
 | `workflow` | `review_owner` | GitHub handle to tag when review is needed | `@owner` |
 | `workflow` | `enable_review_agent` | Run a [review agent](@/review-agent.md) after task completion | `false` |
 | `workflow` | `review_agent` | Fallback reviewer when opposite agent unavailable | `claude` |
 | `workflow` | `max_attempts` | Max attempts before marking task as blocked | `10` |
 | `workflow` | `stuck_timeout` | Timeout (seconds) for detecting stuck in_progress tasks | `1800` |
+| `workflow` | `timeout_seconds` | Task execution timeout (0 disables timeout) | `1800` |
+| `workflow` | `timeout_by_complexity` | Per-complexity task timeouts (takes precedence) | `{}` |
 | `workflow` | `required_skills` | Skills always injected into agent prompts (marked `[REQUIRED]`) | `[]` |
 | `workflow` | `disallowed_tools` | Tool patterns blocked via `--disallowedTools` | `["Bash(rm *)","Bash(rm -*)"]` |
 | `router` | `agent` | Default router executor | `claude` |
@@ -45,6 +48,7 @@ Drop a `.orchestrator.yml` in your project root to override global config:
 
 ```yaml
 # ~/projects/my-app/.orchestrator.yml
+required_tools: ["bun"]
 gh:
   repo: "myorg/my-app"
   project_id: "PVT_..."

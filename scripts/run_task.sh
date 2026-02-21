@@ -349,6 +349,33 @@ if [ "$ATTEMPTS" -gt "$MAX" ]; then
   exit 0
 fi
 
+# Preflight: validate required tools exist on PATH before launching the agent.
+# Configure per project in .orchestrator.yml (orchestrator.yml) as:
+#   required_tools: [bun, anchor, solana-test-validator]
+REQUIRED_TOOLS_CSV=$(config_get '.required_tools // [] | map(select(. != null and . != "")) | join(",")' 2>/dev/null || true)
+if [ -n "$REQUIRED_TOOLS_CSV" ] && [ "$REQUIRED_TOOLS_CSV" != "null" ]; then
+  IFS=',' read -ra _req_tools <<< "$REQUIRED_TOOLS_CSV"
+  _missing_tools=()
+  for _tool in "${_req_tools[@]}"; do
+    [ -z "$_tool" ] && continue
+    if ! command -v "$_tool" >/dev/null 2>&1; then
+      _missing_tools+=("$_tool")
+    fi
+  done
+  if [ "${#_missing_tools[@]}" -gt 0 ]; then
+    _missing_csv=$(IFS=', '; echo "${_missing_tools[*]}")
+    _reason="missing required tools on PATH: ${_missing_csv} (configure required_tools in .orchestrator.yml or install them)"
+    log_err "[run] task=$TASK_ID blocked: $_reason"
+    db_task_update "$TASK_ID" \
+      "status=blocked" \
+      "reason=$_reason" \
+      "last_error=$_reason" \
+      "attempts=$ATTEMPTS"
+    append_history "$TASK_ID" "blocked" "$_reason"
+    exit 0
+  fi
+fi
+
 db_task_update "$TASK_ID" "status=in_progress" "attempts=$ATTEMPTS"
 append_history "$TASK_ID" "in_progress" "started attempt $ATTEMPTS"
 
@@ -369,6 +396,18 @@ fi
 AGENT_MESSAGE=$(render_template "$SCRIPT_DIR/../prompts/agent.md")
 
 require_agent "$TASK_AGENT"
+
+# Resolve agent/task timeout (seconds) unless explicitly overridden via env.
+# Priority: env AGENT_TIMEOUT_SECONDS > workflow.timeout_by_complexity > workflow.timeout_seconds > default.
+if [ -z "${AGENT_TIMEOUT_SECONDS:-}" ] || [ "${AGENT_TIMEOUT_SECONDS:-}" = "null" ]; then
+  AGENT_TIMEOUT_SECONDS=$(task_timeout_seconds "${TASK_COMPLEXITY:-medium}")
+  export AGENT_TIMEOUT_SECONDS
+fi
+if [ "${AGENT_TIMEOUT_SECONDS}" = "0" ]; then
+  log_err "[run] task=$TASK_ID timeout=disabled (complexity=${TASK_COMPLEXITY:-medium})"
+else
+  log_err "[run] task=$TASK_ID timeout=${AGENT_TIMEOUT_SECONDS}s (complexity=${TASK_COMPLEXITY:-medium})"
+fi
 
 # Build disallowed tools list
 DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash(rm -*)"] | join(",")')
@@ -446,7 +485,6 @@ TMUX_RESPONSE_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-response-${ATTEMPTS}.txt"
 TMUX_STATUS_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-status-${ATTEMPTS}.txt"
 TMUX_SESSION="orch-${TASK_ID}"
 USE_TMUX=${USE_TMUX:-$(config_get '.workflow.use_tmux // "true"')}
-AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-$(config_get '.workflow.agent_timeout_seconds // 1800')}
 
 # Wait for tmux session to finish with a timeout
 # Usage: tmux_wait <session_name> <timeout_seconds>
@@ -456,12 +494,14 @@ tmux_wait() {
   local elapsed=0
   while tmux has-session -t "$session" 2>/dev/null; do
     sleep 5
-    elapsed=$((elapsed + 5))
-    if [ "$elapsed" -ge "$timeout" ]; then
-      log_err "[run] task=$TASK_ID tmux session timed out after ${timeout}s"
-      tmux kill-session -t "$session" 2>/dev/null || true
-      CMD_STATUS=124
-      return 1
+    if [ "$timeout" != "0" ]; then
+      elapsed=$((elapsed + 5))
+      if [ "$elapsed" -ge "$timeout" ]; then
+        log_err "[run] task=$TASK_ID tmux session timed out after ${timeout}s"
+        tmux kill-session -t "$session" 2>/dev/null || true
+        CMD_STATUS=124
+        return 1
+      fi
     fi
   done
   return 0
