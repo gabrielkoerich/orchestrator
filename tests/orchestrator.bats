@@ -1690,6 +1690,36 @@ SH
   [[ "$output" == *"--permission-mode bypassPermissions"* ]]
 }
 
+@test "run_task.sh runs codex with --ask-for-approval never" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Codex approvals" "Ensure codex approvals are disabled" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+if [[ "$args" != *"--ask-for-approval never"* ]]; then
+  echo "missing --ask-for-approval never in: $args" >&2
+  exit 2
+fi
+cat >/dev/null || true
+cat <<'JSON'
+{"status":"done","summary":"tested","files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  tdb_set "$TASK2_ID" agent "codex"
+
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+}
+
 @test "run_task.sh injects agent and model into response JSON" {
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Inject Meta" "Test agent/model injection" "")
   TASK2_ID=$(_task_id "$TASK_OUTPUT")

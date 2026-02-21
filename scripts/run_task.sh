@@ -554,15 +554,18 @@ RUNNER_ENV
     fi
     ;;
   codex)
-    log_err "[run] cmd: codex exec ${AGENT_MODEL:+-m $AGENT_MODEL} --full-auto --json <stdin>"
+    log_err "[run] cmd: codex ${AGENT_MODEL:+-m $AGENT_MODEL} --ask-for-approval never --sandbox <mode> exec --json <stdin>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
 ${AGENT_MESSAGE}"
     CODEX_SANDBOX=${CODEX_SANDBOX:-$(config_get '.agents.codex.sandbox // "full-auto"')}
     CODEX_ARGS=()
+    # Orchestrator runs Codex non-interactively; approvals will never be granted, so disable them.
+    CODEX_ARGS+=(--ask-for-approval never)
     case "$CODEX_SANDBOX" in
       full-auto)
-        CODEX_ARGS+=(--full-auto)
+        # Avoid `--full-auto` (implies `--ask-for-approval on-request`); keep sandboxed execution.
+        CODEX_ARGS+=(--sandbox workspace-write)
         CODEX_ARGS+=(-c 'sandbox_workspace_write.network_access=true')
         CODEX_ARGS+=(-c 'sandbox_permissions=["disk-full-read-access"]')
         CODEX_ARGS+=(-c 'shell_environment_policy.inherit=all')
@@ -593,11 +596,11 @@ export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
 export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
 export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
 cd "$PROJECT_DIR"
-cat "$PROMPT_INPUT_FILE" | codex exec \
+cat "$PROMPT_INPUT_FILE" | codex \
   ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
   $(printf '%s ' ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"}) \
-  --json \
-  - > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+  exec --json - \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
 echo \$? > "$TMUX_STATUS_FILE"
 RUNNER_EOF
       chmod +x "$RUNNER_SCRIPT"
@@ -610,11 +613,11 @@ RUNNER_EOF
       [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
       [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
     else
-      RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex exec \
+      RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex \
         ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
         ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"} \
-        --json \
-        - 2>"$STDERR_FILE") || CMD_STATUS=$?
+        exec --json - \
+        2>"$STDERR_FILE") || CMD_STATUS=$?
     fi
     ;;
   opencode)
