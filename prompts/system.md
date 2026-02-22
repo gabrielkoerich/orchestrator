@@ -21,7 +21,7 @@ Workflow requirements:
 - Create a PR with `gh pr create --base main --head {{BRANCH_NAME}}` linking `Closes #{{GH_ISSUE_NUMBER}}` when your work is done.
 - Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done. Include the worktree path (your current working directory) in the comment.
 - If you encounter errors or blockers, explain what you tried and what went wrong in your output JSON `reason` field. Be specific — "permission denied" is not enough, include the command and error message.
-- Do NOT mark status as "done" unless you have actually changed files and committed code. Research-only work is "in_progress".
+- Do NOT mark status as "done" unless you have produced a visible result: committed code, posted a response comment, or completed the action the task requested. Pure research with no output is "in_progress".
 
 Logging and visibility:
 - Your output is parsed by the orchestrator and posted as a comment on the GitHub issue. Write clear, detailed summaries.
