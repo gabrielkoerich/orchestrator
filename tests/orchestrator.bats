@@ -2123,6 +2123,25 @@ YAML
   [ "$output" -eq 1 ]
 }
 
+@test "orchestrator history comments are ignored by mention detection" {
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    append_history '${INIT_TASK_ID}' in_progress 'Starting work: responding to the @orchestrator mention on issue #123'
+  "
+  [ "$status" -eq 0 ]
+
+  run bash -c "jq -r --arg n '${INIT_TASK_ID}' '(.comments[$n] // []) | last | .body // \"\"' '$GH_MOCK_STATE'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"<!-- orch:history -->"* ]]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
 @test "create_task_entry includes last_comment_hash field" {
   NOW="2026-01-01T00:00:00Z"
   export NOW PROJECT_DIR="$TMP_DIR"
@@ -4388,7 +4407,7 @@ SH
   [[ "$output" == *"started attempt 1"* ]]
   # Should have 2 history entries (comments)
   local count
-  count=$(db_task_history "$TASK_ID" | wc -l | tr -d ' ')
+  count=$(gh api "repos/mock/repo/issues/${TASK_ID}/comments" --jq 'length')
   [ "$count" -eq 2 ]
 }
 
