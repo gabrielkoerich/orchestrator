@@ -3957,7 +3957,7 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
   [ "$status" -eq 0 ]
   # State file should be empty (no reviews recorded)
-  [ ! -s "${STATE_DIR}/pr_reviews.tsv" ] || [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 0 ]
+  [ ! -s "${STATE_DIR}/pr_reviews_owner_repo.tsv" ] || [ "$(wc -l < "${STATE_DIR}/pr_reviews_owner_repo.tsv")" -eq 0 ]
 }
 
 @test "review_prs.sh skips already-reviewed PRs at same SHA" {
@@ -3967,7 +3967,7 @@ SH
 
   # Pre-populate review state
   mkdir -p "$STATE_DIR"
-  printf '1\tabc123\tapprove\t2026-01-01T00:00:00Z\tAlready reviewed PR\n' > "${STATE_DIR}/pr_reviews.tsv"
+  printf '1\tabc123\tapprove\t2026-01-01T00:00:00Z\tAlready reviewed PR\n' > "${STATE_DIR}/pr_reviews_owner_repo.tsv"
 
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
@@ -3995,7 +3995,7 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
   [ "$status" -eq 0 ]
   # Should still have only 1 line in state
-  [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 1 ]
+  [ "$(wc -l < "${STATE_DIR}/pr_reviews_owner_repo.tsv")" -eq 1 ]
 }
 
 @test "review_prs.sh reviews new PR and records state" {
@@ -4041,7 +4041,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Should have recorded the review
-  run grep "42" "${STATE_DIR}/pr_reviews.tsv"
+  run grep "42" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
   [ "$status" -eq 0 ]
   [[ "$output" == *"def456"* ]]
   [[ "$output" == *"approve"* ]]
@@ -4055,7 +4055,7 @@ SH
 
   # Pre-populate with old SHA
   mkdir -p "$STATE_DIR"
-  printf '1\told_sha\tapprove\t2026-01-01T00:00:00Z\tOld review\n' > "${STATE_DIR}/pr_reviews.tsv"
+  printf '1\told_sha\tapprove\t2026-01-01T00:00:00Z\tOld review\n' > "${STATE_DIR}/pr_reviews_owner_repo.tsv"
 
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
@@ -4093,8 +4093,8 @@ SH
   [ "$status" -eq 0 ]
 
   # Should have 2 lines in state now (old + new)
-  [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 2 ]
-  run grep "new_sha" "${STATE_DIR}/pr_reviews.tsv"
+  [ "$(wc -l < "${STATE_DIR}/pr_reviews_owner_repo.tsv")" -eq 2 ]
+  run grep "new_sha" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
   [ "$status" -eq 0 ]
   [[ "$output" == *"request_changes"* ]]
 }
@@ -4107,7 +4107,7 @@ SH
 
   # Pre-populate as already reviewed (so it only checks merge commands)
   mkdir -p "$STATE_DIR"
-  printf '10\tabc123\tapprove\t2026-01-01T00:00:00Z\tPR title\n' > "${STATE_DIR}/pr_reviews.tsv"
+  printf '10\tabc123\tapprove\t2026-01-01T00:00:00Z\tPR title\n' > "${STATE_DIR}/pr_reviews_owner_repo.tsv"
 
   MERGED=false
   GH_STUB="${TMP_DIR}/gh"
@@ -4133,7 +4133,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Should have recorded the merge
-  run grep "^merge" "${STATE_DIR}/pr_reviews.tsv"
+  run grep "^merge" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
   [ "$status" -eq 0 ]
   [[ "$output" == *"10"* ]]
 }
