@@ -2075,6 +2075,32 @@ YAML
   [ "$output" -eq 2 ]
 }
 
+@test "@orchestrator mention on a mention-task issue is ignored" {
+  # Seed: create a mention task issue
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="hey @orchestrator please take a look"
+  [ "$status" -eq 0 ]
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  MENTION_TASK_ID=$(_task_id_by_title "Respond to @orchestrator mention in #${INIT_TASK_ID}")
+  [ -n "$MENTION_TASK_ID" ]
+
+  # Meta mention inside the mention task issue should not spawn another task
+  run gh api "repos/mock/repo/issues/${MENTION_TASK_ID}/comments" -f body="Starting investigation of @orchestrator mention on PR #123"
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+
+  run _task_id_by_title "Respond to @orchestrator mention in #${MENTION_TASK_ID}"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "@orchestrator mention inside blockquote is ignored" {
   run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'> @orchestrator please do not trigger\\n\\nthanks'
   [ "$status" -eq 0 ]

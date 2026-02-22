@@ -70,6 +70,23 @@ acquire_mentions_lock() {
   return 1
 }
 
+is_mention_task_issue() {
+  local repo="$1" issue_number="$2"
+  # Avoid mention-task cascades: comments on a "Respond to @orchestrator mention..." issue should not spawn more tasks.
+  local issue_json title body
+  issue_json=$(gh_api -X GET "repos/${repo}/issues/${issue_number}" 2>/dev/null || echo "")
+  [ -n "$issue_json" ] || return 1
+  title=$(printf '%s' "$issue_json" | jq -r '.title // ""' 2>/dev/null || echo "")
+  body=$(printf '%s' "$issue_json" | jq -r '.body // ""' 2>/dev/null || echo "")
+  if printf '%s' "$title" | rg -q '^Respond to @orchestrator mention in #[0-9]+'; then
+    return 0
+  fi
+  if printf '%s' "$body" | rg -q 'This task was created from an @orchestrator mention\\.'; then
+    return 0
+  fi
+  return 1
+}
+
 mention_actionable() {
   local body="${1:-}"
   [ -n "$body" ] || return 1
@@ -181,6 +198,10 @@ main() {
     local existing
     existing=$(mentions_db_lookup_task "$comment_id")
     if [ -n "$existing" ]; then
+      continue
+    fi
+
+    if is_mention_task_issue "$repo" "$issue_number"; then
       continue
     fi
 
