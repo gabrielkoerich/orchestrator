@@ -994,6 +994,35 @@ SH
   [ "$output" = "in_progress" ]
 }
 
+@test "is_usage_limit_error matches rate limit patterns" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error '429 Too Many Requests'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error 'rate limit exceeded'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error 'quota exceeded for this key'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error 'service overloaded'"
+  [ "$status" -eq 0 ]
+}
+
+@test "is_usage_limit_error does not match generic network errors" {
+  # Plain "503 Service Unavailable" must NOT trigger a reroute — it is a generic
+  # HTTP error unrelated to AI provider rate limits.
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error '503 Service Unavailable'"
+  [ "$status" -ne 0 ]
+
+  # Bare "temporarily unavailable" without rate-limit context must not match.
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error 'SSH: temporarily unavailable'"
+  [ "$status" -ne 0 ]
+
+  # Generic auth failure must not match (handled by auth/billing path separately).
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error 'unauthorized: invalid api key'"
+  [ "$status" -ne 0 ]
+}
+
 @test "cron_match.py matches wildcard expression" {
   # "* * * * *" always matches
   run python3 "${REPO_DIR}/scripts/cron_match.py" "* * * * *"

@@ -348,7 +348,19 @@ available_agents() {
 is_usage_limit_error() {
   local text="${1:-}"
   [ -n "$text" ] || return 1
-  printf '%s' "$text" | rg -qi '(?:\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|quota exceeded|insufficient[_ -]?quota|exceeded[_ -]?quota|limit (?:reached|exceeded)|overloaded[_ -]?error|service (?:overloaded|unavailable)|temporarily unavailable)'
+  # Match AI provider rate/quota errors. Patterns are intentionally specific to
+  # avoid false positives from generic network errors (e.g. 503 Service Unavailable,
+  # SSH timeouts). "service overloaded" is Anthropic-specific. "service unavailable"
+  # and bare "temporarily unavailable" are omitted — too common in unrelated errors.
+  printf '%s' "$text" | rg -qi '(?:\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|\bquota\b|insufficient[_ -]?quota|exceeded[_ -]?quota|limit (?:reached|exceeded)|overloaded[_ -]?error|service overloaded)'
+}
+
+# Redact common API key/token patterns before publishing text to GitHub comments.
+redact_snippet() {
+  printf '%s' "${1:-}" \
+    | sed -E 's/(sk|pk)-[A-Za-z0-9_-]{10,}/[REDACTED]/g' \
+    | sed -E 's/Bearer [A-Za-z0-9._~+/=-]{8,}/Bearer [REDACTED]/g' \
+    | sed -E 's/token=[A-Za-z0-9._~+%=-]{8,}/token=[REDACTED]/g'
 }
 
 # Pick a fallback agent from the locally available agents, rotating after the

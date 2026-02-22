@@ -849,7 +849,7 @@ reroute_on_usage_limit() {
   next_agent=$(pick_fallback_agent "$TASK_AGENT" "$chain" 2>/dev/null || true)
 
   local snippet
-  snippet=$(printf '%s' "$combined_output" | tail -c 300)
+  snippet=$(redact_snippet "$(printf '%s' "$combined_output" | tail -c 300)")
 
   if [ -z "$next_agent" ]; then
     error_log "[run] task=$TASK_ID $hint for agent=$TASK_AGENT; no fallback agents available (chain=$chain)"
@@ -869,18 +869,22 @@ ${snippet}
   local next_model=""
   local FREE_MODELS=""
   local -a _fm=()
-  local -a _chain=()
   if [ "$next_agent" = "opencode" ]; then
     FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
     if [ -n "${FREE_MODELS:-}" ]; then
       IFS=',' read -ra _fm <<< "$FREE_MODELS"
       if [ ${#_fm[@]} -gt 0 ]; then
-        local chain_count=1
+        # Count how many times opencode has already appeared in the reroute chain
+        # to cycle through free models correctly across multi-hop reroutes.
+        local opencode_idx=0
         if [ -n "$chain" ]; then
-          IFS=',' read -ra _chain <<< "$chain"
-          chain_count=${#_chain[@]}
+          local -a _c=()
+          IFS=',' read -ra _c <<< "$chain"
+          for _item in "${_c[@]}"; do
+            [ "$_item" = "opencode" ] && opencode_idx=$(( opencode_idx + 1 )) || true
+          done
         fi
-        next_model="${_fm[$(((chain_count - 1) % ${#_fm[@]}))]}"
+        next_model="${_fm[$((opencode_idx % ${#_fm[@]}))]}"
       fi
     fi
   fi
@@ -938,14 +942,16 @@ if [ "$CMD_STATUS" -ne 0 ]; then
     AVAILABLE=$(available_agents)
     NEXT_AGENT=$(pick_fallback_agent "$TASK_AGENT" "" 2>/dev/null || true)
     if [ -n "$NEXT_AGENT" ]; then
-      # If switching to opencode, pick a free model via round-robin
+      # If switching to opencode, pick a free model via round-robin indexed by
+      # opencode-specific switch count (not total attempts, to avoid skipping models).
       NEXT_MODEL=""
       if [ "$NEXT_AGENT" = "opencode" ]; then
         FREE_MODELS=$(config_get '.model_map.free // [] | join(",")' 2>/dev/null || true)
         if [ -n "$FREE_MODELS" ]; then
+          FREE_IDX=$(db_task_history "$TASK_ID" 2>/dev/null | grep -c "switched to opencode" || echo "0")
           IFS=',' read -ra _fm <<< "$FREE_MODELS"
           if [ ${#_fm[@]} -gt 0 ]; then
-            NEXT_MODEL="${_fm[$(((ATTEMPTS - 1) % ${#_fm[@]}))]}"
+            NEXT_MODEL="${_fm[$((FREE_IDX % ${#_fm[@]}))]}"
           fi
         fi
       fi
@@ -958,7 +964,7 @@ if [ "$CMD_STATUS" -ne 0 ]; then
         "status=new" \
         "last_error=$TASK_AGENT auth/billing error, switched to $NEXT_AGENT"
       append_history "$TASK_ID" "new" "$TASK_AGENT auth/billing error — switched to $NEXT_AGENT${NEXT_MODEL:+ (model=$NEXT_MODEL)}"
-      STDERR_SNIPPET=$(printf '%s' "$COMBINED_OUTPUT" | tail -c 300)
+      STDERR_SNIPPET=$(redact_snippet "$(printf '%s' "$COMBINED_OUTPUT" | tail -c 300)")
       comment_on_issue "$TASK_ID" "⚠️ **Agent switch**: \`$TASK_AGENT\` failed with auth/billing error. Switching to \`$NEXT_AGENT\`${NEXT_MODEL:+ with model \`$NEXT_MODEL\`}.
 
 \`\`\`
