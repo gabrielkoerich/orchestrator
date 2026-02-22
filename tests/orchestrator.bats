@@ -3957,7 +3957,7 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
   [ "$status" -eq 0 ]
   # State file should be empty (no reviews recorded)
-  [ ! -s "${STATE_DIR}/pr_reviews.tsv" ] || [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 0 ]
+  [ ! -s "${STATE_DIR}/pr_reviews_owner_repo.tsv" ] || [ "$(wc -l < "${STATE_DIR}/pr_reviews_owner_repo.tsv")" -eq 0 ]
 }
 
 @test "review_prs.sh skips already-reviewed PRs at same SHA" {
@@ -3967,7 +3967,7 @@ SH
 
   # Pre-populate review state
   mkdir -p "$STATE_DIR"
-  printf '1\tabc123\tapprove\t2026-01-01T00:00:00Z\tAlready reviewed PR\n' > "${STATE_DIR}/pr_reviews.tsv"
+  printf '1\tabc123\tapprove\t2026-01-01T00:00:00Z\tAlready reviewed PR\n' > "${STATE_DIR}/pr_reviews_owner_repo.tsv"
 
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
@@ -3995,7 +3995,7 @@ SH
   run env PATH="${TMP_DIR}:${PATH}" "${REPO_DIR}/scripts/review_prs.sh"
   [ "$status" -eq 0 ]
   # Should still have only 1 line in state
-  [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 1 ]
+  [ "$(wc -l < "${STATE_DIR}/pr_reviews_owner_repo.tsv")" -eq 1 ]
 }
 
 @test "review_prs.sh reviews new PR and records state" {
@@ -4041,7 +4041,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Should have recorded the review
-  run grep "42" "${STATE_DIR}/pr_reviews.tsv"
+  run grep "42" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
   [ "$status" -eq 0 ]
   [[ "$output" == *"def456"* ]]
   [[ "$output" == *"approve"* ]]
@@ -4055,7 +4055,7 @@ SH
 
   # Pre-populate with old SHA
   mkdir -p "$STATE_DIR"
-  printf '1\told_sha\tapprove\t2026-01-01T00:00:00Z\tOld review\n' > "${STATE_DIR}/pr_reviews.tsv"
+  printf '1\told_sha\tapprove\t2026-01-01T00:00:00Z\tOld review\n' > "${STATE_DIR}/pr_reviews_owner_repo.tsv"
 
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'
@@ -4093,8 +4093,8 @@ SH
   [ "$status" -eq 0 ]
 
   # Should have 2 lines in state now (old + new)
-  [ "$(wc -l < "${STATE_DIR}/pr_reviews.tsv")" -eq 2 ]
-  run grep "new_sha" "${STATE_DIR}/pr_reviews.tsv"
+  [ "$(wc -l < "${STATE_DIR}/pr_reviews_owner_repo.tsv")" -eq 2 ]
+  run grep "new_sha" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
   [ "$status" -eq 0 ]
   [[ "$output" == *"request_changes"* ]]
 }
@@ -4107,7 +4107,7 @@ SH
 
   # Pre-populate as already reviewed (so it only checks merge commands)
   mkdir -p "$STATE_DIR"
-  printf '10\tabc123\tapprove\t2026-01-01T00:00:00Z\tPR title\n' > "${STATE_DIR}/pr_reviews.tsv"
+  printf '10\tabc123\tapprove\t2026-01-01T00:00:00Z\tPR title\n' > "${STATE_DIR}/pr_reviews_owner_repo.tsv"
 
   MERGED=false
   GH_STUB="${TMP_DIR}/gh"
@@ -4133,7 +4133,7 @@ SH
   [ "$status" -eq 0 ]
 
   # Should have recorded the merge
-  run grep "^merge" "${STATE_DIR}/pr_reviews.tsv"
+  run grep "^merge" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
   [ "$status" -eq 0 ]
   [[ "$output" == *"10"* ]]
 }
@@ -4650,6 +4650,103 @@ SH
   local labels
   labels=$(jq -r '.issues["'"$id"'"].labels // [] | map(.name) | join(",")' "$GH_MOCK_STATE")
   [[ "$labels" != *"status:new"* ]]
+}
+
+@test "db_normalize_new_issues skips issues from non-owner authors" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue as a stranger
+  export GH_MOCK_LOGIN="stranger"
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Spam issue")
+  unset GH_MOCK_LOGIN
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+
+  _GH_ALLOWED_AUTHORS=""  # reset cache
+  db_normalize_new_issues
+
+  local labels
+  labels=$(jq -r '.issues["'"$id"'"].labels // [] | map(.name) | join(",")' "$GH_MOCK_STATE")
+  [[ "$labels" != *"status:new"* ]]
+}
+
+@test "db_normalize_new_issues accepts issues from allowed_authors config" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue as a collaborator
+  export GH_MOCK_LOGIN="trusted-bot"
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Bot issue")
+  unset GH_MOCK_LOGIN
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+
+  # Add trusted-bot to allowed_authors in config
+  yq -i '.workflow.allowed_authors = ["trusted-bot"]' "$CONFIG_PATH"
+
+  _GH_ALLOWED_AUTHORS=""  # reset cache
+  db_normalize_new_issues
+
+  local labels
+  labels=$(db_task_labels_csv "$id")
+  [[ "$labels" == *"status:new"* ]]
+
+  # Cleanup
+  yq -i 'del(.workflow.allowed_authors)' "$CONFIG_PATH"
+}
+
+@test "db_task_ids_by_status filters out non-owner issues" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue as stranger with status:new label
+  export GH_MOCK_LOGIN="attacker"
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Attack issue")
+  unset GH_MOCK_LOGIN
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+  gh_api "repos/$ORCH_GH_REPO/issues/$id/labels" \
+    --input - <<< '{"labels":["status:new"]}' >/dev/null 2>&1
+
+  _GH_ALLOWED_AUTHORS=""  # reset cache
+  local ids
+  ids=$(db_task_ids_by_status "new")
+  # Should contain the init task (by owner) but not the attacker's
+  [[ "$ids" == *"$INIT_TASK_ID"* ]]
+  [[ "$ids" != *"$id"* ]]
+}
+
+@test "_gh_is_allowed_author accepts repo owner" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  _gh_is_allowed_author "mock"
+}
+
+@test "_gh_is_allowed_author rejects strangers" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  run _gh_is_allowed_author "stranger"
+  [ "$status" -eq 1 ]
+}
+
+@test "db_normalize_new_issues fails closed when repo unknown" {
+  source "${REPO_DIR}/scripts/lib.sh"
+  # Create issue as stranger
+  export GH_MOCK_LOGIN="stranger"
+  local json
+  json=$(gh_api repos/$ORCH_GH_REPO/issues -f title="Sneaky issue")
+  unset GH_MOCK_LOGIN
+  local id
+  id=$(printf '%s' "$json" | jq -r '.number')
+
+  # Break repo detection — fail closed means no issues get status:new
+  local saved_repo="$_GH_REPO"
+  _GH_REPO=""
+  _GH_ALLOWED_AUTHORS=""
+
+  db_normalize_new_issues
+
+  local labels
+  labels=$(jq -r '.issues["'"$id"'"].labels // [] | map(.name) | join(",")' "$GH_MOCK_STATE")
+  [[ "$labels" != *"status:new"* ]]
+
+  _GH_REPO="$saved_repo"
 }
 
 @test "_gh_set_status_label rejects invalid status" {
