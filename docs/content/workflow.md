@@ -23,6 +23,20 @@ Issue → Branch + Worktree → Agent works → Push → PR → Review Agent →
 9. **Release** — CI auto-tags, generates changelog, creates GitHub release, updates Homebrew
 10. **Cleanup** — (TODO) orchestrator detects merged PR, removes worktree + local branch
 
+## Mention-Driven Tasks
+
+When someone comments `@orchestrator ...` on a GitHub issue/PR, the GitHub mentions listener can create a task like:
+
+```
+Respond to @orchestrator mention in #<N>
+```
+
+Expected outcome:
+
+- Read the mention body + any referenced issues/PRs
+- Reply back on the *target* issue with a concise status update and clear next steps
+- If no code/docs changes are required, the task can be completed without opening a PR
+
 ## Task Lifecycle
 
 ```
