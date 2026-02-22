@@ -37,6 +37,13 @@ Expected outcome:
 - Reply back on the *target* issue with a concise status update and clear next steps
 - If no code/docs changes are required, the task can be completed without opening a PR
 
+Mention parsing tries to avoid false positives from status updates that *reference* mentions. A comment is only considered actionable if `@orchestrator` appears outside:
+
+- fenced code blocks (``` / ~~~)
+- blockquotes (`> ...`)
+- inline code (`` `...` ``)
+- quoted substrings (`"..."` or `'...'`)
+
 ## Task Lifecycle
 
 ```
