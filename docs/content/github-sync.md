@@ -53,6 +53,17 @@ When an agent completes a task, the orchestrator posts a structured comment:
 - **Collapsed sections**: stderr output and full prompt (with hash)
 - **Content-hash dedup**: identical comments not re-posted
 
+### GitHub Mentions Listener
+
+If enabled (via `gh.enabled: true`), the orchestrator can also watch for `@orchestrator` mentions in issue/PR comments and automatically create a task to respond.
+
+- The listener lives in `scripts/gh_mentions.sh`.
+- It posts an acknowledgement comment with the `<!-- orch:mention -->` marker so the listener won’t re-trigger on orchestrator-generated comments.
+- Mentions are ignored when they only appear in:
+  - fenced code blocks (``` / ~~~)
+  - Markdown blockquotes (`>` lines)
+  - orchestrator-generated comments (`<!-- orch:* -->` or `via [Orchestrator]`)
+
 ### Labels
 
 - `status:<status>` — task status (`new`, `routed`, `in_progress`, `done`, `needs_review`, `blocked`)
