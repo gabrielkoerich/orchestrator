@@ -77,6 +77,8 @@ impl Transport {
                 output_tx: tx,
             }
         });
+        // Always update tmux_session — task retries get a new session
+        binding.tmux_session = tmux_session.to_string();
         if !binding.connected_threads.contains(&key) {
             binding.connected_threads.push(key.clone());
         }

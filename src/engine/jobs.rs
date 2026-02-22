@@ -109,33 +109,47 @@ pub async fn tick(jobs_path: &PathBuf, backend: &Arc<dyn ExternalBackend>) -> an
 
         // Check if previous task is still active
         if let Some(ref task_id) = job.active_task_id {
-            let task = backend.get_task(&ExternalId(task_id.clone())).await;
-            if let Ok(task) = task {
-                let status = task.labels.iter().find(|l| l.starts_with("status:"));
-                match status.map(|s| s.as_str()) {
-                    Some("status:in_progress") | Some("status:routed") | Some("status:new") => {
-                        // Previous task still active, skip
-                        tracing::debug!(
-                            job_id = job.id,
-                            task_id,
-                            "skipping: previous task still active"
-                        );
-                        continue;
+            match backend.get_task(&ExternalId(task_id.clone())).await {
+                Ok(task) => {
+                    let status = task.labels.iter().find(|l| l.starts_with("status:"));
+                    match status.map(|s| s.as_str()) {
+                        Some("status:in_progress") | Some("status:routed") | Some("status:new") => {
+                            tracing::debug!(
+                                job_id = job.id,
+                                task_id,
+                                "skipping: previous task still active"
+                            );
+                            continue;
+                        }
+                        None => {
+                            // No status label — treat as active (might be newly created)
+                            continue;
+                        }
+                        Some(s) => {
+                            // Terminal state (done, needs_review, blocked, in_review, etc.)
+                            tracing::debug!(
+                                job_id = job.id,
+                                task_id,
+                                status = s,
+                                "previous task terminal, clearing"
+                            );
+                            job.active_task_id = None;
+                            changed = true;
+                        }
                     }
-                    None => {
-                        // No status label — treat as active (might be newly created)
-                        continue;
-                    }
-                    Some(s) => {
-                        // Terminal state (done, needs_review, blocked, in_review, etc.)
-                        tracing::debug!(
-                            job_id = job.id,
-                            task_id,
-                            status = s,
-                            "previous task terminal, clearing"
-                        );
-                        job.active_task_id = None;
-                    }
+                }
+                Err(e) => {
+                    // Task lookup failed (deleted, API error, rate limit).
+                    // Clear active_task_id so the job isn't permanently blocked.
+                    tracing::warn!(
+                        job_id = job.id,
+                        task_id,
+                        ?e,
+                        "cannot fetch active task, clearing active_task_id"
+                    );
+                    job.active_task_id = None;
+                    job.last_task_status = Some("error".to_string());
+                    changed = true;
                 }
             }
         }
