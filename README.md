@@ -1,8 +1,8 @@
-# Agent Orchestrator (bash, YAML + yq)
+# Orchestrator
 
 [![CI](https://github.com/gabrielkoerich/orchestrator/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/gabrielkoerich/orchestrator/actions/workflows/release.yml?query=branch%3Amain)
 
-A lightweight autonomous agent orchestrator that routes tasks, spawns specialized agent profiles, and supports delegation. Tasks live in `tasks.yml` (source of truth). Agents run via CLI tools (`codex`, `claude`, and `opencode`) in full agentic mode with tool access, and can delegate subtasks dynamically.
+A lightweight autonomous agent orchestrator that routes tasks to AI coding agents, manages their execution in isolated git worktrees, and tracks the full lifecycle from GitHub Issue to merged PR. GitHub Issues are the native task backend — labels drive status, comments carry agent output, and sub-issues handle delegation. Agents run via CLI tools (`claude`, `codex`, and `opencode`) in tmux sessions with full tool access.
 
 ## Install
 
@@ -22,29 +22,38 @@ brew install --cask codex         # Codex
 brew install opencode             # OpenCode
 ```
 
-Optional: `gh` for GitHub sync, `bats` for tests.
+Required: `gh` (GitHub CLI) — the native task backend uses GitHub Issues.
+Optional: `bats` for running tests.
 
 ## Quick Start
 ```bash
 cd ~/projects/my-app
-orch init               # configure project (optional GitHub setup)
-orch task add "title"   # add a task
-orch task next          # route + run next task
-orch start              # start background server
+orchestrator init               # configure project + GitHub repo
+orchestrator task add "title"   # creates a GitHub issue
+orchestrator task next          # route + run next task
+orchestrator start              # start background server
 ```
 
-`orch` is a short alias for `orchestrator` — both work interchangeably.
+## Architecture
+
+Tasks are GitHub Issues. The orchestrator polls for issues with `status:new` labels, routes them to the best agent, creates an isolated git worktree, runs the agent in a tmux session, and posts results back as issue comments. PRs are created automatically and linked via `Closes #N`.
+
+```
+GitHub Issue (status:new) → Route (LLM picks agent) → Worktree (isolated branch)
+    → tmux session (agent runs) → Commit + Push → PR → Review → Merge
+```
 
 ## Files
 
 All runtime state lives in `~/.orchestrator/` (`ORCH_HOME`):
-- `tasks.yml` — task database
+- `orchestrator.db` — SQLite database (task metadata cache, jobs)
 - `jobs.yml` — scheduled job definitions
 - `config.yml` — runtime configuration
 - `skills.yml` — approved skill repositories and catalog
 - `skills/` — cloned skill repositories (via `skills-sync`)
-- `contexts/` — persisted context files per task/profile
-- `.orchestrator/` — runtime state (pid, logs, locks, output, tool history, prompts)
+- `projects/` — bare-cloned repositories (`owner/repo.git`)
+- `worktrees/` — project-local git worktrees per task
+- `.orchestrator/` — runtime state (pid, logs, locks, sidecars, prompts)
 
 Source files:
 - `prompts/system.md` — system prompt (output format, workflow, constraints)
@@ -52,45 +61,41 @@ Source files:
 - `prompts/plan.md` — planning/decomposition prompt
 - `prompts/route.md` — routing + profile generation prompt
 - `prompts/review.md` — optional review agent prompt
-- `scripts/*.sh` — orchestration commands
-- `scripts/normalize_json.py` — JSON extraction + tool history + token usage
-- `scripts/cron_match.py` — lightweight cron expression matcher
-- `tests/orchestrator.bats` — 160 tests
+- `scripts/backend_github.sh` — GitHub Issues backend (labels, comments, status)
+- `scripts/run_task.sh` — task execution (routing, agent invocation, response parsing)
+- `scripts/serve.sh` — main service loop
+- `scripts/poll.sh` — task dispatcher
+- `tests/orchestrator.bats` — 265+ tests
 - `.orchestrator.example.yml` — template for per-project config override
 
 ## Task Model
-Each task includes:
-- `id`, `title`, `body`, `labels`
-- `status`: `new`, `routed`, `in_progress`, `done`, `in_review`, `blocked`, `needs_review`
-- `agent`: executor (`codex`, `claude`, or `opencode`)
-- `agent_model`: model chosen by the router
-- `agent_profile`: dynamically generated role/skills/tools/constraints
-- `selected_skills`: chosen skill ids from `skills.yml`
-- `parent_id`, `children` for delegation
-- `summary`, `reason` (why blocked/stuck)
-- `accomplished`, `remaining`, `blockers`
-- `files_changed`, `needs_help`
-- `attempts`, `last_error`
-- `duration`: execution time in seconds
-- `input_tokens`, `output_tokens`: token usage from agent
-- `prompt_hash`: SHA-256 prefix of the prompt sent to the agent
-- `stderr_snippet`: last 500 chars of agent stderr
-- `last_comment_hash`: content-hash for GitHub comment dedup
-- `review_decision`, `review_notes`
-- `history`: status changes with timestamps
 
-GitHub metadata fields (optional):
-- `gh_issue_number`, `gh_url`, `gh_state`, `gh_updated_at`, `gh_synced_at`
+Each task **is** a GitHub Issue. Metadata is stored in labels and a local sidecar JSON file:
+
+**GitHub Issue labels** (source of truth):
+- `status:new`, `status:routed`, `status:in_progress`, `status:done`, `status:blocked`, `status:in_review`, `status:needs_review`
+- `agent:claude`, `agent:codex`, `agent:opencode`
+- `complexity:simple`, `complexity:medium`, `complexity:complex`
+- `role:backend`, `role:frontend`, `role:docs`, etc.
+- `plan`, `scheduled`, `no-agent`, `no-review`, `has-error`
+
+**Sidecar file** (`~/.orchestrator/.orchestrator/{task_id}.json`):
+- `agent_model`, `complexity`, `branch`, `worktree`
+- `attempts`, `duration`, `input_tokens`, `output_tokens`
+- `summary`, `reason`, `accomplished[]`, `remaining[]`, `files_changed[]`
+- `prompt_hash`, `last_comment_hash`
+
+**Issue comments** serve as history (timestamped status transitions, agent reports).
 
 ## How It Works
-1. **Add a task** to `tasks.yml` (or via `orchestrator add`).
-2. **Route the task** with an LLM that chooses executor + builds a specialized profile and selects skills.
-3. **Run the task** with the chosen executor in agentic mode. The agent runs inside `$PROJECT_DIR` with full tool access (read files, edit code, run commands).
-4. **Output**: the agent writes its results to `.orchestrator/output-{task_id}.json` (with stdout fallback for backward compatibility).
-5. **Review**: if enabled and a PR is open, a different agent reviews the PR and posts a GitHub review.
-6. **Delegation**: if the agent returns `delegations`, child tasks are created and the parent is blocked until children finish.
-7. **Rejoin**: parent resumes when children are done.
-8. **Error handling**: if the agent fails or returns `blocked` with a `reason`, the task is blocked, the error is commented on the GitHub issue, and a `blocked` label is added.
+1. **Create a GitHub Issue** (or via `orchestrator task add`). Gets `status:new` label automatically.
+2. **Route the task** — LLM router picks the best agent + model and builds a specialized profile.
+3. **Create worktree** — isolated git branch + worktree at `~/.orchestrator/worktrees/{project}/{branch}`.
+4. **Run the agent** in a tmux session (`orch-{issue_number}`). Agent has full tool access inside the worktree.
+5. **Collect results** — agent writes JSON to output file. Orchestrator parses, commits changes, pushes branch, creates PR.
+6. **Review** — if enabled, a different agent reviews the PR and posts a GitHub review.
+7. **Delegation** — if the agent returns `delegations`, child issues are created as sub-issues and the parent is blocked until children finish.
+8. **Error handling** — failures are posted as issue comments with full context. `status:blocked` label added. `/retry` command to re-run.
 
 ## Routing: How the Orchestrator Picks an Agent
 
@@ -150,15 +155,15 @@ Every agent receives a rich context built from multiple sources:
 | Context | Source | When | Description |
 |---|---|---|---|
 | **System prompt** | `prompts/system.md` | Always | Output format, JSON schema, workflow requirements, constraints |
-| **Task details** | `tasks.yml` | Always | Title, body, labels, agent profile (role/skills/tools/constraints) |
-| **Error history** | `tasks.yml` `.history[]` | On retries | Last 5 status transitions with timestamps (agent sees what already failed) |
-| **Last error** | `tasks.yml` `.last_error` | On retries | Most recent error message |
+| **Task details** | GitHub Issue | Always | Title, body, labels, agent profile (role/skills/tools/constraints) |
+| **Error history** | Issue comments | On retries | Last 5 status transitions with timestamps (agent sees what already failed) |
+| **Last error** | Sidecar JSON | On retries | Most recent error message |
 | **GitHub issue comments** | GitHub API | If issue linked | Last 10 comments on the linked issue (agent sees discussion) |
 | **Prior run context** | `contexts/task-{id}.md` | On retries | Logs from previous attempts + tool call summaries |
 | **Repo tree** | `git ls-files` / `find` | Always | Truncated file listing (up to 200 files) |
 | **Project instructions** | `CLAUDE.md` + `AGENTS.md` + `README.md` | If files exist | Project-specific instructions and documentation |
 | **Skills docs** | `skills/{id}/SKILL.md` | If skills selected | Full skill documentation for each selected skill |
-| **Parent context** | `tasks.yml` | For child tasks | Parent task summary + sibling task statuses |
+| **Parent context** | Parent issue | For child tasks | Parent task summary + sibling task statuses |
 | **Git diff** | `git diff --stat HEAD` | On retries (attempts > 0) | Current uncommitted changes |
 | **Output file path** | `.orchestrator/output-{id}.json` | Always | Where the agent writes its JSON results |
 
@@ -190,7 +195,7 @@ run_task.sh
     ├── capture stderr snippet       → stderr_snippet (500 chars)
     ├── calculate duration           → duration (seconds)
     ├── push branch if not main      → git push -u origin <branch>
-    └── store all metadata in tasks.yml
+    └── store metadata in sidecar + issue labels
 ```
 
 ### Output
@@ -334,7 +339,7 @@ Supports: wildcards (`*`), ranges (`1-5`), steps (`*/15`, `1-5/2`), lists (`1,3,
 - All job-created tasks sync to GitHub issues like any other task.
 
 ## Dynamic Agent Profiles
-The router generates a profile for each task, persisted in `tasks.yml`. You can edit it manually if the agent needs refinement.
+The router generates a profile for each task, stored in the sidecar file. You can override routing via issue labels.
 
 Example:
 ```yaml
@@ -390,14 +395,14 @@ If the same error repeats 3 times (4+ attempts), the orchestrator detects a retr
 
 ### What Happens on Failure
 1. Task status set to `blocked` (no auto-retry)
-2. Error details saved to `last_error` field in `tasks.yml`
+2. Error details saved to sidecar file and posted as issue comment
 3. Error logged to task history with timestamp
 4. **GitHub issue comment** posted with full details (see below)
 5. **Red `blocked` label** added to the GitHub issue (auto-created if missing)
 
 ### Unblocking
 Tasks stay blocked until you manually investigate and unblock them:
-1. Check the error on the GitHub issue (or in `tasks.yml`)
+1. Check the error on the GitHub issue
 2. Fix the underlying problem (e.g. add API key, fix code)
 3. Remove the `blocked` label from the issue
 4. Set the task status back to `new` — the orchestrator picks it up again
@@ -407,7 +412,7 @@ Agents can also report blocks in their JSON response:
 - `status: blocked` — waiting for a dependency or missing information
 - The agent must provide a `reason` field explaining what happened, what it tried, and what it needs
 
-The reason is persisted in `tasks.yml`, logged to history, appended to `contexts/task-{id}.md`, and posted as a GitHub issue comment.
+The reason is posted as an issue comment, logged to the sidecar, and appended to `contexts/task-{id}.md`.
 
 ## Logging & Observability
 
@@ -438,7 +443,7 @@ TAIL_LOG=1 orchestrator serve
 | File | Path | Description |
 |---|---|---|
 | **Task context** | `contexts/task-{id}.md` | Appended after each run: timestamp, status, summary, reason, files, tool summary |
-| **Task history** | `tasks.yml` `.history[]` | Status transitions with timestamps and notes |
+| **Task history** | Issue comments | Status transitions with timestamps and notes |
 | **Agent output** | `.orchestrator/output-{id}.json` | Structured JSON from the last agent run |
 | **Agent prompt** | `.orchestrator/prompt-{id}.txt` | Full system prompt + agent message (with SHA-256 hash) |
 | **Agent response** | `.orchestrator/response-{id}.txt` | Raw stdout from the agent |
@@ -642,7 +647,7 @@ The orchestrator will:
 
 ## Concurrency + Locking
 - `poll` runs new tasks in parallel.
-- File writes are protected by a global lock (`tasks.yml.lock`).
+- SQLite WAL mode handles concurrent reads; per-task locks prevent double-run.
 - Each task also has a per-task lock to prevent double-run.
 - Stale locks are auto-cleared after `LOCK_STALE_SECONDS` (default 600).
 
@@ -668,13 +673,13 @@ The `review_agent` config key is now an optional fallback — `opposite_agent()`
 
 Override the reviewer for a specific run:
 ```bash
-REVIEW_AGENT=claude orch task run <id>
+REVIEW_AGENT=claude orchestrator task run <id>
 ```
 
 See [Review Agent docs](docs/content/review-agent.md) for full details.
 
-## GitHub Sync (Optional)
-Sync tasks to GitHub Issues using `gh`.
+## GitHub Setup
+GitHub Issues is the native task backend. Authentication is handled by `gh`.
 
 <details>
 <summary>GitHub Integration: Token Type and Permissions</summary>
@@ -721,20 +726,13 @@ To auto-fill the Status field/options into config:
 orchestrator project info --fix
 ```
 
-### Pull issues into tasks.yml
+### Manual sync commands
 ```bash
-orchestrator gh pull
+orchestrator gh pull    # import new issues as tasks
+orchestrator gh push    # push local status updates to GitHub
+orchestrator gh sync    # both directions
 ```
-
-### Push tasks to GitHub issues
-```bash
-orchestrator gh push
-```
-
-### Sync both directions
-```bash
-orchestrator gh sync
-```
+Note: The background service runs `gh sync` automatically every 120s.
 
 ### Error Comments & Blocking
 When a task fails (any error), the orchestrator:
@@ -783,9 +781,9 @@ gh api graphql -f query='query($project:ID!){ node(id:$project){ ... on ProjectV
 ```
 
 ## Notes
-- `tasks.yml` is the system of record and can be synced to GitHub.
-- Routing and profiles are LLM-generated; you can override them manually.
-- Agents run in agentic mode inside `$PROJECT_DIR` with full tool access.
+- GitHub Issues are the source of truth for tasks. Labels drive status.
+- Routing and profiles are LLM-generated; you can override them via issue labels.
+- Agents run in agentic mode inside isolated git worktrees with full tool access.
 - The router stays non-agentic (`--print`) — it's a classification task.
 
 ---
