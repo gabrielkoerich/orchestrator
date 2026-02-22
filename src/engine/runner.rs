@@ -11,6 +11,7 @@
 use anyhow::Context;
 use std::path::PathBuf;
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 /// Runs tasks by delegating to `run_task.sh`.
 pub struct TaskRunner {
@@ -60,6 +61,10 @@ impl TaskRunner {
     /// This spawns the bash script and waits for it to complete.
     /// The script handles everything: routing, worktree, agent invocation,
     /// response parsing, git push, PR creation, and GitHub comments.
+    /// Task timeout — 30 minutes. If run_task.sh doesn't finish by then,
+    /// we kill it and release the semaphore permit.
+    const TASK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
     pub async fn run(&self, task_id: &str) -> anyhow::Result<()> {
         let script = self.scripts_dir.join("run_task.sh");
 
@@ -69,7 +74,7 @@ impl TaskRunner {
 
         tracing::info!(task_id, script = %script.display(), "spawning run_task.sh");
 
-        let output = Command::new("bash")
+        let mut child = Command::new("bash")
             .arg(&script)
             .arg(task_id)
             .env("ORCH_HOME", &self.orch_home)
@@ -78,10 +83,49 @@ impl TaskRunner {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .context("spawning run_task.sh")?
-            .wait_with_output()
-            .await
-            .context("waiting for run_task.sh")?;
+            .context("spawning run_task.sh")?;
+
+        // Wait with timeout — kill the child if it exceeds the limit
+        let status = match timeout(Self::TASK_TIMEOUT, child.wait()).await {
+            Ok(result) => result.context("waiting for run_task.sh")?,
+            Err(_) => {
+                tracing::error!(
+                    task_id,
+                    timeout_secs = 30 * 60,
+                    "run_task.sh timed out, killing"
+                );
+                child.kill().await.ok();
+                anyhow::bail!("run_task.sh timed out after 30 minutes");
+            }
+        };
+
+        // Collect output after process exits
+        let stdout = match child.stdout.take() {
+            Some(mut s) => {
+                let mut buf = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf)
+                    .await
+                    .ok();
+                buf
+            }
+            None => Vec::new(),
+        };
+        let stderr = match child.stderr.take() {
+            Some(mut s) => {
+                let mut buf = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf)
+                    .await
+                    .ok();
+                buf
+            }
+            None => Vec::new(),
+        };
+
+        let output = std::process::Output {
+            status,
+            stdout,
+            stderr,
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

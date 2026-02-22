@@ -42,10 +42,16 @@ pub fn check(expression: &str, since: Option<&str>) -> anyhow::Result<bool> {
                 .is_some())
         }
         None => {
-            // Check if the schedule matches the current minute
-            let prev = schedule.after(&(now - chrono::Duration::minutes(1))).next();
-            match prev {
-                Some(dt) => Ok(dt.minute() == now.minute() && dt.hour() == now.hour()),
+            // Check if the schedule matches the current minute.
+            // We look for the next occurrence after 1 minute ago — if it falls
+            // within the current minute, the schedule is firing now.
+            let one_min_ago = now - chrono::Duration::minutes(1);
+            let next = schedule.after(&one_min_ago).next();
+            match next {
+                Some(dt) => {
+                    let diff = now.signed_duration_since(dt);
+                    Ok(diff >= chrono::Duration::zero() && diff < chrono::Duration::minutes(1))
+                }
                 None => Ok(false),
             }
         }

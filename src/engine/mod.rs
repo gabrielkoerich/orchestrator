@@ -25,7 +25,6 @@ use crate::db::Db;
 use crate::tmux::TmuxManager;
 use runner::TaskRunner;
 use std::sync::Arc;
-use tokio::signal;
 use tokio::sync::Semaphore;
 
 /// Engine configuration.
@@ -105,6 +104,9 @@ pub async fn serve() -> anyhow::Result<()> {
     );
     let mut interval = tokio::time::interval(config.tick_interval);
 
+    // SIGTERM handler (launchd/systemd send SIGTERM to stop services)
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -128,8 +130,12 @@ pub async fn serve() -> anyhow::Result<()> {
                     last_sync = std::time::Instant::now();
                 }
             }
-            _ = signal::ctrl_c() => {
+            _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received SIGINT, shutting down");
+                break;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, shutting down");
                 break;
             }
         }
@@ -172,7 +178,13 @@ async fn tick(
             // The run_task.sh process handles its own status updates
             // and GitHub comment posting. We just clean up the session.
             let session_name = tmux.session_name(task_id);
-            tmux.kill_session(&session_name).await?;
+            if let Err(e) = tmux.kill_session(&session_name).await {
+                tracing::debug!(
+                    task_id,
+                    ?e,
+                    "kill_session failed (session may already be gone)"
+                );
+            }
         }
     }
 

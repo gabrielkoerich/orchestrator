@@ -41,8 +41,8 @@ pub fn get(key: &str) -> anyhow::Result<String> {
 fn resolve_key(path: &PathBuf, key: &str) -> anyhow::Result<String> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let root: serde_yaml::Value =
-        serde_yaml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let root: serde_yml::Value =
+        serde_yml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
 
     let mut current = &root;
     for part in key.split('.') {
@@ -52,11 +52,11 @@ fn resolve_key(path: &PathBuf, key: &str) -> anyhow::Result<String> {
     }
 
     match current {
-        serde_yaml::Value::String(s) => Ok(s.clone()),
-        serde_yaml::Value::Number(n) => Ok(n.to_string()),
-        serde_yaml::Value::Bool(b) => Ok(b.to_string()),
-        serde_yaml::Value::Null => Ok(String::new()),
-        _ => Ok(serde_yaml::to_string(current)?),
+        serde_yml::Value::String(s) => Ok(s.clone()),
+        serde_yml::Value::Number(n) => Ok(n.to_string()),
+        serde_yml::Value::Bool(b) => Ok(b.to_string()),
+        serde_yml::Value::Null => Ok(String::new()),
+        _ => Ok(serde_yml::to_string(current)?),
     }
 }
 

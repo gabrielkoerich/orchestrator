@@ -72,7 +72,7 @@ pub fn load_jobs(path: &PathBuf) -> anyhow::Result<Vec<Job>> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let file: JobsFile =
-        serde_yaml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+        serde_yml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     Ok(file.jobs)
 }
 
@@ -81,7 +81,7 @@ pub fn save_jobs(path: &PathBuf, jobs: &[Job]) -> anyhow::Result<()> {
     let file = JobsFile {
         jobs: jobs.to_vec(),
     };
-    let content = serde_yaml::to_string(&file)?;
+    let content = serde_yml::to_string(&file)?;
     std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
