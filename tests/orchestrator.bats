@@ -3793,6 +3793,8 @@ SH
   TASK2_ID=$(_task_id "$TASK_OUTPUT")
 
   tdb_set "$TASK2_ID" status "done"
+  tdb_set "$TASK2_ID" attempts "2"
+  tdb_set "$TASK2_ID" last_error "previous error"
 
   run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/context please use bash arrays'"
   [ "$status" -eq 0 ]
@@ -3810,6 +3812,99 @@ SH
   [ "$status" -eq 0 ]
   [[ "$output" == *"Owner context"* ]]
   [[ "$output" == *"please use bash arrays"* ]]
+
+  run tdb_field "$TASK2_ID" attempts
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+
+  run tdb_field "$TASK2_ID" last_error
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "owner slash command /close marks done and closes the GitHub issue" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Close Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "needs_review"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/close'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID} -q .state"
+  [ "$status" -eq 0 ]
+  [ "$output" = "closed" ]
+}
+
+@test "owner slash command /priority high sets complexity=complex and routes task" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Priority Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "needs_review"
+  tdb_set "$TASK2_ID" last_error "previous error"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/priority high'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "routed" ]
+
+  run tdb_field "$TASK2_ID" complexity
+  [ "$status" -eq 0 ]
+  [ "$output" = "complex" ]
+
+  run tdb_field "$TASK2_ID" last_error
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "owner slash commands are case-insensitive" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Case Insensitive Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "done"
+  tdb_set "$TASK2_ID" agent "codex"
+  tdb_set "$TASK2_ID" attempts "2"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/RETRY'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+}
+
+@test "owner slash command /help posts readable multiline help" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Help Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "done"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/help'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -q '.[-1].body'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Supported commands:"* ]]
+  [[ "$output" == *$'\n- `/retry`'* ]]
+  [[ "$output" != *'\\n'* ]]
 }
 
 @test "non-command owner comment falls back to owner feedback retry" {
