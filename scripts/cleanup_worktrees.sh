@@ -101,7 +101,8 @@ while IFS= read -r id; do
 
   if [ -n "$branch" ] && git -C "$project_dir" show-ref --verify --quiet "refs/heads/$branch"; then
     log "[cleanup_worktrees] [$PROJECT_NAME] deleting branch=$branch"
-    if ! git -C "$project_dir" branch -d "$branch" >/dev/null 2>&1; then
+    # Use -D (force) because squash-merged PRs are not considered merged by git
+    if ! git -C "$project_dir" branch -D "$branch" >/dev/null 2>&1; then
       log_err "[cleanup_worktrees] [$PROJECT_NAME] failed to delete branch=$branch"
       cleanup_ok=false
     fi
