@@ -2030,6 +2030,34 @@ SH
   [[ "$output" == *"mention handled"* ]]
 }
 
+@test "@orchestrator mention dedup is shared across project dirs" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="hey @orchestrator please take a look"
+  [ "$status" -eq 0 ]
+
+  PROJ_A="${TMP_DIR}/projA"
+  PROJ_B="${TMP_DIR}/projB"
+  mkdir -p "$PROJ_A" "$PROJ_B"
+  printf '%s\n' "gh: { repo: \"mock/repo\" }" > "${PROJ_A}/.orchestrator.yml"
+  cp "${PROJ_A}/.orchestrator.yml" "${PROJ_B}/.orchestrator.yml"
+
+  # First run in project A: creates a mention task.
+  run bash -c "PROJECT_DIR='${PROJ_A}' gh_mentions.sh"
+  [ "$status" -eq 0 ]
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+
+  # Second run in project B should *not* create a duplicate mention task.
+  run bash -c "PROJECT_DIR='${PROJ_B}' gh_mentions.sh"
+  [ "$status" -eq 0 ]
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+
+  # Mention state should be stored globally under ORCH_HOME (not project-local STATE_DIR).
+  [ -f "${ORCH_HOME}/.orchestrator/mentions/mock__repo.json" ]
+}
+
 @test "@orchestrator mention inside blockquote is ignored" {
   run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'> @orchestrator please do not trigger\\n\\nthanks'
   [ "$status" -eq 0 ]

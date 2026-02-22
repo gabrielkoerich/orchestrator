@@ -10,36 +10,54 @@ load_project_config
 
 MENTIONS_MARKER="<!-- orch:mention -->"
 
+mentions_repo_slug() {
+  local repo="$1"
+  printf '%s' "$repo" | sed 's#/#__#g; s#[^A-Za-z0-9._-]#_#g'
+}
+
+mentions_state_dir() {
+  echo "${ORCH_HOME}/.orchestrator/mentions"
+}
+
+ensure_mentions_state_dir() {
+  mkdir -p "$(mentions_state_dir)"
+}
+
 mentions_db_path() {
-  echo "${STATE_DIR}/mentions.json"
+  local repo="$1"
+  local slug
+  slug=$(mentions_repo_slug "$repo")
+  echo "$(mentions_state_dir)/${slug}.json"
 }
 
 mentions_db_init() {
+  local repo="$1"
   local path
-  path=$(mentions_db_path)
+  path=$(mentions_db_path "$repo")
   if [ ! -f "$path" ]; then
-    ensure_state_dir
+    ensure_mentions_state_dir
     printf '%s\n' '{"since":"1970-01-01T00:00:00Z","processed":{}}' >"$path"
   fi
 }
 
 mentions_db_since() {
+  local repo="$1"
   local path
-  path=$(mentions_db_path)
+  path=$(mentions_db_path "$repo")
   jq -r '.since // "1970-01-01T00:00:00Z"' "$path" 2>/dev/null || echo "1970-01-01T00:00:00Z"
 }
 
 mentions_db_lookup_task() {
-  local comment_id="$1"
+  local repo="$1" comment_id="$2"
   local path
-  path=$(mentions_db_path)
+  path=$(mentions_db_path "$repo")
   jq -r --arg cid "$comment_id" '.processed[$cid].task_id // empty' "$path" 2>/dev/null || true
 }
 
 mentions_db_store() {
-  local comment_id="$1" task_id="$2" issue_number="$3" created_at="$4" comment_url="$5"
+  local repo="$1" comment_id="$2" task_id="$3" issue_number="$4" created_at="$5" comment_url="$6"
   local path tmp
-  path=$(mentions_db_path)
+  path=$(mentions_db_path "$repo")
   tmp=$(mktemp)
   jq -c \
     --arg cid "$comment_id" \
@@ -53,17 +71,20 @@ mentions_db_store() {
 }
 
 mentions_db_set_since() {
-  local since="$1"
+  local repo="$1" since="$2"
   local path tmp
-  path=$(mentions_db_path)
+  path=$(mentions_db_path "$repo")
   tmp=$(mktemp)
   jq -c --arg s "$since" '.since = $s' "$path" >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$path"
 }
 
 acquire_mentions_lock() {
-  ensure_state_dir
-  local lock_dir="${STATE_DIR}/mentions.lock"
+  local repo="$1"
+  ensure_mentions_state_dir
+  local slug lock_dir
+  slug=$(mentions_repo_slug "$repo")
+  lock_dir="$(mentions_state_dir)/${slug}.lock"
   if mkdir "$lock_dir" 2>/dev/null; then
     trap "rmdir \"$lock_dir\" 2>/dev/null || true" EXIT
     return 0
@@ -129,11 +150,11 @@ main() {
   repo="${repo:-${ORCH_GH_REPO:-}}"
   [ -n "$repo" ] && [ "$repo" != "null" ] || return 0
 
-  acquire_mentions_lock || return 0
+  acquire_mentions_lock "$repo" || return 0
 
-  mentions_db_init
+  mentions_db_init "$repo"
   local since
-  since=$(mentions_db_since)
+  since=$(mentions_db_since "$repo")
 
   local comments_json
   comments_json=$(gh_api -X GET "repos/${repo}/issues/comments" -f since="$since" -f per_page=100 2>/dev/null || echo "[]")
@@ -171,7 +192,7 @@ main() {
     fi
 
     local existing
-    existing=$(mentions_db_lookup_task "$comment_id")
+    existing=$(mentions_db_lookup_task "$repo" "$comment_id")
     if [ -n "$existing" ]; then
       continue
     fi
@@ -197,10 +218,10 @@ Acknowledged. Created task #${task_id} from this @orchestrator mention.
 *via [Orchestrator](https://github.com/gabrielkoerich/orchestrator)*"
     gh_api "repos/${repo}/issues/${issue_number}/comments" -f body="$ack_body" >/dev/null 2>&1 || true
 
-    mentions_db_store "$comment_id" "$task_id" "$issue_number" "${created_at:-}" "${comment_url:-}" || true
+    mentions_db_store "$repo" "$comment_id" "$task_id" "$issue_number" "${created_at:-}" "${comment_url:-}" || true
   done
 
-  [ -n "$max_seen" ] && mentions_db_set_since "$max_seen" || true
+  [ -n "$max_seen" ] && mentions_db_set_since "$repo" "$max_seen" || true
 }
 
 main "$@"
