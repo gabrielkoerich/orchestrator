@@ -222,7 +222,7 @@ main() {
     local _active_tasks
     _active_tasks=$(jq -r --argjson inum "$issue_number" \
       '[.processed | to_entries[] | select(.value.issue_number == $inum) | .value.task_id] | .[]' \
-      "$(mentions_db_path)" 2>/dev/null || true)
+      "$MENTIONS_DB_PATH" 2>/dev/null || true)
     for _tid in $_active_tasks; do
       local _st
       _st=$(db_task_field "$_tid" "status" 2>/dev/null || true)
