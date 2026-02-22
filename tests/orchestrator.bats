@@ -3715,6 +3715,242 @@ SH
   [[ "$output" == *"Please use markdown format"* ]]
 }
 
+@test "owner slash command /retry resets task to new and clears agent" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Retry Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  # Make it look completed
+  tdb_set "$TASK2_ID" status "done"
+  tdb_set "$TASK2_ID" agent "codex"
+  tdb_set "$TASK2_ID" attempts "3"
+
+  # Owner comment: /retry
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/retry'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  run tdb_field "$TASK2_ID" agent
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  run tdb_field "$TASK2_ID" attempts
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+}
+
+@test "owner slash command /assign codex sets agent and routes task" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Assign Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "needs_review"
+  tdb_set "$TASK2_ID" agent "claude"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/assign codex'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "routed" ]
+
+  run tdb_field "$TASK2_ID" agent
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+}
+
+@test "owner slash command /unblock clears blocked status" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Unblock Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "blocked"
+  tdb_set "$TASK2_ID" reason "some reason"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/unblock'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+
+  run tdb_field "$TASK2_ID" reason
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "owner slash command /context appends context and routes task" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Context Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "done"
+  tdb_set "$TASK2_ID" attempts "2"
+  tdb_set "$TASK2_ID" last_error "previous error"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/context please use bash arrays'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "routed" ]
+
+  CTX_FILE="$ORCH_HOME/contexts/task-${TASK2_ID}.md"
+  [ -f "$CTX_FILE" ]
+  run bash -c "cat '$CTX_FILE'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Owner context"* ]]
+  [[ "$output" == *"please use bash arrays"* ]]
+
+  run tdb_field "$TASK2_ID" attempts
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+
+  run tdb_field "$TASK2_ID" last_error
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "owner slash command /close marks done and closes the GitHub issue" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Close Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "needs_review"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/close'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID} -q .state"
+  [ "$status" -eq 0 ]
+  [ "$output" = "closed" ]
+}
+
+@test "owner slash command /priority high sets complexity=complex and routes task" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Priority Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "needs_review"
+  tdb_set "$TASK2_ID" last_error "previous error"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/priority high'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "routed" ]
+
+  run tdb_field "$TASK2_ID" complexity
+  [ "$status" -eq 0 ]
+  [ "$output" = "complex" ]
+
+  run tdb_field "$TASK2_ID" last_error
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "owner slash commands are case-insensitive" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Case Insensitive Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "done"
+  tdb_set "$TASK2_ID" agent "codex"
+  tdb_set "$TASK2_ID" attempts "2"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/RETRY'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+}
+
+@test "owner slash command /help posts readable multiline help" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Help Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "done"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/help'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -q '.[-1].body'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Supported commands:"* ]]
+  [[ "$output" == *$'\n- `/retry`'* ]]
+  [[ "$output" != *'\\n'* ]]
+}
+
+@test "non-command owner comment falls back to owner feedback retry" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Feedback Non-Command Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "done"
+  tdb_set "$TASK2_ID" agent "codex"
+
+  run bash -c "GH_MOCK_LOGIN=mock gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='Please add a unit test for edge cases'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "routed" ]
+
+  run tdb_field "$TASK2_ID" agent
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+}
+
+@test "owner slash commands ignore non-owner comments" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Ignore Task" "Body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  tdb_set "$TASK2_ID" status "done"
+  tdb_set "$TASK2_ID" agent "codex"
+
+  run bash -c "GH_MOCK_LOGIN=someone-else gh api repos/mock/repo/issues/${TASK2_ID}/comments -f body='/retry'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; GH_MOCK_LOGIN=mock; process_owner_feedback_for_task 'mock/repo' '${TASK2_ID}' 'mock'"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "done" ]
+
+  run tdb_field "$TASK2_ID" agent
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+}
+
 # ===== project_add.sh / bare repo support =====
 
 @test "is_bare_repo detects bare repositories" {
