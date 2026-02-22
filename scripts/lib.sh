@@ -1038,7 +1038,7 @@ process_owner_comment() {
         "last_error=NULL" \
         "$advance_ts"
       append_history "$task_id" "new" "owner command: /retry"
-      _owner_cmd_ack "✅ Applied `/retry` — reset task to `status:new` (agent cleared, attempts reset)."
+      _owner_cmd_ack "✅ Applied \`/retry\` — reset task to \`status:new\` (agent cleared, attempts reset)."
       ;;
     assign)
       local agent
@@ -1054,7 +1054,7 @@ process_owner_comment() {
             "last_error=NULL" \
             "$advance_ts"
           append_history "$task_id" "routed" "owner command: /assign $agent"
-          _owner_cmd_ack "✅ Applied `/assign ${agent}` — set agent and moved task to `status:routed`."
+          _owner_cmd_ack "✅ Applied \`/assign ${agent}\` — set agent and moved task to \`status:routed\`."
           ;;
         *)
           db_task_update "$task_id" "$advance_ts"
@@ -1071,7 +1071,7 @@ process_owner_comment() {
         "last_error=NULL" \
         "$advance_ts"
       append_history "$task_id" "new" "owner command: /unblock"
-      _owner_cmd_ack "✅ Applied `/unblock` — reset task to `status:new`."
+      _owner_cmd_ack "✅ Applied \`/unblock\` — reset task to \`status:new\`."
       ;;
     close)
       db_task_update "$task_id" \
@@ -1082,7 +1082,7 @@ process_owner_comment() {
         "$advance_ts"
       gh_api "repos/${repo}/issues/${task_id}" -X PATCH -f state=closed >/dev/null 2>&1 || true
       append_history "$task_id" "done" "owner command: /close"
-      _owner_cmd_ack "✅ Applied `/close` — marked `status:done` and closed the issue."
+      _owner_cmd_ack "✅ Applied \`/close\` — marked \`status:done\` and closed the issue."
       ;;
     context)
       local ctx
@@ -1092,7 +1092,7 @@ process_owner_comment() {
       fi
       if [ -z "$ctx" ]; then
         db_task_update "$task_id" "$advance_ts"
-        _owner_cmd_ack "❌ Missing text for `/context`. Usage: `/context <text>` (or put text on following lines)."
+        _owner_cmd_ack "❌ Missing text for \`/context\`. Usage: \`/context <text>\` (or put text on following lines)."
       else
         local snip
         snip=$(printf '%s' "$ctx" | tr '\r\n' '  ' | head -c 200)
@@ -1103,7 +1103,7 @@ process_owner_comment() {
           "last_error=$snip" \
           "$advance_ts"
         append_history "$task_id" "routed" "owner command: /context"
-        _owner_cmd_ack "✅ Applied `/context` — appended text to task context and moved task to `status:routed`."
+        _owner_cmd_ack "✅ Applied \`/context\` — appended text to task context and moved task to \`status:routed\`."
       fi
       ;;
     priority)
@@ -1135,11 +1135,11 @@ process_owner_comment() {
       ;;
     help)
       db_task_update "$task_id" "$advance_ts"
-      _owner_cmd_ack "Supported commands:\n\n- `/retry`\n- `/assign claude|codex|opencode`\n- `/unblock`\n- `/close`\n- `/context <text>`\n- `/priority low|medium|high`"
+      _owner_cmd_ack "Supported commands:\n\n- \`/retry\`\n- \`/assign claude|codex|opencode\`\n- \`/unblock\`\n- \`/close\`\n- \`/context <text>\`\n- \`/priority low|medium|high\`"
       ;;
     *)
       db_task_update "$task_id" "$advance_ts"
-      _owner_cmd_ack "❌ Unknown command: `/${cmd}`. Use `/help` for supported commands."
+      _owner_cmd_ack "❌ Unknown command: \`/${cmd}\`. Use \`/help\` for supported commands."
       ;;
   esac
 }
