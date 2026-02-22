@@ -713,6 +713,9 @@ SH
   run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
 
+  run yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
   # Task agent is codex → review agent should be claude (opposite)
   run tdb_set "$TASK2_ID" agent "codex"
   [ "$status" -eq 0 ]

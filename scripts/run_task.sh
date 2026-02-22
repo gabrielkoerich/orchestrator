@@ -1260,77 +1260,73 @@ if [ "$AGENT_STATUS" = "in_review" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ] && [
   export GIT_DIFF PR_NUMBER
   GIT_DIFF=$(cd "$PROJECT_DIR" && gh pr diff "$PR_NUMBER" 2>/dev/null | head -500 || true)
 
-	  REVIEW_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/review.md")
+  REVIEW_PROMPT=$(render_template "$SCRIPT_DIR/../prompts/review.md")
 
-	  log_err "[run] task=$TASK_ID starting review by $REVIEW_AGENT for PR #$PR_NUMBER"
+  log_err "[run] task=$TASK_ID starting review by $REVIEW_AGENT for PR #$PR_NUMBER"
 
-	  run_review_agent_once() {
-	    local agent="$1" model="$2" prompt="$3"
-	    local response status
-	    response=""
-	    status=0
-	    case "$agent" in
-	      codex)
-	        response=$(run_with_timeout codex ${model:+--model "$model"} --print "$prompt") || status=$?
-	        ;;
-	      claude)
-	        response=$(run_with_timeout claude ${model:+--model "$model"} --print "$prompt") || status=$?
-	        ;;
-	      opencode)
-	        response=$(run_with_timeout opencode ${model:+--model "$model"} --print "$prompt") || status=$?
-	        ;;
-	      *)
-	        log_err "[run] task=$TASK_ID unknown review agent: $agent"
-	        status=1
-	        ;;
-	    esac
+  run_review_agent_once() {
+    local agent="$1" model="$2" prompt="$3"
+    local response _rra_status
+    response=""
+    _rra_status=0
+    case "$agent" in
+      codex)
+        response=$(run_with_timeout codex ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
+        ;;
+      claude)
+        response=$(run_with_timeout claude ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
+        ;;
+      opencode)
+        response=$(run_with_timeout opencode ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
+        ;;
+      *)
+        log_err "[run] task=$TASK_ID unknown review agent: $agent"
+        _rra_status=1
+        ;;
+    esac
 
-	    if [ "$status" -eq 0 ]; then
-	      if ! printf '%s' "$response" | jq -e . >/dev/null 2>&1; then
-	        log_err "[run] task=$TASK_ID review agent $agent returned invalid JSON"
-	        status=2
-	      fi
-	    fi
+    if [ "$_rra_status" -eq 0 ]; then
+      if ! printf '%s' "$response" | jq -e . >/dev/null 2>&1; then
+        log_err "[run] task=$TASK_ID review agent $agent returned invalid JSON"
+        _rra_status=2
+      fi
+    fi
 
-	    REVIEW_RESPONSE="$response"
-	    return "$status"
-	  }
+    REVIEW_RESPONSE="$response"
+    return "$_rra_status"
+  }
 
-	  REVIEW_MODEL=$(model_for_complexity "$REVIEW_AGENT" "review")
-	  REVIEW_RESPONSE=""
-	  REVIEW_STATUS=0
-	  if ! run_review_agent_once "$REVIEW_AGENT" "$REVIEW_MODEL" "$REVIEW_PROMPT"; then
-	    REVIEW_STATUS=$?
-	  fi
+  REVIEW_MODEL=$(model_for_complexity "$REVIEW_AGENT" "review")
+  REVIEW_RESPONSE=""
+  REVIEW_STATUS=0
+  run_review_agent_once "$REVIEW_AGENT" "$REVIEW_MODEL" "$REVIEW_PROMPT" || REVIEW_STATUS=$?
 
-	  if [ "$REVIEW_STATUS" -ne 0 ]; then
-	    PRIMARY_REVIEW_AGENT="$REVIEW_AGENT"
-	    PRIMARY_REVIEW_STATUS="$REVIEW_STATUS"
+  if [ "$REVIEW_STATUS" -ne 0 ]; then
+    PRIMARY_REVIEW_AGENT="$REVIEW_AGENT"
+    PRIMARY_REVIEW_STATUS="$REVIEW_STATUS"
 
-	    FALLBACK_REVIEWER=$(opposite_agent "$PRIMARY_REVIEW_AGENT")
-	    if [ -n "$FALLBACK_REVIEWER" ] && [ "$FALLBACK_REVIEWER" != "$PRIMARY_REVIEW_AGENT" ]; then
-	      log_err "[run] task=$TASK_ID review by $PRIMARY_REVIEW_AGENT failed (exit=$PRIMARY_REVIEW_STATUS) — retrying once with $FALLBACK_REVIEWER"
-	      REVIEW_AGENT="$FALLBACK_REVIEWER"
-	      REVIEW_MODEL=$(model_for_complexity "$REVIEW_AGENT" "review")
-	      REVIEW_RESPONSE=""
-	      REVIEW_STATUS=0
-	      if ! run_review_agent_once "$REVIEW_AGENT" "$REVIEW_MODEL" "$REVIEW_PROMPT"; then
-	        REVIEW_STATUS=$?
-	      fi
-	    fi
+    FALLBACK_REVIEWER=$(opposite_agent "$PRIMARY_REVIEW_AGENT")
+    if [ -n "$FALLBACK_REVIEWER" ] && [ "$FALLBACK_REVIEWER" != "$PRIMARY_REVIEW_AGENT" ]; then
+      log_err "[run] task=$TASK_ID review by $PRIMARY_REVIEW_AGENT failed (exit=$PRIMARY_REVIEW_STATUS) — retrying once with $FALLBACK_REVIEWER"
+      REVIEW_AGENT="$FALLBACK_REVIEWER"
+      REVIEW_MODEL=$(model_for_complexity "$REVIEW_AGENT" "review")
+      REVIEW_RESPONSE=""
+      REVIEW_STATUS=0
+      run_review_agent_once "$REVIEW_AGENT" "$REVIEW_MODEL" "$REVIEW_PROMPT" || REVIEW_STATUS=$?
+    fi
 
-	    if [ "$REVIEW_STATUS" -ne 0 ]; then
-	      if [ -n "${FALLBACK_REVIEWER:-}" ] && [ "$FALLBACK_REVIEWER" != "$PRIMARY_REVIEW_AGENT" ]; then
-	        mark_needs_review "$TASK_ID" "$ATTEMPTS" "review agent failed (primary=$PRIMARY_REVIEW_AGENT exit=$PRIMARY_REVIEW_STATUS, fallback=$FALLBACK_REVIEWER exit=$REVIEW_STATUS)"
-	      else
-	        mark_needs_review "$TASK_ID" "$ATTEMPTS" "review agent failed (agent=$PRIMARY_REVIEW_AGENT exit=$PRIMARY_REVIEW_STATUS)"
-	      fi
-	      exit 0
-	    fi
-	  fi
+    if [ "$REVIEW_STATUS" -ne 0 ]; then
+      if [ -n "${FALLBACK_REVIEWER:-}" ] && [ "$FALLBACK_REVIEWER" != "$PRIMARY_REVIEW_AGENT" ]; then
+        mark_needs_review "$TASK_ID" "$ATTEMPTS" "review agent failed (primary=$PRIMARY_REVIEW_AGENT exit=$PRIMARY_REVIEW_STATUS, fallback=$FALLBACK_REVIEWER exit=$REVIEW_STATUS)"
+      else
+        mark_needs_review "$TASK_ID" "$ATTEMPTS" "review agent failed (agent=$PRIMARY_REVIEW_AGENT exit=$PRIMARY_REVIEW_STATUS)"
+      fi
+      exit 0
+    fi
+  fi
 
-	  REVIEW_DECISION=$(printf '%s' "$REVIEW_RESPONSE" | jq -r '.decision // ""')
-	  REVIEW_NOTES_VAL=$(printf '%s' "$REVIEW_RESPONSE" | jq -r '.notes // ""')
+  REVIEW_DECISION=$(printf '%s' "$REVIEW_RESPONSE" | jq -r '.decision // ""')
+  REVIEW_NOTES_VAL=$(printf '%s' "$REVIEW_RESPONSE" | jq -r '.notes // ""')
 
   if [ "$REVIEW_DECISION" = "approve" ]; then
     (cd "$PROJECT_DIR" && gh pr review "$PR_NUMBER" --approve --body "${REVIEW_NOTES_VAL:-Approved by $REVIEW_AGENT review agent}" 2>/dev/null) || true
