@@ -28,6 +28,13 @@ bats tests/orchestrator.bats   # main test file
 # bats tests                  # run all tests
 ```
 
+## Shell scripting & CI linting
+
+CI runs `shellcheck` and `semgrep-and-secrets` on `scripts/*.sh`.
+
+- Prefer `$(...)` over backticks for command substitution.
+- If you need to include *literal* backticks in user-facing strings (help/ack messages), avoid putting them in a double-quoted shell string (they will be command-substituted). Use single quotes, a quoted heredoc, or `printf '%s'`.
+
 ## Commit message conventions
 
 Use Conventional Commits:
@@ -48,4 +55,3 @@ git checkout -b my-branch origin/main
 git commit -m "docs: add contributing guide"
 git push -u origin my-branch
 ```
-
