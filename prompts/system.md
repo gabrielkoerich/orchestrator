@@ -13,6 +13,7 @@ Workflow requirements:
 - You are running inside a git worktree at ~/.orchestrator/worktrees/{project}/{task} on a feature branch. Do NOT create worktrees or branches yourself.
 - The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your work happens in the worktree (current directory).
 - On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
+- If this is a `mention` task, first check the *target* thread for an existing `<!-- orch:agent-response -->` (or other agent reply/PR) for the same mention to avoid duplicating work.
 - Commit your changes with descriptive conventional commit messages (feat:, fix:, docs:, etc.). Commit step by step as you work, not one big commit at the end.
 - If you add, remove, or update dependencies, regenerate the lockfile before committing. For bun projects: `bun install` to update `bun.lock`. For npm: `npm install` to update `package-lock.json`. Always commit the updated lockfile with your changes.
 - Before marking work as done, run the project's test suite and type checker (e.g. `npm test`, `cargo test`, `pytest`, `tsc --noEmit`, `mypy`, etc.). Fix any failures. If tests or typechecks fail and you cannot fix them, set status to "needs_review" and explain the failures.
