@@ -161,8 +161,20 @@ main() {
   [ -n "$repo" ] && [ "$repo" != "null" ] || return 0
 
   local repo_key mentions_dir
-  repo_key=$(printf '%s' "$repo" | tr '/:' '__')
   mentions_dir="${ORCH_HOME}/.orchestrator/mentions"
+  # NOTE: `tr` can't replace a single char with two, so use a real mapping to match docs:
+  # owner/repo -> owner__repo (also sanitize ':' for ssh-style remotes).
+  local repo_key_v2 repo_key_v1
+  repo_key_v2=$(printf '%s' "$repo" | sed -E 's#[:/]+#__#g')
+  repo_key_v1=$(printf '%s' "$repo" | tr '/:' '__') # legacy: maps to single '_' per separator
+
+  # Backward-compat: if an existing DB file is present under the legacy key, keep using it
+  # to avoid re-processing old mentions on upgrade.
+  if [ -f "${mentions_dir}/${repo_key_v1}.json" ] && [ ! -f "${mentions_dir}/${repo_key_v2}.json" ]; then
+    repo_key="$repo_key_v1"
+  else
+    repo_key="$repo_key_v2"
+  fi
   MENTIONS_DB_PATH="${mentions_dir}/${repo_key}.json"
   MENTIONS_LOCK_DIR="${mentions_dir}/${repo_key}.lock"
 

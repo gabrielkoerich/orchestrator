@@ -2030,6 +2030,39 @@ SH
   [[ "$output" == *"mention handled"* ]]
 }
 
+@test "@orchestrator mention uses double-underscore repo_key for new state files" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="hey @orchestrator please create state"
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  [ -f "${ORCH_HOME}/.orchestrator/mentions/mock__repo.json" ]
+}
+
+@test "@orchestrator mention honors legacy single-underscore repo_key state files" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="hey @orchestrator should be pre-deduped"
+  [ "$status" -eq 0 ]
+
+  COMMENT_ID=$(jq -r --arg n "${INIT_TASK_ID}" '(.comments[$n] // []) | .[-1].id // empty' "$GH_MOCK_STATE")
+  [ -n "$COMMENT_ID" ]
+
+  mkdir -p "${ORCH_HOME}/.orchestrator/mentions"
+  jq -nc \
+    --arg cid "$COMMENT_ID" \
+    --argjson inum "$INIT_TASK_ID" \
+    '{"since":"1970-01-01T00:00:00Z","processed":{($cid):{task_id:999,issue_number:$inum,created_at:"",comment_url:""}}}' \
+    > "${ORCH_HOME}/.orchestrator/mentions/mock_repo.json"
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  # No new mention task should be created because legacy state already has the comment_id.
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
 @test "@orchestrator mention is idempotent across multiple project configs for the same repo" {
   # Simulate two distinct projects (with project configs) polling the same repo.
   PROJ1="${TMP_DIR}/proj1"
