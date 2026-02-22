@@ -27,6 +27,12 @@ bats tests/orchestrator.bats            # run specific file
 
 All tests mock external tools (`gh`, `codex`, `claude`) to prevent real API calls. The `gh` mock (`tests/gh_mock.sh`) simulates GitHub's REST and GraphQL APIs using a local JSON file for state.
 
+## ShellCheck / security audit
+
+CI runs `./bin/security-audit --strict`, which includes ShellCheck (`shellcheck -S error`) across shell-like scripts.
+
+Bash treats backticks (`` `like this` ``) as command substitution inside double-quoted strings. If you want to print markdown that contains backticks (for example in CLI acknowledgements or issue comments), prefer single quotes, `printf`, or `$'...'` so the backticks are treated as literal characters (and ShellCheck won’t fail with parse errors like `SC1072` / `SC1073`).
+
 ## Release Pipeline
 
 1. Push to `main` → CI runs tests
