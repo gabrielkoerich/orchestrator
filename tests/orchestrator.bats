@@ -2327,6 +2327,92 @@ YAML
   [ "$output" -eq 1 ]
 }
 
+@test "@orchestrator mention on closed issue is skipped" {
+  # Create a comment on the init issue, then close it
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="@orchestrator please help"
+  [ "$status" -eq 0 ]
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}" -X PATCH -f state=closed
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  # No new task should be created since the issue is closed
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
+@test "@orchestrator mention on closed issue with done task does not re-trigger" {
+  # Comment on open issue — creates a task
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="@orchestrator do something"
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+
+  MENTION_TASK_ID=$(_task_id_by_title "Respond to @orchestrator mention in #${INIT_TASK_ID}")
+  [ -n "$MENTION_TASK_ID" ]
+
+  # Simulate the mention task completing
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    db_store_agent_response '$MENTION_TASK_ID' done 'handled' '' false '' 1 0 0 '' ''
+  "
+  [ "$status" -eq 0 ]
+
+  # Close the issue
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}" -X PATCH -f state=closed
+  [ "$status" -eq 0 ]
+
+  # Second comment on the now-closed issue
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="@orchestrator actually do more"
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  # No new task should be created — prior task is done but issue is closed
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+}
+
+@test "@orchestrator mention on closed issue advances since so comments are not re-fetched" {
+  # Create a comment and close the issue
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="@orchestrator help"
+  [ "$status" -eq 0 ]
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}" -X PATCH -f state=closed
+  [ "$status" -eq 0 ]
+
+  # First poll — no task created, but since should advance past this comment
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  repo_key=$(printf 'mock/repo' | tr '/:' '__')
+  mentions_db="${ORCH_HOME}/.orchestrator/mentions/${repo_key}.json"
+  since_before=$(jq -r '.since' "$mentions_db")
+
+  # Second poll — should not re-fetch or re-process the same comment
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  since_after=$(jq -r '.since' "$mentions_db")
+
+  # since should have advanced (not stuck at the initial value)
+  [ "$since_after" != "1970-01-01T00:00:00Z" ]
+  [ "$since_before" = "$since_after" ]
+
+  # Still no new task
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
 @test "create_task_entry includes last_comment_hash field" {
   NOW="2026-01-01T00:00:00Z"
   export NOW PROJECT_DIR="$TMP_DIR"
