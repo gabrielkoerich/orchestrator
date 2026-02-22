@@ -2030,6 +2030,51 @@ SH
   [[ "$output" == *"mention handled"* ]]
 }
 
+@test "@orchestrator mention is idempotent across multiple project configs for the same repo" {
+  # Simulate two distinct projects (with project configs) polling the same repo.
+  PROJ1="${TMP_DIR}/proj1"
+  PROJ2="${TMP_DIR}/proj2"
+  mkdir -p "$PROJ1" "$PROJ2"
+
+  cat > "${PROJ1}/.orchestrator.yml" <<'YAML'
+backend: github
+gh:
+  repo: "mock/repo"
+YAML
+
+  cat > "${PROJ2}/.orchestrator.yml" <<'YAML'
+backend: github
+gh:
+  repo: "mock/repo"
+YAML
+
+  # Create a mention comment on the init issue
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body="hey @orchestrator please take a look"
+  [ "$status" -eq 0 ]
+
+  # First project poll creates the mention task.
+  run bash -c "
+    unset STATE_DIR CONFIG_PATH
+    export ORCH_HOME='${ORCH_HOME}' ORCH_BACKEND='github' GH_MOCK_STATE='${GH_MOCK_STATE}'
+    export PROJECT_DIR='${PROJ1}'
+    gh_mentions.sh
+  "
+  [ "$status" -eq 0 ]
+
+  # Second project poll should not create a duplicate task for the same comment.
+  run bash -c "
+    unset STATE_DIR CONFIG_PATH
+    export ORCH_HOME='${ORCH_HOME}' ORCH_BACKEND='github' GH_MOCK_STATE='${GH_MOCK_STATE}'
+    export PROJECT_DIR='${PROJ2}'
+    gh_mentions.sh
+  "
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+}
+
 @test "@orchestrator mention inside blockquote is ignored" {
   run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'> @orchestrator please do not trigger\\n\\nthanks'
   [ "$status" -eq 0 ]
