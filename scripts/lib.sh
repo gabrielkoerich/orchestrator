@@ -1092,7 +1092,7 @@ process_owner_comment() {
       fi
       if [ -z "$ctx" ]; then
         db_task_update "$task_id" "$advance_ts"
-        _owner_cmd_ack "❌ Missing text for `/context`. Usage: `/context <text>` (or put text on following lines)."
+        _owner_cmd_ack "❌ Missing text for \`/context\`. Usage: \`/context <text>\` (or put text on following lines)."
       else
         append_task_context "$task_id" "### Owner context (${login:-owner} ${created_at})"$'\n'"${ctx}"$'\n---\n'
         db_task_update "$task_id" \
@@ -1140,7 +1140,7 @@ process_owner_comment() {
       ;;
     *)
       db_task_update "$task_id" "$advance_ts"
-      _owner_cmd_ack "❌ Unknown command: `/${cmd}`. Use `/help` for supported commands."
+      _owner_cmd_ack "❌ Unknown command: \`/${cmd}\`. Use \`/help\` for supported commands."
       ;;
   esac
 }
