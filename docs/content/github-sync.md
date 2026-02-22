@@ -53,6 +53,19 @@ When an agent completes a task, the orchestrator posts a structured comment:
 - **Collapsed sections**: stderr output and full prompt (with hash)
 - **Content-hash dedup**: identical comments not re-posted
 
+## GitHub Mentions
+
+When someone mentions `@orchestrator` in an issue/PR comment, the service can:
+
+1. Create a new task issue capturing the mention context
+2. Post an acknowledgement comment in the original thread
+3. Mirror the structured agent result comment back to the originating thread on completion
+
+Implementation details:
+
+- Poller: `scripts/gh_mentions.sh` (invoked by `scripts/serve.sh`)
+- Dedup state: `$ORCH_HOME/.orchestrator/mentions/<repo>.json` (shared across projects to prevent duplicate tasks)
+
 ### Labels
 
 - `status:<status>` — task status (`new`, `routed`, `in_progress`, `done`, `needs_review`, `blocked`)
