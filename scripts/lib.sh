@@ -345,6 +345,64 @@ available_agents() {
   echo "$agents"
 }
 
+is_usage_limit_error() {
+  local text="${1:-}"
+  [ -n "$text" ] || return 1
+  # Match AI provider rate/quota errors. Patterns are intentionally specific to
+  # avoid false positives from generic network errors (e.g. 503 Service Unavailable,
+  # SSH timeouts). "service overloaded" is Anthropic-specific. "service unavailable"
+  # and bare "temporarily unavailable" are omitted — too common in unrelated errors.
+  printf '%s' "$text" | rg -qi '(?:\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|\bquota\b|insufficient[_ -]?quota|exceeded[_ -]?quota|limit (?:reached|exceeded)|overloaded[_ -]?error|service overloaded)'
+}
+
+# Redact common API key/token patterns before publishing text to GitHub comments.
+redact_snippet() {
+  printf '%s' "${1:-}" \
+    | sed -E 's/(sk|pk)-[A-Za-z0-9_-]{10,}/[REDACTED]/g' \
+    | sed -E 's/Bearer [A-Za-z0-9._~+/=-]{8,}/Bearer [REDACTED]/g' \
+    | sed -E 's/token=[A-Za-z0-9._~+%=-]{8,}/token=[REDACTED]/g'
+}
+
+# Pick a fallback agent from the locally available agents, rotating after the
+# current agent and skipping any agents present in exclude_csv (comma-separated).
+# Prints the chosen agent or nothing if none available.
+pick_fallback_agent() {
+  local current="${1:-}"
+  local exclude_csv="${2:-}"
+  local agents
+  agents=$(available_agents)
+  [ -n "$agents" ] || return 1
+
+  local list=()
+  IFS=',' read -ra list <<< "$agents"
+
+  local n="${#list[@]}"
+  # Default start so that when current is not found we begin from list[0].
+  local start=$(( n - 1 ))
+  for i in "${!list[@]}"; do
+    if [ "${list[$i]}" = "$current" ]; then
+      start="$i"
+      break
+    fi
+  done
+
+  local offset idx candidate
+  for offset in $(seq 1 "$n"); do
+    idx=$(((start + offset) % n))
+    candidate="${list[$idx]}"
+    [ -n "$candidate" ] || continue
+    if [ -n "$current" ] && [ "$candidate" = "$current" ]; then
+      continue
+    fi
+    if [ -n "$exclude_csv" ] && printf ',%s,' "$exclude_csv" | grep -qF ",${candidate},"; then
+      continue
+    fi
+    printf '%s' "$candidate"
+    return 0
+  done
+  return 1
+}
+
 opposite_agent() {
   local task_agent="${1:-}"
   local agents

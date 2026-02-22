@@ -19,6 +19,6 @@ if [ "$STATUS" = "new" ] || [ "$STATUS" = "routed" ] || [ "$STATUS" = "in_progre
   exit 0
 fi
 
-db_task_update "$TASK_ID" "status=new" "agent=NULL"
+db_task_update "$TASK_ID" "status=new" "agent=NULL" "limit_reroute_chain=NULL"
 append_history "$TASK_ID" "new" "retried from $STATUS"
 log "[retry] task=$TASK_ID reset from $STATUS to new"
