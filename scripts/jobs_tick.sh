@@ -98,16 +98,21 @@ for JOB_ID in $JOB_IDS; do
     fi
 
     job_log "[jobs] job=$JOB_ID running bash command"
+
+    # Set last_run BEFORE execution so commands that restart the service
+    # (e.g. brew upgrade && orchestrator restart) don't leave stale timestamps
+    # that trigger an infinite catch-up loop.
+    NOW=$(now_iso)
+    db_job_set "$JOB_ID" "last_run" "$NOW"
+
     BASH_RC=0
     BASH_OUTPUT=$(cd "${JOB_DIR:-.}" && bash -c "$JOB_CMD" 2>&1) || BASH_RC=$?
 
-    NOW=$(now_iso)
     if [ "$BASH_RC" -eq 0 ]; then
       BASH_STATUS="done"
     else
       BASH_STATUS="failed"
     fi
-    db_job_set "$JOB_ID" "last_run" "$NOW"
     db_job_set "$JOB_ID" "last_task_status" "$BASH_STATUS"
 
     job_log "[jobs] job=$JOB_ID bash exit=$BASH_RC status=$BASH_STATUS"
