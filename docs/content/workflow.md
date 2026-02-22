@@ -35,6 +35,7 @@ Expected outcome:
 
 - Read the mention body + any referenced issues/PRs
 - Reply back on the *target* issue with a concise status update and clear next steps
+- Avoid including `@orchestrator` in automated replies or agent summaries (use `orchestrator` without the `@`) to prevent mention-task feedback loops
 - If no code/docs changes are required, the task can be completed without opening a PR
 
 ## Task Lifecycle
