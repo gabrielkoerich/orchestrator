@@ -14,6 +14,7 @@
 //! Phase 2 approach: Rust owns the loop, `run_task.sh` still handles agent
 //! invocation, git workflow, and prompt building.
 
+pub mod jobs;
 mod runner;
 
 use crate::backends::github::GitHubBackend;
@@ -86,6 +87,12 @@ pub async fn serve() -> anyhow::Result<()> {
     // Task runner (delegates to run_task.sh)
     let runner = Arc::new(TaskRunner::new(repo));
 
+    // Jobs path
+    let orch_home = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".orchestrator");
+    let jobs_path = orch_home.join("jobs.yml");
+
     // Concurrency limiter
     let semaphore = Arc::new(Semaphore::new(config.max_parallel));
 
@@ -111,6 +118,7 @@ pub async fn serve() -> anyhow::Result<()> {
                     &runner,
                     &semaphore,
                     &config,
+                    &jobs_path,
                 ).await {
                     tracing::error!(?e, "tick failed");
                 }
@@ -154,6 +162,7 @@ async fn tick(
     runner: &Arc<TaskRunner>,
     semaphore: &Arc<Semaphore>,
     config: &EngineConfig,
+    jobs_path: &std::path::PathBuf,
 ) -> anyhow::Result<()> {
     // Phase 1: Check active tmux sessions for completions
     let session_snapshot = tmux.snapshot().await;
@@ -264,9 +273,13 @@ async fn tick(
     let blocked = backend.list_by_status(Status::Blocked).await?;
     for task in &blocked {
         // Check if all sub-issues are done
-        // For now, check if task has "blocked" label AND no open sub-issues
         // TODO: query sub-issues API to check children status
         let _ = task; // placeholder
+    }
+
+    // Phase 5: Check job schedules
+    if let Err(e) = jobs::tick(jobs_path, backend).await {
+        tracing::error!(?e, "job scheduler tick failed");
     }
 
     Ok(())
