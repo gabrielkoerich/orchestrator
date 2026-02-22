@@ -66,6 +66,24 @@ When an agent completes a task, the orchestrator posts a structured comment:
 
 Machine-specific fields (branch, worktree path, attempt count) are stored in `$STATE_DIR/tasks/{id}.json`. These are ephemeral and not synced.
 
+## GitHub Mentions (`@orchestrator`)
+
+When the service is running, it periodically polls for new GitHub issue/PR comments that contain an actionable `@orchestrator` mention (excluding fenced code blocks, blockquotes, and obvious quotes/inline-code references).
+
+When a mention is found, the orchestrator:
+
+- Creates a new task issue titled `Respond to @orchestrator mention in #<issue_number>` with the original comment embedded
+- Posts an acknowledgement comment on the originating issue/PR
+- Mirrors the agent's final response back to the originating thread when the task completes
+
+Implementation:
+
+- Poller: `scripts/gh_mentions.sh` (invoked by `scripts/serve.sh`)
+- Dedup state (repo-scoped): `$ORCH_HOME/.orchestrator/mentions/<repo_key>.json`
+- Lock (repo-scoped): `$ORCH_HOME/.orchestrator/mentions/<repo_key>.lock`
+
+`repo_key` is derived from `owner/repo` by replacing `/` (and `:`) with `__`.
+
 ## Backoff
 
 When GitHub rate limits or abuse detection triggers, the orchestrator sleeps and retries:
