@@ -39,10 +39,10 @@ pub fn get(key: &str) -> anyhow::Result<String> {
 
 /// Resolve a dot-separated key from a YAML file.
 fn resolve_key(path: &PathBuf, key: &str) -> anyhow::Result<String> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let root: serde_yaml::Value = serde_yaml::from_str(&content)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let root: serde_yaml::Value =
+        serde_yaml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
 
     let mut current = &root;
     for part in key.split('.') {
@@ -57,5 +57,69 @@ fn resolve_key(path: &PathBuf, key: &str) -> anyhow::Result<String> {
         serde_yaml::Value::Bool(b) => Ok(b.to_string()),
         serde_yaml::Value::Null => Ok(String::new()),
         _ => Ok(serde_yaml::to_string(current)?),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_yaml(dir: &std::path::Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn resolve_simple_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_yaml(dir.path(), "config.yml", "repo: owner/repo\n");
+        let val = resolve_key(&path, "repo").unwrap();
+        assert_eq!(val, "owner/repo");
+    }
+
+    #[test]
+    fn resolve_nested_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_yaml(
+            dir.path(),
+            "config.yml",
+            "agents:\n  claude:\n    model: opus\n",
+        );
+        let val = resolve_key(&path, "agents.claude.model").unwrap();
+        assert_eq!(val, "opus");
+    }
+
+    #[test]
+    fn resolve_boolean_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_yaml(dir.path(), "config.yml", "enabled: true\n");
+        let val = resolve_key(&path, "enabled").unwrap();
+        assert_eq!(val, "true");
+    }
+
+    #[test]
+    fn resolve_number_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_yaml(dir.path(), "config.yml", "timeout: 300\n");
+        let val = resolve_key(&path, "timeout").unwrap();
+        assert_eq!(val, "300");
+    }
+
+    #[test]
+    fn resolve_missing_key_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_yaml(dir.path(), "config.yml", "repo: owner/repo\n");
+        let result = resolve_key(&path, "missing.key");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_missing_file_errors() {
+        let path = PathBuf::from("/nonexistent/config.yml");
+        let result = resolve_key(&path, "repo");
+        assert!(result.is_err());
     }
 }

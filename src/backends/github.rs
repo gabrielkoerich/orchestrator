@@ -33,7 +33,10 @@ impl ExternalBackend for GitHubBackend {
         body: &str,
         labels: &[String],
     ) -> anyhow::Result<ExternalId> {
-        let issue = self.gh.create_issue(&self.repo, title, body, labels).await?;
+        let issue = self
+            .gh
+            .create_issue(&self.repo, title, body, labels)
+            .await?;
         Ok(ExternalId(issue.number.to_string()))
     }
 

@@ -89,3 +89,82 @@ CREATE INDEX IF NOT EXISTS idx_internal_tasks_status ON internal_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_internal_tasks_source ON internal_tasks(source);
 CREATE INDEX IF NOT EXISTS idx_jobs_enabled ON jobs(enabled);
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn open_memory_db() {
+        let db = Db::open_memory().unwrap();
+        db.migrate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrate_creates_tables() {
+        let db = Db::open_memory().unwrap();
+        db.migrate().await.unwrap();
+
+        let conn = db.conn().await;
+        // internal_tasks table should exist
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM internal_tasks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // jobs table should exist
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn insert_and_query_internal_task() {
+        let db = Db::open_memory().unwrap();
+        db.migrate().await.unwrap();
+
+        let conn = db.conn().await;
+        conn.execute(
+            "INSERT INTO internal_tasks (title, body, source) VALUES (?1, ?2, ?3)",
+            ["Test task", "Test body", "manual"],
+        )
+        .unwrap();
+
+        let title: String = conn
+            .query_row("SELECT title FROM internal_tasks WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(title, "Test task");
+    }
+
+    #[tokio::test]
+    async fn insert_and_query_job() {
+        let db = Db::open_memory().unwrap();
+        db.migrate().await.unwrap();
+
+        let conn = db.conn().await;
+        conn.execute(
+            "INSERT INTO jobs (id, schedule, type) VALUES (?1, ?2, ?3)",
+            ["morning-review", "0 8 * * *", "task"],
+        )
+        .unwrap();
+
+        let schedule: String = conn
+            .query_row(
+                "SELECT schedule FROM jobs WHERE id = 'morning-review'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(schedule, "0 8 * * *");
+    }
+
+    #[tokio::test]
+    async fn migrate_is_idempotent() {
+        let db = Db::open_memory().unwrap();
+        db.migrate().await.unwrap();
+        db.migrate().await.unwrap(); // should not error
+    }
+}

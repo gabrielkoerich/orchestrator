@@ -62,9 +62,11 @@ impl TmuxManager {
         let output = Command::new("tmux")
             .args([
                 "new-session",
-                "-d",           // detached
-                "-s", &name,    // session name
-                "-c", working_dir,
+                "-d", // detached
+                "-s",
+                &name, // session name
+                "-c",
+                working_dir,
                 command,
             ])
             .output()
@@ -207,8 +209,7 @@ impl TmuxManager {
                 sessions.push(Session {
                     name,
                     task_id,
-                    created_at: chrono::DateTime::from_timestamp(created_ts, 0)
-                        .unwrap_or_default(),
+                    created_at: chrono::DateTime::from_timestamp(created_ts, 0).unwrap_or_default(),
                     pane_pid,
                 });
             }

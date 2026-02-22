@@ -91,3 +91,56 @@ pub trait ExternalBackend: Send + Sync {
     /// Check if connected and authenticated.
     async fn health_check(&self) -> anyhow::Result<()>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_as_label() {
+        assert_eq!(Status::New.as_label(), "status:new");
+        assert_eq!(Status::Routed.as_label(), "status:routed");
+        assert_eq!(Status::InProgress.as_label(), "status:in_progress");
+        assert_eq!(Status::Done.as_label(), "status:done");
+        assert_eq!(Status::Blocked.as_label(), "status:blocked");
+        assert_eq!(Status::InReview.as_label(), "status:in_review");
+        assert_eq!(Status::NeedsReview.as_label(), "status:needs_review");
+    }
+
+    #[test]
+    fn status_serializes_snake_case() {
+        let json = serde_json::to_string(&Status::InProgress).unwrap();
+        assert_eq!(json, "\"in_progress\"");
+    }
+
+    #[test]
+    fn status_deserializes_snake_case() {
+        let status: Status = serde_json::from_str("\"needs_review\"").unwrap();
+        assert_eq!(status, Status::NeedsReview);
+    }
+
+    #[test]
+    fn external_id_clone() {
+        let id = ExternalId("42".to_string());
+        let cloned = id.clone();
+        assert_eq!(id.0, cloned.0);
+    }
+
+    #[test]
+    fn external_task_serializes() {
+        let task = ExternalTask {
+            id: ExternalId("1".to_string()),
+            title: "Test".to_string(),
+            body: "Body".to_string(),
+            state: "open".to_string(),
+            labels: vec!["status:new".to_string()],
+            author: "user".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            url: "https://github.com/test/test/issues/1".to_string(),
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(json.contains("\"title\":\"Test\""));
+        assert!(json.contains("status:new"));
+    }
+}

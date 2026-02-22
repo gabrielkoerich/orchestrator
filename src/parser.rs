@@ -29,8 +29,7 @@ pub fn parse_and_print(path: &str) -> anyhow::Result<()> {
             .context("reading stdin")?;
         buf
     } else {
-        std::fs::read_to_string(path)
-            .with_context(|| format!("reading {path}"))?
+        std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?
     };
 
     let response = parse(&content)?;
@@ -118,4 +117,94 @@ fn extract_string_array(val: Option<&serde_json::Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_direct_json() {
+        let input = r#"{"status":"done","summary":"Fixed bug","accomplished":["fixed it"],"remaining":[],"files":["src/main.rs"]}"#;
+        let resp = parse(input).unwrap();
+        assert_eq!(resp.status, "done");
+        assert_eq!(resp.summary, "Fixed bug");
+        assert_eq!(resp.accomplished, vec!["fixed it"]);
+        assert_eq!(resp.files, vec!["src/main.rs"]);
+        assert!(resp.error.is_none());
+    }
+
+    #[test]
+    fn parse_json_in_markdown_block() {
+        let input = r#"Here is the result:
+
+```json
+{"status":"in_progress","summary":"Working on it","accomplished":[],"remaining":["finish tests"],"files":[]}
+```
+
+Done.
+"#;
+        let resp = parse(input).unwrap();
+        assert_eq!(resp.status, "in_progress");
+        assert_eq!(resp.remaining, vec!["finish tests"]);
+    }
+
+    #[test]
+    fn parse_generic_json_with_different_field_names() {
+        let input = r#"{"result":"done","message":"All good","files":["a.rs","b.rs"]}"#;
+        let resp = parse(input).unwrap();
+        assert_eq!(resp.status, "done");
+        assert_eq!(resp.summary, "All good");
+        assert_eq!(resp.files, vec!["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn parse_with_error_field() {
+        let input = r#"{"status":"blocked","summary":"Cannot proceed","accomplished":[],"remaining":[],"files":[],"error":"missing dependency"}"#;
+        let resp = parse(input).unwrap();
+        assert_eq!(resp.status, "blocked");
+        assert_eq!(resp.error, Some("missing dependency".to_string()));
+    }
+
+    #[test]
+    fn parse_fallback_raw_text() {
+        let input = "This is just plain text output from the agent.";
+        let resp = parse(input).unwrap();
+        assert_eq!(resp.status, "done");
+        assert_eq!(resp.summary, input);
+        assert!(resp.accomplished.is_empty());
+    }
+
+    #[test]
+    fn extract_json_block_from_markdown() {
+        let text = "prefix\n```json\n{\"key\":\"value\"}\n```\nsuffix";
+        let block = extract_json_block(text).unwrap();
+        assert_eq!(block, "{\"key\":\"value\"}\n");
+    }
+
+    #[test]
+    fn extract_json_block_missing_returns_none() {
+        assert!(extract_json_block("no code block here").is_none());
+    }
+
+    #[test]
+    fn extract_string_array_from_json() {
+        let val: serde_json::Value = serde_json::json!(["a", "b", "c"]);
+        let result = extract_string_array(Some(&val));
+        assert_eq!(result, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn extract_string_array_none() {
+        let result = extract_string_array(None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_empty_object() {
+        let input = "{}";
+        let resp = parse(input).unwrap();
+        assert_eq!(resp.status, "done");
+        assert_eq!(resp.summary, "");
+    }
 }

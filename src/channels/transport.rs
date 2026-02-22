@@ -26,10 +26,10 @@
 //!                  │ Broadcast │  ← fans out output to all connected channels
 //!                  └───────────┘
 
+use super::{IncomingMessage, OutputChunk};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
-use super::{IncomingMessage, OutputChunk};
 
 /// A live connection between a channel thread and a tmux session.
 #[derive(Debug, Clone)]
@@ -65,13 +65,7 @@ impl Transport {
     }
 
     /// Bind a channel thread to a task's tmux session.
-    pub async fn bind(
-        &self,
-        task_id: &str,
-        tmux_session: &str,
-        channel: &str,
-        thread_id: &str,
-    ) {
+    pub async fn bind(&self, task_id: &str, tmux_session: &str, channel: &str, thread_id: &str) {
         let key = format!("{channel}:{thread_id}");
         let mut bindings = self.bindings.write().await;
         let binding = bindings.entry(task_id.to_string()).or_insert_with(|| {

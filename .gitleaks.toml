@@ -8,4 +8,5 @@ description = "Ignore test fixtures and prompt templates"
 paths = [
   '''^tests/''',
   '''^prompts/''',
+  '''^src/security\.rs$''',
 ]

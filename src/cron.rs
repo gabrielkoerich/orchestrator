@@ -69,3 +69,73 @@ fn parse_timestamp(s: &str) -> anyhow::Result<DateTime<Utc>> {
 }
 
 use chrono::Timelike;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_minute_matches_now() {
+        // "* * * * *" should always match the current minute
+        let result = check("* * * * *", None).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn impossible_schedule_does_not_match() {
+        // Feb 30 never exists
+        let result = check("0 0 30 2 *", None).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn since_mode_catches_recent_fire() {
+        // Every minute, since 5 minutes ago — should have fired
+        let five_min_ago = (Utc::now() - chrono::Duration::minutes(5))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        let result = check("* * * * *", Some(&five_min_ago)).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn since_mode_caps_at_24h() {
+        // Since 48 hours ago, but cap is 24h — should still work
+        let old = (Utc::now() - chrono::Duration::hours(48))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        let result = check("* * * * *", Some(&old)).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn invalid_expression_errors() {
+        let result = check("not a cron", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_since_timestamp_errors() {
+        let result = check("* * * * *", Some("not-a-date"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_rfc3339_timestamp() {
+        let dt = parse_timestamp("2026-02-22T10:30:00Z").unwrap();
+        assert_eq!(dt.hour(), 10);
+        assert_eq!(dt.minute(), 30);
+    }
+
+    #[test]
+    fn parse_naive_timestamp() {
+        let dt = parse_timestamp("2026-02-22T10:30:00").unwrap();
+        assert_eq!(dt.hour(), 10);
+    }
+
+    #[test]
+    fn parse_space_separated_timestamp() {
+        let dt = parse_timestamp("2026-02-22 10:30:00").unwrap();
+        assert_eq!(dt.hour(), 10);
+    }
+}

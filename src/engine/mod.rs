@@ -19,8 +19,8 @@ mod runner;
 
 use crate::backends::github::GitHubBackend;
 use crate::backends::{ExternalBackend, ExternalTask, Status};
-use crate::channels::ChannelRegistry;
 use crate::channels::transport::Transport;
+use crate::channels::ChannelRegistry;
 use crate::db::Db;
 use crate::tmux::TmuxManager;
 use runner::TaskRunner;
@@ -60,8 +60,7 @@ pub async fn serve() -> anyhow::Result<()> {
     let config = EngineConfig::default();
 
     // Load config
-    let repo = crate::config::get("repo")
-        .unwrap_or_else(|_| "owner/repo".to_string());
+    let repo = crate::config::get("repo").unwrap_or_else(|_| "owner/repo".to_string());
 
     // Initialize backend
     let backend: Arc<dyn ExternalBackend> = Arc::new(GitHubBackend::new(repo.clone()));
@@ -88,9 +87,7 @@ pub async fn serve() -> anyhow::Result<()> {
     let runner = Arc::new(TaskRunner::new(repo));
 
     // Jobs path
-    let orch_home = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".orchestrator");
+    let orch_home = dirs::home_dir().unwrap_or_default().join(".orchestrator");
     let jobs_path = orch_home.join("jobs.yml");
 
     // Concurrency limiter
@@ -142,7 +139,10 @@ pub async fn serve() -> anyhow::Result<()> {
     tracing::info!("draining active sessions...");
     let sessions = tmux.list_sessions().await?;
     if !sessions.is_empty() {
-        tracing::info!(count = sessions.len(), "active sessions will continue running");
+        tracing::info!(
+            count = sessions.len(),
+            "active sessions will continue running"
+        );
     }
 
     drop(transport);
@@ -196,14 +196,16 @@ async fn tick(
                     "recovering stuck task → new"
                 );
                 backend.update_status(&task.id, Status::New).await?;
-                backend.post_comment(
-                    &task.id,
-                    &format!(
-                        "[{}] recovered: stuck in_progress for {}m with no active session",
-                        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
-                        age.num_minutes()
-                    ),
-                ).await?;
+                backend
+                    .post_comment(
+                        &task.id,
+                        &format!(
+                            "[{}] recovered: stuck in_progress for {}m with no active session",
+                            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+                            age.num_minutes()
+                        ),
+                    )
+                    .await?;
             }
         }
     }
@@ -254,13 +256,15 @@ async fn tick(
                 Err(e) => {
                     tracing::error!(task_id, ?e, "task runner failed");
                     // Post error comment
-                    let _ = backend.post_comment(
-                        &crate::backends::ExternalId(task_id.clone()),
-                        &format!(
-                            "[{}] error: task runner failed: {e}",
-                            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
-                        ),
-                    ).await;
+                    let _ = backend
+                        .post_comment(
+                            &crate::backends::ExternalId(task_id.clone()),
+                            &format!(
+                                "[{}] error: task runner failed: {e}",
+                                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+                            ),
+                        )
+                        .await;
                 }
             }
 

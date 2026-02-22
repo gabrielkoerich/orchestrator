@@ -137,12 +137,9 @@ pub fn has_leaks(text: &str) -> bool {
 
 /// Check only high-confidence patterns (fewer false positives).
 pub fn has_high_confidence_leaks(text: &str) -> bool {
-    for (_line_num, line) in text.lines().enumerate() {
+    for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("//")
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("<!--")
-        {
+        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("<!--") {
             continue;
         }
 

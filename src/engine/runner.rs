@@ -33,14 +33,12 @@ impl TaskRunner {
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 // Try brew libexec first
-                let brew_path = PathBuf::from("/opt/homebrew/Cellar")
-                    .join("orchestrator");
+                let brew_path = PathBuf::from("/opt/homebrew/Cellar").join("orchestrator");
                 if brew_path.exists() {
                     // Find the latest version
                     if let Ok(entries) = std::fs::read_dir(&brew_path) {
-                        if let Some(latest) = entries
-                            .filter_map(|e| e.ok())
-                            .max_by_key(|e| e.file_name())
+                        if let Some(latest) =
+                            entries.filter_map(|e| e.ok()).max_by_key(|e| e.file_name())
                         {
                             return latest.path().join("libexec").join("scripts");
                         }
@@ -109,7 +107,8 @@ impl TaskRunner {
         // Check for bare clone
         let parts: Vec<&str> = self.repo.split('/').collect();
         if parts.len() == 2 {
-            let bare = self.orch_home
+            let bare = self
+                .orch_home
                 .join("projects")
                 .join(parts[0])
                 .join(format!("{}.git", parts[1]));

@@ -69,10 +69,10 @@ pub fn load_jobs(path: &PathBuf) -> anyhow::Result<Vec<Job>> {
     if !path.exists() {
         return Ok(vec![]);
     }
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let file: JobsFile = serde_yaml::from_str(&content)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let file: JobsFile =
+        serde_yaml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     Ok(file.jobs)
 }
 
@@ -82,16 +82,12 @@ pub fn save_jobs(path: &PathBuf, jobs: &[Job]) -> anyhow::Result<()> {
         jobs: jobs.to_vec(),
     };
     let content = serde_yaml::to_string(&file)?;
-    std::fs::write(path, content)
-        .with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
 /// Check all jobs and execute due ones.
-pub async fn tick(
-    jobs_path: &PathBuf,
-    backend: &Arc<dyn ExternalBackend>,
-) -> anyhow::Result<()> {
+pub async fn tick(jobs_path: &PathBuf, backend: &Arc<dyn ExternalBackend>) -> anyhow::Result<()> {
     let mut jobs = load_jobs(jobs_path)?;
     let mut changed = false;
     let now = chrono::Utc::now();
@@ -162,11 +158,7 @@ pub async fn tick(
                         .await
                     {
                         Ok(ext_id) => {
-                            tracing::info!(
-                                job_id = job.id,
-                                task_id = ext_id.0,
-                                "created task"
-                            );
+                            tracing::info!(job_id = job.id, task_id = ext_id.0, "created task");
                             job.active_task_id = Some(ext_id.0);
                             job.last_task_status = Some("new".to_string());
                         }
@@ -221,4 +213,150 @@ pub async fn tick(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.yml");
+        std::fs::write(&path, "jobs: []\n").unwrap();
+        let jobs = load_jobs(&path).unwrap();
+        assert!(jobs.is_empty());
+    }
+
+    #[test]
+    fn load_missing_file() {
+        let path = PathBuf::from("/nonexistent/jobs.yml");
+        let jobs = load_jobs(&path).unwrap();
+        assert!(jobs.is_empty());
+    }
+
+    #[test]
+    fn load_job_with_task_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.yml");
+        std::fs::write(
+            &path,
+            r#"jobs:
+  - id: morning
+    schedule: "0 8 * * *"
+    task:
+      title: Morning review
+      body: Do the review
+      labels: [maintenance]
+      agent: claude
+"#,
+        )
+        .unwrap();
+
+        let jobs = load_jobs(&path).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, "morning");
+        assert_eq!(jobs[0].schedule, "0 8 * * *");
+        assert_eq!(jobs[0].r#type, "task");
+        assert!(jobs[0].enabled);
+        let tmpl = jobs[0].task.as_ref().unwrap();
+        assert_eq!(tmpl.title, "Morning review");
+        assert_eq!(tmpl.agent, Some("claude".to_string()));
+    }
+
+    #[test]
+    fn load_bash_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.yml");
+        std::fs::write(
+            &path,
+            r#"jobs:
+  - id: cleanup
+    type: bash
+    schedule: "0 * * * *"
+    command: echo hello
+    dir: /tmp
+"#,
+        )
+        .unwrap();
+
+        let jobs = load_jobs(&path).unwrap();
+        assert_eq!(jobs[0].r#type, "bash");
+        assert_eq!(jobs[0].command, Some("echo hello".to_string()));
+        assert_eq!(jobs[0].dir, Some("/tmp".to_string()));
+    }
+
+    #[test]
+    fn save_and_reload_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.yml");
+
+        let jobs = vec![Job {
+            id: "test".to_string(),
+            r#type: "task".to_string(),
+            schedule: "0 9 * * 1".to_string(),
+            task: Some(TaskTemplate {
+                title: "Weekly review".to_string(),
+                body: "Do it".to_string(),
+                labels: vec!["review".to_string()],
+                agent: None,
+            }),
+            command: None,
+            dir: None,
+            enabled: true,
+            last_run: Some("2026-02-22T10:00:00Z".to_string()),
+            last_task_status: Some("done".to_string()),
+            active_task_id: None,
+        }];
+
+        save_jobs(&path, &jobs).unwrap();
+        let reloaded = load_jobs(&path).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].id, "test");
+        assert_eq!(
+            reloaded[0].last_run,
+            Some("2026-02-22T10:00:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn disabled_job_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.yml");
+        std::fs::write(
+            &path,
+            r#"jobs:
+  - id: disabled-job
+    schedule: "0 0 * * *"
+    enabled: false
+    task:
+      title: Never runs
+      body: ""
+"#,
+        )
+        .unwrap();
+
+        let jobs = load_jobs(&path).unwrap();
+        assert!(!jobs[0].enabled);
+    }
+
+    #[test]
+    fn default_type_is_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.yml");
+        std::fs::write(
+            &path,
+            r#"jobs:
+  - id: no-type
+    schedule: "0 0 * * *"
+    task:
+      title: Test
+      body: ""
+"#,
+        )
+        .unwrap();
+
+        let jobs = load_jobs(&path).unwrap();
+        assert_eq!(jobs[0].r#type, "task");
+    }
 }

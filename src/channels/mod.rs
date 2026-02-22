@@ -10,9 +10,9 @@
 //! a message came from a Telegram DM, a GitHub issue comment, or a
 //! Discord thread — it processes the same `IncomingMessage` type.
 
+pub mod discord;
 pub mod github;
 pub mod telegram;
-pub mod discord;
 pub mod tmux;
 pub mod transport;
 

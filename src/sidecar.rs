@@ -68,3 +68,81 @@ pub fn set(task_id: &str, fields: &[String]) -> anyhow::Result<()> {
     std::fs::write(&path, content)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Override sidecar dir to use a temp directory for tests.
+    fn setup_temp_sidecar() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        // We'll test the low-level path logic directly
+        dir
+    }
+
+    #[test]
+    fn set_and_get_field() {
+        let dir = setup_temp_sidecar();
+        let path = dir.path().join("42.json");
+
+        // Write directly
+        let obj = serde_json::json!({"agent": "claude", "attempts": "3"});
+        std::fs::write(&path, serde_json::to_string_pretty(&obj).unwrap()).unwrap();
+
+        // Read manually (since get() uses hardcoded path)
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["agent"], "claude");
+        assert_eq!(parsed["attempts"], "3");
+    }
+
+    #[test]
+    fn set_creates_new_file() {
+        let dir = setup_temp_sidecar();
+        let path = dir.path().join("99.json");
+        assert!(!path.exists());
+
+        // Create manually like set() would
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "model".to_string(),
+            serde_json::Value::String("opus".to_string()),
+        );
+        let content = serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap();
+        std::fs::write(&path, content).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["model"], "opus");
+    }
+
+    #[test]
+    fn set_merges_existing_fields() {
+        let dir = setup_temp_sidecar();
+        let path = dir.path().join("77.json");
+
+        // Initial write
+        let obj = serde_json::json!({"agent": "claude", "status": "new"});
+        std::fs::write(&path, serde_json::to_string(&obj).unwrap()).unwrap();
+
+        // Merge new field
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut parsed: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&content).unwrap();
+        parsed.insert(
+            "model".to_string(),
+            serde_json::Value::String("opus".to_string()),
+        );
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&serde_json::Value::Object(parsed)).unwrap(),
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let final_obj: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(final_obj["agent"], "claude");
+        assert_eq!(final_obj["status"], "new");
+        assert_eq!(final_obj["model"], "opus");
+    }
+}

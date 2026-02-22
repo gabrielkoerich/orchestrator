@@ -15,11 +15,7 @@ impl GhCli {
 
     /// Run `gh api` with args and return raw JSON bytes.
     async fn api(&self, args: &[&str]) -> anyhow::Result<Vec<u8>> {
-        let output = Command::new("gh")
-            .arg("api")
-            .args(args)
-            .output()
-            .await?;
+        let output = Command::new("gh").arg("api").args(args).output().await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -30,10 +26,7 @@ impl GhCli {
 
     /// Check `gh auth status`.
     pub async fn auth_status(&self) -> anyhow::Result<()> {
-        let output = Command::new("gh")
-            .args(["auth", "status"])
-            .output()
-            .await?;
+        let output = Command::new("gh").args(["auth", "status"]).output().await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("gh auth failed: {stderr}");
@@ -79,11 +72,7 @@ impl GhCli {
     }
 
     /// List issues filtered by a label.
-    pub async fn list_issues(
-        &self,
-        repo: &str,
-        label: &str,
-    ) -> anyhow::Result<Vec<GitHubIssue>> {
+    pub async fn list_issues(&self, repo: &str, label: &str) -> anyhow::Result<Vec<GitHubIssue>> {
         let endpoint = format!("repos/{repo}/issues");
         let labels_field = format!("labels={label}");
         let json = self
@@ -121,12 +110,7 @@ impl GhCli {
     }
 
     /// Remove a label from an issue.
-    pub async fn remove_label(
-        &self,
-        repo: &str,
-        number: &str,
-        label: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn remove_label(&self, repo: &str, number: &str, label: &str) -> anyhow::Result<()> {
         let encoded = urlencoding::encode(label);
         let endpoint = format!("repos/{repo}/issues/{number}/labels/{encoded}");
         let _ = self.api(&[&endpoint, "-X", "DELETE"]).await;
@@ -134,12 +118,7 @@ impl GhCli {
     }
 
     /// Add a comment to an issue.
-    pub async fn add_comment(
-        &self,
-        repo: &str,
-        number: &str,
-        body: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn add_comment(&self, repo: &str, number: &str, body: &str) -> anyhow::Result<()> {
         let endpoint = format!("repos/{repo}/issues/{number}/comments");
         let body_field = format!("body={body}");
         self.api(&[&endpoint, "-X", "POST", "-f", &body_field])
