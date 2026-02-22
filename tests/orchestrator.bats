@@ -2054,6 +2054,30 @@ SH
   [ "$output" -eq 1 ]
 }
 
+@test "@orchestrator mention inside double quotes is ignored" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'FYI I saw ("@orchestrator fix.") in another thread.'
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
+@test "@orchestrator mention inside inline code is ignored" {
+  run gh api "repos/mock/repo/issues/${INIT_TASK_ID}/comments" -f body=$'Example: `@orchestrator fix`'
+  [ "$status" -eq 0 ]
+
+  run gh_mentions.sh
+  [ "$status" -eq 0 ]
+
+  run tdb_count
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 1 ]
+}
+
 @test "create_task_entry includes last_comment_hash field" {
   NOW="2026-01-01T00:00:00Z"
   export NOW PROJECT_DIR="$TMP_DIR"

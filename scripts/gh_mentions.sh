@@ -90,6 +90,21 @@ mention_actionable() {
     /^[[:space:]]*>/ { next; }
     {
       line = $0
+
+      # Remove inline code and quoted substrings to reduce false positives from
+      # status updates that merely reference an @orchestrator mention.
+      # - Inline code: `...`
+      # - Double quotes: "..."
+      # - Single quotes: '...'
+      while (match(line, /`[^`]*`/)) {
+        line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
+      }
+      while (match(line, /"[^"]*"/)) {
+        line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
+      }
+      while (match(line, /\047[^\047]*\047/)) {
+        line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
+      }
       if (tolower(line) ~ /(^|[^a-z0-9_])@orchestrator([^a-z0-9_-]|$)/) { hit = 1; exit; }
     }
     END { exit(hit ? 0 : 1); }
