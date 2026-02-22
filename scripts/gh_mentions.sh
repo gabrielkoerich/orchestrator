@@ -196,6 +196,13 @@ main() {
     issue_number=$(printf '%s' "$issue_url" | sed -E 's#.*/issues/([0-9]+).*#\1#')
     [ -n "$issue_number" ] || continue
 
+    # Skip comments on closed issues — no point creating tasks for them
+    local _issue_state
+    _issue_state=$(gh_api "repos/${repo}/issues/${issue_number}" --cache 120s -q '.state' 2>/dev/null || true)
+    if [ "$_issue_state" = "closed" ]; then
+      continue
+    fi
+
     local seen_at
     seen_at="${updated_at:-$created_at}"
     if [ -n "$seen_at" ] && [ "$seen_at" \> "$max_seen" ]; then
