@@ -47,6 +47,13 @@ new → routed → in_progress → done → in_review
 - **blocked** — agent hit a blocker, crashed, or exceeded max attempts
 - **needs_review** — agent needs human help, or review agent requested changes
 
+## GitHub Mentions
+
+The orchestrator can also create tasks from GitHub issue/PR comment mentions.
+
+- If a comment includes an actionable `@orchestrator` mention, a new task is created with the `mention` label and a body that links back to the source comment.
+- To reduce false positives, `@orchestrator` is ignored when it only appears inside inline code/backticks or inside quotes.
+
 ## Delegation & Decomposition
 
 Complex tasks can be decomposed into subtasks:
