@@ -74,14 +74,17 @@ impl TaskRunner {
 
         tracing::info!(task_id, script = %script.display(), "spawning run_task.sh");
 
+        // Use Stdio::inherit() — run_task.sh handles its own output
+        // (GitHub comments, logging, git). Piped I/O would deadlock if the
+        // child writes more than the OS pipe buffer (~64KB) before we read.
         let mut child = Command::new("bash")
             .arg(&script)
             .arg(task_id)
             .env("ORCH_HOME", &self.orch_home)
             .env("GH_REPO", &self.repo)
             .env("PROJECT_DIR", self.project_dir()?)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .context("spawning run_task.sh")?;
 
@@ -99,48 +102,9 @@ impl TaskRunner {
             }
         };
 
-        // Collect output after process exits
-        let stdout = match child.stdout.take() {
-            Some(mut s) => {
-                let mut buf = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf)
-                    .await
-                    .ok();
-                buf
-            }
-            None => Vec::new(),
-        };
-        let stderr = match child.stderr.take() {
-            Some(mut s) => {
-                let mut buf = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf)
-                    .await
-                    .ok();
-                buf
-            }
-            None => Vec::new(),
-        };
-
-        let output = std::process::Output {
-            status,
-            stdout,
-            stderr,
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-
-            // Log the output for debugging
-            if !stdout.is_empty() {
-                tracing::debug!(task_id, stdout = %stdout, "run_task.sh stdout");
-            }
-            if !stderr.is_empty() {
-                tracing::warn!(task_id, stderr = %stderr, "run_task.sh stderr");
-            }
-
-            let code = output.status.code().unwrap_or(-1);
-            anyhow::bail!("run_task.sh exited with code {code}: {stderr}");
+        if !status.success() {
+            let code = status.code().unwrap_or(-1);
+            anyhow::bail!("run_task.sh exited with code {code}");
         }
 
         Ok(())

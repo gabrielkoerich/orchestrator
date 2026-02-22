@@ -40,7 +40,8 @@ impl Db {
     /// Open an in-memory database (for testing).
     pub fn open_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+        // WAL is a no-op for :memory: — only set busy_timeout
+        conn.execute_batch("PRAGMA busy_timeout=5000;")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
