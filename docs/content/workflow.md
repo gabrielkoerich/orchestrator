@@ -31,6 +31,11 @@ When someone comments `@orchestrator ...` on a GitHub issue/PR, the GitHub menti
 Respond to @orchestrator mention in #<N>
 ```
 
+Mention parsing notes (to reduce false positives):
+
+- Ignores `@orchestrator` inside fenced code blocks and markdown blockquotes
+- Ignores `@orchestrator` inside inline code/backticks and inside single/double quotes
+
 Expected outcome:
 
 - Read the mention body + any referenced issues/PRs
