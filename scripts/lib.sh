@@ -1094,13 +1094,13 @@ process_owner_comment() {
         db_task_update "$task_id" "$advance_ts"
         _owner_cmd_ack "❌ Missing text for `/context`. Usage: `/context <text>` (or put text on following lines)."
       else
-        local snip
-        snip=$(printf '%s' "$ctx" | tr '\r\n' '  ' | head -c 200)
         append_task_context "$task_id" "### Owner context (${login:-owner} ${created_at})"$'\n'"${ctx}"$'\n---\n'
         db_task_update "$task_id" \
           "status=routed" \
+          "attempts=0" \
           "needs_help=0" \
-          "last_error=$snip" \
+          "reason=NULL" \
+          "last_error=NULL" \
           "$advance_ts"
         append_history "$task_id" "routed" "owner command: /context"
         _owner_cmd_ack "✅ Applied `/context` — appended text to task context and moved task to `status:routed`."
@@ -1123,6 +1123,7 @@ process_owner_comment() {
             "attempts=0" \
             "needs_help=0" \
             "reason=NULL" \
+            "last_error=NULL" \
             "$advance_ts"
           append_history "$task_id" "routed" "owner command: /priority $complexity"
           _owner_cmd_ack "✅ Applied `/priority ${prio}` — set complexity to \`${complexity}\` and moved task to `status:routed`."
@@ -1135,7 +1136,7 @@ process_owner_comment() {
       ;;
     help)
       db_task_update "$task_id" "$advance_ts"
-      _owner_cmd_ack "Supported commands:\n\n- `/retry`\n- `/assign claude|codex|opencode`\n- `/unblock`\n- `/close`\n- `/context <text>`\n- `/priority low|medium|high`"
+      _owner_cmd_ack $'Supported commands:\n\n- `/retry`\n- `/assign claude|codex|opencode`\n- `/unblock`\n- `/close`\n- `/context <text>`\n- `/priority low|medium|high`\n- `/help`'
       ;;
     *)
       db_task_update "$task_id" "$advance_ts"
@@ -1152,6 +1153,20 @@ process_owner_feedback_for_task() {
   [ -n "$repo" ] || return 0
   [ -n "$task_id" ] || return 0
   [ -n "$owner_login" ] || return 0
+
+  # Avoid double-processing when multiple poll loops overlap.
+  local fb_lock="${LOCK_PATH}.owner_feedback.${task_id}"
+  local fb_lock_owned=false
+  if ! mkdir "$fb_lock" 2>/dev/null; then
+    if lock_is_stale "$fb_lock"; then
+      rmdir "$fb_lock" 2>/dev/null || true
+    fi
+    if ! mkdir "$fb_lock" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  fb_lock_owned=true
+  trap 'if [ "${fb_lock_owned:-false}" = true ]; then rmdir "$fb_lock" 2>/dev/null || true; fi' RETURN
 
   local since
   since=$(db_task_field "$task_id" "gh_last_feedback_at" 2>/dev/null || true)
