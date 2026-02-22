@@ -5159,12 +5159,36 @@ SH
   [ "$status" -eq 1 ]
 }
 
-@test "_gh_validate_label allows complexity and role as user labels" {
-  # complexity: and role: are NOT reserved prefixes — they are stored in sidecar only
+@test "_gh_validate_label accepts valid complexity labels" {
   run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'complexity:simple'"
   [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'complexity:medium'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'complexity:complex'"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_label rejects invalid complexity labels" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'complexity:easy'"
+  [ "$status" -eq 1 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'complexity:hard'"
+  [ "$status" -eq 1 ]
+}
+
+@test "_gh_validate_label accepts valid role labels" {
   run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'role:backend'"
   [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'role:frontend'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'role:security'"
+  [ "$status" -eq 0 ]
+}
+
+@test "_gh_validate_label rejects invalid role labels" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'role:wizard'"
+  [ "$status" -eq 1 ]
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && _gh_validate_label 'role:manager'"
+  [ "$status" -eq 1 ]
 }
 
 @test "_gh_validate_label allows any skill: and job: values" {

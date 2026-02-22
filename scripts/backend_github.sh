@@ -18,8 +18,10 @@ _GH_MODEL_PREFIX="model:"
 # Validation constants
 _GH_VALID_STATUSES="new routed in_progress done blocked in_review needs_review"
 _GH_VALID_AGENTS="claude codex opencode"
+_GH_VALID_COMPLEXITIES="simple medium complex"
+_GH_VALID_ROLES="general backend frontend docs devops security test"
 _GH_KNOWN_STANDALONE="plan scheduled blocked no-agent no-review has-error"
-_GH_RESERVED_PREFIXES="status: agent: model: skill: job:"
+_GH_RESERVED_PREFIXES="status: agent: model: complexity: role: skill: job:"
 
 # Model patterns per agent (prefix matching, for post-run diagnostics)
 _GH_CLAUDE_MODELS="haiku sonnet opus claude-"
@@ -242,6 +244,20 @@ _gh_validate_label() {
             [ "$v" = "$value" ] && return 0
           done
           log_err "[validate] invalid agent label: $label (allowed: $_GH_VALID_AGENTS)"
+          return 1
+          ;;
+        "complexity:")
+          for v in $_GH_VALID_COMPLEXITIES; do
+            [ "$v" = "$value" ] && return 0
+          done
+          log_err "[validate] invalid complexity label: $label (allowed: $_GH_VALID_COMPLEXITIES)"
+          return 1
+          ;;
+        "role:")
+          for v in $_GH_VALID_ROLES; do
+            [ "$v" = "$value" ] && return 0
+          done
+          log_err "[validate] invalid role label: $label (allowed: $_GH_VALID_ROLES)"
           return 1
           ;;
         "model:")
