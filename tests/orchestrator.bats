@@ -669,6 +669,9 @@ SH
   run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
   [ "$status" -eq 0 ]
 
+  run yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
   # Task agent is codex → review agent should be claude (opposite)
   run tdb_set "$TASK2_ID" agent "codex"
   [ "$status" -eq 0 ]
@@ -697,6 +700,59 @@ SH
   local rv_st; rv_st=$(cat "$GH_MOCK_STATE"); printf '%s' "$rv_st" | jq -c '.prs={"42":{"number":42,"state":"OPEN"}} | .pr_diff="+added line"' > "$GH_MOCK_STATE"
   run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
   [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" review_decision
+  [ "$status" -eq 0 ]
+  [ "$output" = "approve" ]
+}
+
+@test "run_task.sh retries review agent once with fallback before needs_review" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Review Retry" "Review retry body" "")
+  TASK2_ID=$(_task_id "$TASK_OUTPUT")
+
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  # Task agent is codex → review agent should be claude (opposite)
+  run tdb_set "$TASK2_ID" agent "codex"
+  [ "$status" -eq 0 ]
+
+  # Execution stub (codex) prints done JSON; review fallback (codex --print) prints approve JSON
+  CODEX_STUB="${TMP_DIR}/codex"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = "--print" ]; then
+    cat <<'JSON'
+{"decision":"approve","notes":"codex_fallback_marker"}
+JSON
+    exit 0
+  fi
+done
+
+cat <<'JSON'
+{"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
+JSON
+SH
+  chmod +x "$CODEX_STUB"
+
+  # Review stub (claude) fails non-zero on first attempt
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  # Add PR + diff to mock state for review agent
+  local rv_st; rv_st=$(cat "$GH_MOCK_STATE"); printf '%s' "$rv_st" | jq -c '.prs={"42":{"number":42,"state":"OPEN"}} | .pr_diff="+added line"' > "$GH_MOCK_STATE"
+
+  run env PATH="${TMP_DIR}:${PATH}" REVIEW_AGENT=claude CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
+  [ "$status" -eq 0 ]
+
+  run tdb_field "$TASK2_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "in_review" ]
 
   run tdb_field "$TASK2_ID" review_decision
   [ "$status" -eq 0 ]
