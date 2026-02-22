@@ -50,23 +50,27 @@ for JOB_ID in $JOB_IDS; do
   fi
 
   # Schedule matching with catch-up for missed runs during downtime
-  if [ -n "$LAST_RUN" ] && [ "$LAST_RUN" != "null" ]; then
-    # Prevent duplicate creation if tick runs multiple times in the same minute
-    LAST_RUN_MINUTE=$(printf '%s' "$LAST_RUN" | cut -c1-16)
-    NOW_MINUTE_CMP=$(date -u +"%Y-%m-%dT%H:%M")
-    if [ "$LAST_RUN_MINUTE" = "$NOW_MINUTE_CMP" ]; then
-      continue
-    fi
+  # If this is the first run (no last_run), synthesize a 24h lookback so catch-up can fire.
+  if [ -z "$LAST_RUN" ] || [ "$LAST_RUN" = "null" ]; then
+    LAST_RUN=$(
+      date -u -v-24H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+        || date -u -d '24 hours ago' +"%Y-%m-%dT%H:%M:%SZ"
+    )
+    job_log "[jobs] job=$JOB_ID first run, using 24h lookback for catch-up"
+  fi
 
-    if python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE"; then
-      : # Current minute matches — proceed to execution
-    elif python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE" --since "$LAST_RUN"; then
-      job_log "[jobs] job=$JOB_ID catch-up: missed run since $LAST_RUN"
-    else
-      continue
-    fi
-  elif ! python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE"; then
-    # No last_run and current minute doesn't match — skip
+  # Prevent duplicate creation if tick runs multiple times in the same minute
+  LAST_RUN_MINUTE=$(printf '%s' "$LAST_RUN" | cut -c1-16)
+  NOW_MINUTE_CMP=$(date -u +"%Y-%m-%dT%H:%M")
+  if [ "$LAST_RUN_MINUTE" = "$NOW_MINUTE_CMP" ]; then
+    continue
+  fi
+
+  if python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE"; then
+    : # Current minute matches — proceed to execution
+  elif python3 "${SCRIPT_DIR}/cron_match.py" "$SCHEDULE" --since "$LAST_RUN"; then
+    job_log "[jobs] job=$JOB_ID catch-up: missed run since $LAST_RUN"
+  else
     continue
   fi
 

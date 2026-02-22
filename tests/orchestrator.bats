@@ -1010,6 +1010,34 @@ SH
   [[ "$output" == *"max attempts"* ]]
 }
 
+@test "run_task.sh skips needs_review task without running agent" {
+  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Skip NR" "Should not be run" "")
+  SKIP_ID=$(_task_id "$TASK_OUTPUT")
+
+  # Mark task as needs_review
+  tdb_set "$SKIP_ID" status "needs_review"
+  tdb_set "$SKIP_ID" agent "codex"
+
+  CODEX_STUB="${TMP_DIR}/codex_nr_stub"
+  cat > "$CODEX_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "AGENT_WAS_CALLED" >&2
+exit 1
+SH
+  chmod +x "$CODEX_STUB"
+  cp "$CODEX_STUB" "${TMP_DIR}/codex"
+
+  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/run_task.sh" "$SKIP_ID"
+  [ "$status" -eq 0 ]
+
+  # Status must remain needs_review (not changed by agent)
+  run tdb_field "$SKIP_ID" status
+  [ "$output" = "needs_review" ]
+
+  # Agent must not have been called
+  [[ "$output" != *"AGENT_WAS_CALLED"* ]]
+}
+
 @test "init.sh accepts --repo flag for non-interactive mode" {
   INIT_DIR=$(mktemp -d)
   # Stub gh so init.sh doesn't make real API calls during auto-sync
@@ -2463,6 +2491,22 @@ JSON
 }
 
 # --- jobs_tick.sh catch-up ---
+
+@test "jobs_tick.sh catches up missed job when last_run is null" {
+  # Schedule for 3 hours ago; if last_run is null this should still fire via 24h catch-up.
+  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
+
+  _create_job "test-null-catchup" "Null Catch Up Job" "0 ${MISSED_HOUR} * * *" "task" "Missed job body" "test" "true" "null" "null"
+
+  run env JOBS_FILE="$JOBS_FILE" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  NULL_CATCHUP_ID=$(_task_id_by_title "Null Catch Up Job")
+  [ -n "$NULL_CATCHUP_ID" ]
+  run tdb_field "$NULL_CATCHUP_ID" status
+  [ "$status" -eq 0 ]
+  [ "$output" = "new" ]
+}
 
 @test "jobs_tick.sh catches up missed job after downtime" {
   # Create a job scheduled for a specific hour that has already passed today

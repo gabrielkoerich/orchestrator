@@ -16,6 +16,7 @@ All runtime configuration lives in `~/.orchestrator/config.yml`.
 | `workflow` | `enable_review_agent` | Run a [review agent](@/review-agent.md) after task completion | `false` |
 | `workflow` | `review_agent` | Fallback reviewer when opposite agent unavailable | `claude` |
 | `workflow` | `max_attempts` | Max attempts before marking task as blocked | `10` |
+| `workflow` | `agent_timeout_seconds` | Max time (seconds) per agent run. Increase for complex tasks. | `1800` |
 | `workflow` | `stuck_timeout` | Timeout (seconds) for detecting stuck in_progress tasks | `1800` |
 | `workflow` | `required_skills` | Skills always injected into agent prompts (marked `[REQUIRED]`) | `[]` |
 | `workflow` | `disallowed_tools` | Tool patterns blocked via `--disallowedTools` | `["Bash(rm *)","Bash(rm -*)"]` |

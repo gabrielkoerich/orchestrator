@@ -5,6 +5,7 @@ workflow:
   enable_review_agent: false
   review_agent: "claude"
   max_attempts: 10
+  agent_timeout_seconds: 1800  # Max time per agent run. Increase for complex tasks (default: 1800s).
 router:
   agent: "claude"
   model: "haiku"
