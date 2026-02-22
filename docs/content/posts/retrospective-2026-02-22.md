@@ -121,10 +121,73 @@ results summary on #158 for future readers.
 
 ---
 
-## Tomorrow's Morning Check-in Priorities
+## Tomorrow's Morning Check-in Priorities (from Morning Review)
 
 1. Verify PR #190 (slash commands) CI passes after ShellCheck fix and auto-merges
 2. Verify PR #191 (auto-reroute) auto-merges
 3. After both PRs merge: `brew upgrade orchestrator && brew services restart orchestrator`
 4. Check cleanup_worktrees no longer logs branch deletion failures
 5. Monitor mention task routing — opencode tasks have higher needs_review rate
+
+---
+
+## Evening Retrospective — 2026-02-22
+
+### Afternoon/Evening Activity
+
+#### Merged PRs
+- **#288** (11:51): `fix(cleanup): use git branch -D for squash-merged branches` — morning fix landed
+- **#300** (18:02): `docs(workflow): warn against @orchestrator in replies` — codex task #298
+
+#### Mention Task Wave (17:35–18:07)
+
+10 mention tasks processed. Results:
+
+| Task | Agent | Status | Notes |
+|------|-------|--------|-------|
+| 289 | codex | **in_progress** | 425k tokens, no useful output |
+| 291 | claude | done ✓ | "Junk — closed issue" in 63s |
+| 296 | opencode | **in_progress** | Mention on closed issue |
+| 297 | claude | **in_progress** | Mention on closed issue (unexpected) |
+| 298 | codex | done ✓ | Investigated, created PR #300 |
+| 299 | opencode | **in_progress** | Mention on closed issue |
+| 292–295 | — | **new** | Never ran (closed-issue fix deployed mid-flight) |
+
+### Root Cause: system.md Rule Too Strict
+
+`prompts/system.md` says:
+> "Do NOT mark status as `done` unless you have actually changed files and committed code. Research-only work is `in_progress`."
+
+When an agent posts "Junk — mention on closed issue" and returns, it follows this rule: no files changed → `in_progress`. The task is stuck forever. Claude (task 291) occasionally ignores the rule; codex and opencode follow it strictly.
+
+**Fix**: Issue #302 — refine the rule to allow `done` when a comment response has been posted.
+
+### Routing Issues
+
+Round-robin routing sends mention tasks to all agents equally. Codex used **425k input tokens** on a trivial closed-issue check. OpenCode consistently returns `in_progress` for these. Claude handles them in under 2 minutes.
+
+**Fix**: Issue #305 — route `mention` labeled tasks preferentially to claude.
+
+### Service Restarts Today
+
+7+ restarts: v0.51.9 → v0.51.10 → v0.53.2 → v0.53.3. The `auto-update` catch-up loop fired 4× during afternoon (v0.51.10 didn't have the `last_run before bash` fix). Resolved after v0.53.2 deployed.
+
+### Issues Filed This Evening
+
+| # | Title | Priority |
+|---|-------|----------|
+| #302 | Fix system.md "research-only" rule too strict for mention tasks | High |
+| #303 | Auto-close stale mention tasks for closed/archived issues | Medium |
+| #304 | Retry review agent once before marking needs_review | Medium |
+| #305 | Prefer claude for mention-response routing | Medium |
+| #306 | Mention dedup: permanently skip closed issues | Low |
+
+---
+
+## Tomorrow's Morning Priorities (Updated)
+
+1. **Implement #302** — fix `prompts/system.md` to allow `done` for comment-only tasks (5+ tasks/day stuck)
+2. **Close stale mention tasks** (#303) — clear tasks 289, 292–297, 299 (junk, closed-issue)
+3. **Review agent retry** (#304) — prevent good tasks going to `needs_review` on flaky review
+4. Monitor `skip closed issues` fix — verify no new closed-issue mention tasks are created
+5. Check PRs #190 and #191 merged successfully
