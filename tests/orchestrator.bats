@@ -2831,6 +2831,46 @@ JSON
   [[ "$output" == *"total"* ]]
 }
 
+@test "status.sh shows correct per-status counts and totals" {
+  ROUTED_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Routed" "" "")
+  ROUTED_ID=$(_task_id "$ROUTED_OUTPUT")
+  tdb_set "$ROUTED_ID" status "routed"
+
+  IP1_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "In Progress 1" "" "")
+  IP1_ID=$(_task_id "$IP1_OUTPUT")
+  tdb_set "$IP1_ID" status "in_progress"
+
+  IP2_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "In Progress 2" "" "")
+  IP2_ID=$(_task_id "$IP2_OUTPUT")
+  tdb_set "$IP2_ID" status "in_progress"
+
+  IR_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "In Review" "" "")
+  IR_ID=$(_task_id "$IR_OUTPUT")
+  tdb_set "$IR_ID" status "in_review"
+
+  NR_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Needs Review" "" "")
+  NR_ID=$(_task_id "$NR_OUTPUT")
+  tdb_set "$NR_ID" status "needs_review"
+
+  DONE_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Done" "" "")
+  DONE_ID=$(_task_id "$DONE_OUTPUT")
+  tdb_set "$DONE_ID" status "done"
+  gh api "repos/mock/repo/issues/${DONE_ID}" -X PATCH -f state=closed >/dev/null
+
+  run "${REPO_DIR}/scripts/status.sh"
+  [ "$status" -eq 0 ]
+
+  echo "$output" | grep -qE '^new[[:space:]]+1[[:space:]]*$'
+  echo "$output" | grep -qE '^routed[[:space:]]+1[[:space:]]*$'
+  echo "$output" | grep -qE '^in_progress[[:space:]]+2[[:space:]]*$'
+  echo "$output" | grep -qE '^in_review[[:space:]]+1[[:space:]]*$'
+  echo "$output" | grep -qE '^blocked[[:space:]]+0[[:space:]]*$'
+  echo "$output" | grep -qE '^needs_review[[:space:]]+1[[:space:]]*$'
+  echo "$output" | grep -qE '^done[[:space:]]+1[[:space:]]*$'
+  echo "$output" | grep -qE '^open[[:space:]]+6[[:space:]]*$'
+  echo "$output" | grep -qE '^total[[:space:]]+7[[:space:]]*$'
+}
+
 @test "status.sh --json --global returns valid JSON" {
   run "${REPO_DIR}/scripts/status.sh" --json --global
   [ "$status" -eq 0 ]
