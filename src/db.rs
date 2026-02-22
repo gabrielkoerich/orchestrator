@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS internal_tasks (
 CREATE TABLE IF NOT EXISTS jobs (
     id          TEXT PRIMARY KEY,
     schedule    TEXT NOT NULL,
-    type        TEXT NOT NULL DEFAULT 'task',
+    job_type    TEXT NOT NULL DEFAULT 'task',
     command     TEXT DEFAULT '',
     task_title  TEXT DEFAULT '',
     task_body   TEXT DEFAULT '',
@@ -147,7 +147,7 @@ mod tests {
 
         let conn = db.conn().await;
         conn.execute(
-            "INSERT INTO jobs (id, schedule, type) VALUES (?1, ?2, ?3)",
+            "INSERT INTO jobs (id, schedule, job_type) VALUES (?1, ?2, ?3)",
             ["morning-review", "0 8 * * *", "task"],
         )
         .unwrap();

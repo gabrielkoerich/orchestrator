@@ -163,7 +163,7 @@ jobs:
           fi
 
           if [ -z "$LAST_TAG" ]; then
-            NEW_VERSION="v1.0.0"
+            NEW_VERSION="v1.0.0-alpha.1"
           else
             CURRENT="${LAST_TAG#v}"
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"

@@ -35,6 +35,8 @@ impl GhCli {
     }
 
     /// Create a GitHub issue.
+    ///
+    /// Uses `--input -` with a JSON payload for safe multiline body handling.
     pub async fn create_issue(
         &self,
         repo: &str,
@@ -43,25 +45,31 @@ impl GhCli {
         labels: &[String],
     ) -> anyhow::Result<GitHubIssue> {
         let endpoint = format!("repos/{repo}/issues");
-        let title_field = format!("title={title}");
-        let body_field = format!("body={body}");
-        let mut args = vec![
-            endpoint.as_str(),
-            "-X",
-            "POST",
-            "-f",
-            &title_field,
-            "-f",
-            &body_field,
-        ];
-        let label_args: Vec<String> = labels.iter().map(|l| format!("labels[]={l}")).collect();
-        for la in &label_args {
-            args.push("-f");
-            args.push(la.as_str());
+        let payload = serde_json::json!({
+            "title": title,
+            "body": body,
+            "labels": labels,
+        });
+        let output = Command::new("gh")
+            .arg("api")
+            .args([&endpoint, "-X", "POST", "--input", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        // Write payload to stdin
+        let mut child = output;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(payload.to_string().as_bytes()).await?;
+            drop(stdin);
         }
-
-        let json = self.api(&args).await?;
-        Ok(serde_json::from_slice(&json)?)
+        let output = child.wait_with_output().await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("gh api failed: {stderr}");
+        }
+        Ok(serde_json::from_slice(&output.stdout)?)
     }
 
     /// Get a single issue.
@@ -72,11 +80,15 @@ impl GhCli {
     }
 
     /// List issues filtered by a label.
+    ///
+    /// Uses `--paginate` to fetch all pages (not just the first 100).
     pub async fn list_issues(&self, repo: &str, label: &str) -> anyhow::Result<Vec<GitHubIssue>> {
         let endpoint = format!("repos/{repo}/issues");
         let labels_field = format!("labels={label}");
-        let json = self
-            .api(&[
+        let output = Command::new("gh")
+            .arg("api")
+            .arg("--paginate")
+            .args([
                 &endpoint,
                 "-X",
                 "GET",
@@ -87,8 +99,13 @@ impl GhCli {
                 "-f",
                 "per_page=100",
             ])
+            .output()
             .await?;
-        Ok(serde_json::from_slice(&json)?)
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("gh api failed: {stderr}");
+        }
+        Ok(serde_json::from_slice(&output.stdout)?)
     }
 
     /// Add labels to an issue.
@@ -124,11 +141,28 @@ impl GhCli {
     }
 
     /// Add a comment to an issue.
+    ///
+    /// Uses `--input -` for safe multiline body handling.
     pub async fn add_comment(&self, repo: &str, number: &str, body: &str) -> anyhow::Result<()> {
         let endpoint = format!("repos/{repo}/issues/{number}/comments");
-        let body_field = format!("body={body}");
-        self.api(&[&endpoint, "-X", "POST", "-f", &body_field])
-            .await?;
+        let payload = serde_json::json!({ "body": body });
+        let mut child = Command::new("gh")
+            .arg("api")
+            .args([&endpoint, "-X", "POST", "--input", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(payload.to_string().as_bytes()).await?;
+            drop(stdin);
+        }
+        let output = child.wait_with_output().await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("gh api failed: {stderr}");
+        }
         Ok(())
     }
 

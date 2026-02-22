@@ -23,6 +23,7 @@ use crate::channels::transport::Transport;
 use crate::channels::ChannelRegistry;
 use crate::db::Db;
 use crate::tmux::TmuxManager;
+use anyhow::Context;
 use runner::TaskRunner;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -58,8 +59,10 @@ pub async fn serve() -> anyhow::Result<()> {
 
     let config = EngineConfig::default();
 
-    // Load config
-    let repo = crate::config::get("repo").unwrap_or_else(|_| "owner/repo".to_string());
+    // Load config — repo is required
+    let repo = crate::config::get("repo").context(
+        "'repo' not set in config — run `orch-core init` or set repo in ~/.orchestrator/config.yml",
+    )?;
 
     // Initialize backend
     let backend: Arc<dyn ExternalBackend> = Arc::new(GitHubBackend::new(repo.clone()));
@@ -151,7 +154,8 @@ pub async fn serve() -> anyhow::Result<()> {
         );
     }
 
-    drop(transport);
+    // transport and channels drop here at end of scope
+    let _ = transport;
     tracing::info!("orch-core engine stopped");
     Ok(())
 }

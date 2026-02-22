@@ -29,23 +29,23 @@ impl TaskRunner {
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".orchestrator");
 
-        // Scripts live in libexec (brew) or the project dir
+        // Scripts live in libexec (brew) or the project dir.
+        // Priority: ORCH_SCRIPTS_DIR env > brew --prefix libexec > ORCH_HOME/scripts
         let scripts_dir = std::env::var("ORCH_SCRIPTS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
-                // Try brew libexec first
-                let brew_path = PathBuf::from("/opt/homebrew/Cellar").join("orchestrator");
-                if brew_path.exists() {
-                    // Find the latest version
-                    if let Ok(entries) = std::fs::read_dir(&brew_path) {
-                        if let Some(latest) =
-                            entries.filter_map(|e| e.ok()).max_by_key(|e| e.file_name())
-                        {
-                            return latest.path().join("libexec").join("scripts");
-                        }
-                    }
+                // Try brew prefix (works on both Apple Silicon and Intel)
+                let brew_prefix = std::env::var("HOMEBREW_PREFIX")
+                    .unwrap_or_else(|_| "/opt/homebrew".to_string());
+                let brew_libexec = PathBuf::from(brew_prefix)
+                    .join("opt")
+                    .join("orch")
+                    .join("libexec")
+                    .join("scripts");
+                if brew_libexec.exists() {
+                    return brew_libexec;
                 }
-                // Fall back to project dir
+                // Fall back to ORCH_HOME/scripts
                 orch_home.join("scripts")
             });
 
