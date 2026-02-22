@@ -57,8 +57,6 @@ class Orchestrator < Formula
       exec just "$@"
     EOS
 
-    # Short alias
-    bin.install_symlink "orchestrator" => "orch"
   end
 
   service do
@@ -72,11 +70,9 @@ class Orchestrator < Formula
     <<~EOS
       To get started:
         cd ~/your-project
-        orch init             # configure project
-        orch task add "title" # add a task
-        orch start            # start background server
-
-      `orch` is a short alias for `orchestrator`.
+        orchestrator init             # configure project
+        orchestrator task add "title" # add a task
+        orchestrator start            # start background server
 
       Required agent CLIs (install at least one):
         brew install --cask claude-code   # Claude
