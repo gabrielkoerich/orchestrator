@@ -48,9 +48,18 @@ impl Db {
     }
 
     /// Run schema migrations.
+    ///
+    /// Uses `PRAGMA user_version` to track schema version and skip
+    /// already-applied migrations on existing databases.
     pub async fn migrate(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().await;
-        conn.execute_batch(SCHEMA)?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+
+        if version < 1 {
+            conn.execute_batch(SCHEMA_V1)?;
+            conn.pragma_update(None, "user_version", 1)?;
+        }
+
         Ok(())
     }
 
@@ -60,8 +69,8 @@ impl Db {
     }
 }
 
-/// Internal database schema for jobs and internal tasks.
-const SCHEMA: &str = r#"
+/// Schema v1 — initial tables for internal tasks and jobs.
+const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS internal_tasks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     title       TEXT NOT NULL,

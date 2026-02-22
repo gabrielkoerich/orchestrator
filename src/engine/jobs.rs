@@ -113,11 +113,7 @@ pub async fn tick(jobs_path: &PathBuf, backend: &Arc<dyn ExternalBackend>) -> an
             if let Ok(task) = task {
                 let status = task.labels.iter().find(|l| l.starts_with("status:"));
                 match status.map(|s| s.as_str()) {
-                    Some("status:done") => {
-                        // Previous task done, clear it
-                        job.active_task_id = None;
-                    }
-                    Some(_) => {
+                    Some("status:in_progress") | Some("status:routed") | Some("status:new") => {
                         // Previous task still active, skip
                         tracing::debug!(
                             job_id = job.id,
@@ -127,8 +123,18 @@ pub async fn tick(jobs_path: &PathBuf, backend: &Arc<dyn ExternalBackend>) -> an
                         continue;
                     }
                     None => {
-                        // No status label, treat as active
+                        // No status label — treat as active (might be newly created)
                         continue;
+                    }
+                    Some(s) => {
+                        // Terminal state (done, needs_review, blocked, in_review, etc.)
+                        tracing::debug!(
+                            job_id = job.id,
+                            task_id,
+                            status = s,
+                            "previous task terminal, clearing"
+                        );
+                        job.active_task_id = None;
                     }
                 }
             }

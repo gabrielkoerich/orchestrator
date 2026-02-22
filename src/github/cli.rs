@@ -108,7 +108,7 @@ impl GhCli {
         Ok(serde_json::from_slice(&output.stdout)?)
     }
 
-    /// Add labels to an issue.
+    /// Add labels to an issue (appends to existing labels).
     pub async fn add_labels(
         &self,
         repo: &str,
@@ -123,6 +123,37 @@ impl GhCli {
             args.push(la.as_str());
         }
         self.api(&args).await?;
+        Ok(())
+    }
+
+    /// Replace all labels on an issue atomically (PUT).
+    ///
+    /// This is a single API call — no window where labels are missing.
+    pub async fn replace_labels(
+        &self,
+        repo: &str,
+        number: &str,
+        labels: &[String],
+    ) -> anyhow::Result<()> {
+        let endpoint = format!("repos/{repo}/issues/{number}/labels");
+        let payload = serde_json::json!({ "labels": labels });
+        let mut child = Command::new("gh")
+            .arg("api")
+            .args([&endpoint, "-X", "PUT", "--input", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(payload.to_string().as_bytes()).await?;
+            drop(stdin);
+        }
+        let output = child.wait_with_output().await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("gh api failed: {stderr}");
+        }
         Ok(())
     }
 
