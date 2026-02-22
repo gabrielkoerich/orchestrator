@@ -6,7 +6,9 @@ mod db;
 mod engine;
 mod github;
 mod parser;
+mod security;
 mod sidecar;
+mod tmux;
 
 use clap::{Parser, Subcommand};
 

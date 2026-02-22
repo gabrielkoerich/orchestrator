@@ -43,6 +43,9 @@ sha2 = "0.10"
 # URL encoding for label names
 urlencoding = "2"
 
+# Regex for leak detection
+regex = "1"
+
 # Directory helpers
 dirs = "6"
 
