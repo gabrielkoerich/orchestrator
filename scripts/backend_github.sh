@@ -314,6 +314,7 @@ agent_badge() {
 # ============================================================
 
 _GH_COMMENT_MARKER="<!-- orch:agent-response -->"
+_GH_HISTORY_MARKER="<!-- orch:history -->"
 
 # Parse the last agent response comment from issue comments JSON
 _gh_parse_agent_comment() {
@@ -886,7 +887,8 @@ db_append_history() {
   local now
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   gh_api "repos/$_GH_REPO/issues/$task_id/comments" \
-    -f body="[$now] $_ah_status: $note" >/dev/null 2>&1 || true
+    -f body="${_GH_HISTORY_MARKER}
+[$now] $_ah_status: $note" >/dev/null 2>&1 || true
 }
 
 # Get task history from comments.

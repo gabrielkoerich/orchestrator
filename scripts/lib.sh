@@ -866,6 +866,14 @@ comment_on_issue() {
   if ! command -v gh >/dev/null 2>&1; then
     return 0
   fi
+
+  # Mark orchestrator-generated comments so mention detection can ignore them.
+  if ! printf '%s' "$body" | rg -q "<!--[[:space:]]*orch:"; then
+    body="<!-- orch:system-comment -->
+
+$body"
+  fi
+
   gh_api "repos/${repo}/issues/${issue_number}/comments" \
     -f body="$body" >/dev/null 2>&1 || true
 }
