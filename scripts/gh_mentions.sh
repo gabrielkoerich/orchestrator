@@ -196,17 +196,17 @@ main() {
     issue_number=$(printf '%s' "$issue_url" | sed -E 's#.*/issues/([0-9]+).*#\1#')
     [ -n "$issue_number" ] || continue
 
+    local seen_at
+    seen_at="${updated_at:-$created_at}"
+    if [ -n "$seen_at" ] && [ "$seen_at" \> "$max_seen" ]; then
+      max_seen="$seen_at"
+    fi
+
     # Skip comments on closed issues — no point creating tasks for them
     local _issue_state
     _issue_state=$(gh_api "repos/${repo}/issues/${issue_number}" --cache 120s -q '.state' 2>/dev/null || true)
     if [ "$_issue_state" = "closed" ]; then
       continue
-    fi
-
-    local seen_at
-    seen_at="${updated_at:-$created_at}"
-    if [ -n "$seen_at" ] && [ "$seen_at" \> "$max_seen" ]; then
-      max_seen="$seen_at"
     fi
 
     if ! printf '%s' "$comment_body" | rg -qi "@orchestrator"; then
@@ -230,6 +230,20 @@ main() {
     _active_tasks=$(jq -r --argjson inum "$issue_number" \
       '[.processed | to_entries[] | select(.value.issue_number == $inum) | .value.task_id] | .[]' \
       "$MENTIONS_DB_PATH" 2>/dev/null || true)
+
+    # If prior tasks exist for this issue, re-verify issue state without cache.
+    # The initial check uses --cache 120s; a stale "open" response could let a
+    # comment through on an already-closed issue. Rechecking here ensures that
+    # done tasks on closed issues don't re-trigger new task creation.
+    if [ -n "$_active_tasks" ]; then
+      local _fresh_state
+      _fresh_state=$(gh_api "repos/${repo}/issues/${issue_number}" -q '.state' 2>/dev/null || true)
+      if [ "$_fresh_state" = "closed" ]; then
+        log_err "[mentions] skipping issue #$issue_number — issue is closed, prior mention tasks exist"
+        continue
+      fi
+    fi
+
     for _tid in $_active_tasks; do
       local _st
       _st=$(db_task_field "$_tid" "status" 2>/dev/null || true)
