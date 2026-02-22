@@ -187,7 +187,12 @@ evening-retrospective:
   schedule: "0 18 * * *"
   type: task
   labels: "scheduled,agent:claude"
-  body: "Review completed and failed tasks, suggest improvements."
+  body: |
+    Review completed and failed tasks, and suggest improvements.
+
+    Before creating improvement tasks, search existing open issues for similar titles.
+    Use: gh issue list --repo owner/repo --state open --search "<topic>"
+    Only create a new issue if no similar open issue exists.
   last_run: "2026-02-20T18:00:00Z"
 ```
 
