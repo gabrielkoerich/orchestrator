@@ -79,6 +79,21 @@ mention_actionable() {
     return 1
   fi
 
+  # Skip agent result comments that reference @orchestrator as a noun, not a command.
+  # These are comments like "Results from task #237 (@orchestrator mention handler)"
+  # or "Starting on task #250" that describe orchestrator work rather than requesting it.
+  if printf '%s' "$body" | rg -qi '(results|summary|follow.up|starting\s+on)\s+.*task\s*#[0-9]+'; then
+    return 1
+  fi
+
+  # Skip comments that only mention @orchestrator inside parenthetical references
+  # e.g. "(@orchestrator mention handler)" or "the @orchestrator mention"
+  local stripped
+  stripped=$(printf '%s' "$body" | sed -E 's/\([^)]*@orchestrator[^)]*\)//gi; s/@orchestrator\s+mention[^[:space:]]*/orchestrator-mention/gi')
+  if ! printf '%s' "$stripped" | rg -qi '@orchestrator'; then
+    return 1
+  fi
+
   # Skip fenced code blocks and markdown blockquotes; detect @orchestrator in remaining text.
   # - Fences: ``` or ~~~
   # - Quotes: lines starting with optional whitespace then >
@@ -130,6 +145,8 @@ $comment_body
 ### Instructions
 
 Respond back on #$issue_number with your results and next steps.
+
+**IMPORTANT:** Do NOT use @orchestrator in your response comments — it will trigger the mention handler again and create an infinite loop. Write "orchestrator" without the @ prefix.
 EOF
 }
 
@@ -196,6 +213,26 @@ main() {
     local existing
     existing=$(mentions_db_lookup_task "$comment_id")
     if [ -n "$existing" ]; then
+      continue
+    fi
+
+    # Per-issue dedup: skip if there's already an active (non-done) mention task for this issue.
+    # This prevents infinite loops where agent responses trigger new mention tasks.
+    local _has_active=false
+    local _active_tasks
+    _active_tasks=$(jq -r --argjson inum "$issue_number" \
+      '[.processed | to_entries[] | select(.value.issue_number == $inum) | .value.task_id] | .[]' \
+      "$(mentions_db_path)" 2>/dev/null || true)
+    for _tid in $_active_tasks; do
+      local _st
+      _st=$(db_task_field "$_tid" "status" 2>/dev/null || true)
+      if [ -n "$_st" ] && [ "$_st" != "done" ] && [ "$_st" != "null" ]; then
+        _has_active=true
+        break
+      fi
+    done
+    if [ "$_has_active" = true ]; then
+      log_err "[mentions] skipping issue #$issue_number — active mention task #$_tid exists"
       continue
     fi
 
