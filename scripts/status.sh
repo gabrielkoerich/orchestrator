@@ -22,14 +22,9 @@ if [ "$IS_JSON" = true ]; then
 fi
 
 if [ "$IS_GLOBAL" = true ]; then
-  TOTAL=$(db_total_task_count)
+  : # counts below are global by default in the GitHub backend
 else
-  TOTAL=$(db_total_filtered_count)
-fi
-
-if [ "$TOTAL" -eq 0 ]; then
-  echo "No tasks. Add one with: orchestrator task add \"title\""
-  exit 0
+  : # counts below are filtered by PROJECT_DIR in non-GitHub backends
 fi
 
 _count() {
@@ -44,6 +39,12 @@ BLOCKED=$(_count "blocked")
 DONE=$(_count "done")
 NEEDS_REVIEW=$(_count "needs_review")
 OPEN_TOTAL=$((NEW + ROUTED + INPROG + IN_REVIEW + BLOCKED + NEEDS_REVIEW))
+TOTAL=$((OPEN_TOTAL + DONE))
+
+if [ "$TOTAL" -eq 0 ]; then
+  echo "No tasks. Add one with: orchestrator task add \"title\""
+  exit 0
+fi
 
 {
   printf 'STATUS\tQTY\n'
