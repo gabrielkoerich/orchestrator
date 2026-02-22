@@ -56,7 +56,10 @@ impl ExternalBackend for GitHubBackend {
     }
 
     async fn update_status(&self, id: &ExternalId, status: Status) -> anyhow::Result<()> {
-        // Remove old status:* labels, add new one
+        // Remove old status:* labels, add new one.
+        // Note: this is non-atomic (get → remove → add). The engine's semaphore
+        // limits concurrency, but two ticks could race on the same issue. This is
+        // an accepted limitation — GitHub's label API has no atomic replace.
         let task = self.get_task(id).await?;
         for label in &task.labels {
             if label.starts_with("status:") {

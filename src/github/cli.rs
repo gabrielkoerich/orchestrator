@@ -128,16 +128,19 @@ impl GhCli {
 
     /// Remove a label from an issue.
     ///
-    /// Returns Ok even if the label doesn't exist (404 from GitHub).
-    /// Logs warnings on other errors but does not propagate them — this
-    /// prevents a failed removal from blocking the new label addition.
+    /// Returns Ok if the label was removed or didn't exist (404).
+    /// Propagates all other errors to prevent silent state corruption.
     pub async fn remove_label(&self, repo: &str, number: &str, label: &str) -> anyhow::Result<()> {
         let encoded = urlencoding::encode(label);
         let endpoint = format!("repos/{repo}/issues/{number}/labels/{encoded}");
-        if let Err(e) = self.api(&[&endpoint, "-X", "DELETE"]).await {
-            tracing::warn!(repo, number, label, ?e, "failed to remove label");
+        match self.api(&[&endpoint, "-X", "DELETE"]).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.to_string().contains("404") => {
+                tracing::debug!(repo, number, label, "label already removed (404)");
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 
     /// Add a comment to an issue.
