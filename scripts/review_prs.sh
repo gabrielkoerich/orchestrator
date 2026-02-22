@@ -43,9 +43,10 @@ if [ -z "$REVIEW_OWNER" ] || [ "$REVIEW_OWNER" = "null" ]; then
   REVIEW_OWNER=$(repo_owner "$REPO")
 fi
 
-# State tracking
+# State tracking — keyed by repo to prevent duplicate reviews across project dirs
 ensure_state_dir
-REVIEW_STATE="${STATE_DIR}/pr_reviews.tsv"
+REVIEW_STATE_FILE="pr_reviews_$(printf '%s' "$REPO" | tr '/' '_').tsv"
+REVIEW_STATE="${STATE_DIR}/${REVIEW_STATE_FILE}"
 touch "$REVIEW_STATE"
 
 # Agent badge helper (inline for minimal dependencies)
