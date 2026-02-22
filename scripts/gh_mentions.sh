@@ -84,6 +84,36 @@ mention_actionable() {
   # - Quotes: lines starting with optional whitespace then >
   printf '%s\n' "$body" | awk '
     BEGIN { in_fence = 0; hit = 0; }
+    function strip_inline_code(s,   out,i,c,run,delim,in_code) {
+      out = ""
+      i = 1
+      delim = 0
+      in_code = 0
+      while (i <= length(s)) {
+        c = substr(s, i, 1)
+        if (c == "`") {
+          run = 1
+          while ((i + run) <= length(s) && substr(s, i + run, 1) == "`") { run++ }
+          if (in_code == 0) {
+            in_code = 1
+            delim = run
+            i += run
+            continue
+          }
+          if (run == delim) {
+            in_code = 0
+            delim = 0
+            i += run
+            continue
+          }
+          i += run
+          continue
+        }
+        if (in_code == 0) { out = out c }
+        i++
+      }
+      return out
+    }
     /^[[:space:]]*(```|~~~)/ { in_fence = !in_fence; next; }
     in_fence == 1 { next; }
     /^[[:space:]]*>/ { next; }
@@ -92,12 +122,10 @@ mention_actionable() {
 
       # Remove inline code and quoted substrings to reduce false positives from
       # status updates that merely reference an @orchestrator mention.
-      # - Inline code: `...`
+      # - Inline code: `...`, ``...``, ...
       # - Double quotes: "..."
       # - Single quotes: '...'
-      while (match(line, /`[^`]*`/)) {
-        line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
-      }
+      line = strip_inline_code(line)
       while (match(line, /"[^"]*"/)) {
         line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
       }
