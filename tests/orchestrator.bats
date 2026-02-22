@@ -460,7 +460,7 @@ printf '%s\n' "\$*" >> "${TMP_DIR}/git_calls"
 if [[ "\$*" == *"show-ref --verify --quiet refs/heads/"* ]]; then
   exit 0
 fi
-if [[ "\$*" == *"worktree remove"* ]] || [[ "\$*" == *"branch -d"* ]]; then
+if [[ "\$*" == *"worktree remove"* ]] || [[ "\$*" == *"branch -D"* ]]; then
   exit 0
 fi
 exec "$REAL_GIT" "\$@"
@@ -478,7 +478,7 @@ SH
   run bash -c "cat '${TMP_DIR}/git_calls'"
   [ "$status" -eq 0 ]
   [[ "$output" == *"worktree remove ${WT_DIR} --force"* ]]
-  [[ "$output" == *"branch -d gh-task-${TASK2_ID}-cleanup"* ]]
+  [[ "$output" == *"branch -D gh-task-${TASK2_ID}-cleanup"* ]]
 }
 
 @test "cleanup_worktrees.sh skips tasks without merged PR" {
@@ -502,7 +502,7 @@ SH
   cat > "$GIT_STUB" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "${TMP_DIR}/git_calls_skip"
-if [[ "\$*" == *"worktree remove"* ]] || [[ "\$*" == *"branch -d"* ]]; then
+if [[ "\$*" == *"worktree remove"* ]] || [[ "\$*" == *"branch -D"* ]]; then
   exit 0
 fi
 exec "$REAL_GIT" "\$@"
@@ -540,7 +540,7 @@ SH
 if [[ "\$*" == *"show-ref --verify --quiet refs/heads/"* ]]; then
   exit 0
 fi
-if [[ "\$*" == *"worktree remove"* ]] || [[ "\$*" == *"branch -d"* ]]; then
+if [[ "\$*" == *"worktree remove"* ]] || [[ "\$*" == *"branch -D"* ]]; then
   exit 0
 fi
 exec "$REAL_GIT" "\$@"
