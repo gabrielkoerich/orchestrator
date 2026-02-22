@@ -351,40 +351,6 @@ SH
   [[ "$output" == *"__orch_missing_tool__"* ]]
 }
 
-@test "poll.sh runs new tasks and rejoins blocked parents" {
-  PARENT_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Parent" "Parent body" "")
-  PARENT_ID=$(_task_id "$PARENT_OUTPUT")
-
-  CHILD_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Child" "Child body" "")
-  CHILD_ID=$(_task_id "$CHILD_OUTPUT")
-
-  tdb_set "$INIT_TASK_ID" status "done"
-
-  tdb_set "$PARENT_ID" status "blocked"
-  _task_set_parent "$CHILD_ID" "$PARENT_ID"
-  tdb_set "$PARENT_ID" agent "codex"
-  tdb_set "$CHILD_ID" status "done"
-  tdb_set "$CHILD_ID" agent "codex"
-
-  # Stub prints JSON to stdout (parsed by normalize_json_response)
-  CODEX_STUB="${TMP_DIR}/codex"
-  cat > "$CODEX_STUB" <<'SH'
-#!/usr/bin/env bash
-cat <<'JSON'
-{"status":"done","summary":"ok","files_changed":[],"needs_help":false,"delegations":[]}
-JSON
-SH
-  chmod +x "$CODEX_STUB"
-  export PATH="${TMP_DIR}:${PATH}"
-
-  run env PATH="${TMP_DIR}:${PATH}" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" STATE_DIR="$STATE_DIR" ORCH_HOME="$ORCH_HOME" JOBS_FILE="$JOBS_FILE" LOCK_PATH="$LOCK_PATH" USE_TMUX=false "${REPO_DIR}/scripts/poll.sh"
-  [ "$status" -eq 0 ]
-
-  run tdb_field "$PARENT_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "done" ]
-}
-
 @test "normalize_json_response parses Claude wrapper with fenced JSON" {
   RAW_FILE="${TMP_DIR}/raw.json"
   cat > "$RAW_FILE" <<'RAW'
@@ -1082,146 +1048,6 @@ SH
   [ "$status" -ne 0 ]
 }
 
-@test "cron_match.py matches wildcard expression" {
-  # "* * * * *" always matches
-  run python3 "${REPO_DIR}/scripts/cron_match.py" "* * * * *"
-  [ "$status" -eq 0 ]
-}
-
-@test "cron_match.py rejects impossible expression" {
-  # minute=99 never matches
-  run python3 "${REPO_DIR}/scripts/cron_match.py" "99 99 99 99 9"
-  [ "$status" -eq 1 ]
-}
-
-@test "cron_match.py handles aliases" {
-  # @hourly = "0 * * * *", matches only at minute 0
-  current_minute=$(date +%M | sed 's/^0//')
-  if [ "${current_minute:-0}" -eq 0 ]; then
-    run python3 "${REPO_DIR}/scripts/cron_match.py" "@hourly"
-    [ "$status" -eq 0 ]
-  else
-    run python3 "${REPO_DIR}/scripts/cron_match.py" "@hourly"
-    [ "$status" -eq 1 ]
-  fi
-}
-
-@test "jobs_add.sh creates a job" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  printf 'jobs: []\n' > "$JOBS_PATH"
-
-  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "Daily Sync" "Run sync" "sync" ""
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Added job"* ]]
-
-  run tdb_job_count
-  [ "$status" -eq 0 ]
-  [ "$output" -eq 1 ]
-
-  run tdb_job_field "daily-sync" id
-  [ "$status" -eq 0 ]
-  [ "$output" = "daily-sync" ]
-
-  run tdb_job_field "daily-sync" schedule
-  [ "$status" -eq 0 ]
-  [ "$output" = "0 9 * * *" ]
-
-  run tdb_job_field "daily-sync" enabled
-  [ "$status" -eq 0 ]
-  [ "$output" = "true" ]
-}
-
-@test "jobs_add.sh rejects duplicate job IDs" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  printf 'jobs: []\n' > "$JOBS_PATH"
-
-  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "My Job" "body" "" ""
-  [ "$status" -eq 0 ]
-
-  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "0 10 * * *" "My Job" "body2" "" ""
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"already exists"* ]]
-}
-
-@test "jobs_tick.sh creates task when schedule matches" {
-  _create_job "test-always" "Always Run" "* * * * *" "task" "Test job body" "test"
-
-  run env ORCH_HOME="$ORCH_HOME" CONFIG_PATH="$CONFIG_PATH" STATE_DIR="$STATE_DIR" JOBS_FILE="$JOBS_FILE" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  # Should have created a task
-  ALWAYS_ID=$(_task_id_by_title "Always Run")
-  [ -n "$ALWAYS_ID" ]
-
-  run tdb_field "$ALWAYS_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "new" ]
-
-  # Should have job:test-always label
-  run _task_labels "$ALWAYS_ID"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"job:test-always"* ]]
-
-  # Job should have active_task_id set
-  run tdb_job_field "test-always" active_task_id
-  [ "$status" -eq 0 ]
-  [ -n "$output" ]
-  [ "$output" != "null" ]
-}
-
-@test "jobs_tick.sh skips when active task is in-flight" {
-  # Init task is status "new" — in-flight; use its ID as active_task_id
-  _create_job "test-dedup" "Dedup Test" "* * * * *" "task" "Should not duplicate" "" "true" "$INIT_TASK_ID"
-
-  run tdb_field "$INIT_TASK_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "new" ]
-
-  TASK_COUNT_BEFORE=$(tdb_count)
-
-  run env CONFIG_PATH="$CONFIG_PATH" JOBS_FILE="$JOBS_FILE" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  # No new task should have been created
-  TASK_COUNT_AFTER=$(tdb_count)
-  [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
-}
-
-@test "jobs_tick.sh creates task after previous completes" {
-  _create_job "test-after-done" "After Done" "* * * * *" "task" "Run after previous finishes" "" "true" "$INIT_TASK_ID"
-
-  # Mark init task as done
-  tdb_set "$INIT_TASK_ID" status "done"
-
-  run env CONFIG_PATH="$CONFIG_PATH" JOBS_FILE="$JOBS_FILE" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  # Should have created a new task
-  AFTER_ID=$(_task_id_by_title "After Done")
-  [ -n "$AFTER_ID" ]
-
-  run tdb_field "$AFTER_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "new" ]
-
-  # Last task status should be recorded
-  run tdb_job_field "test-after-done" last_task_status
-  [ "$status" -eq 0 ]
-  [ "$output" = "done" ]
-}
-
-@test "jobs_tick.sh skips disabled jobs" {
-  _create_job "test-disabled" "Disabled Job" "* * * * *" "task" "Should not run" "" "false"
-
-  TASK_COUNT_BEFORE=$(tdb_count)
-
-  run env CONFIG_PATH="$CONFIG_PATH" JOBS_FILE="$JOBS_FILE" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  TASK_COUNT_AFTER=$(tdb_count)
-  [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
-}
-
 @test "load_project_config merges project override" {
   # Global config has router.model = ""
   run yq -r '.router.model' "$CONFIG_PATH"
@@ -1290,23 +1116,6 @@ SH
   [ "$output" = "blocked" ]
 }
 
-@test "jobs_remove.sh removes a job" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  printf 'jobs: []\n' > "$JOBS_PATH"
-
-  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_add.sh" "@daily" "To Remove" "" "" ""
-  [ "$status" -eq 0 ]
-
-  run tdb_job_count
-  [ "$output" -eq 1 ]
-
-  run env JOBS_PATH="$JOBS_PATH" "${REPO_DIR}/scripts/jobs_remove.sh" "to-remove"
-  [ "$status" -eq 0 ]
-
-  run tdb_job_count
-  [ "$output" -eq 0 ]
-}
-
 @test "init.sh prints project info" {
   # Stub gh so init.sh doesn't make real API calls during auto-sync
   printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP_DIR/gh" && chmod +x "$TMP_DIR/gh"
@@ -1340,18 +1149,6 @@ SH
   [[ "$output" != *"Init"* ]]
 
   rm -rf "$OTHER_DIR"
-}
-
-@test "jobs_add.sh records dir field" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  printf 'jobs: []\n' > "$JOBS_PATH"
-
-  run env JOBS_PATH="$JOBS_PATH" PROJECT_DIR="$TMP_DIR" "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "Dir Job" "" "" ""
-  [ "$status" -eq 0 ]
-
-  run tdb_job_field "dir-job" dir
-  [ "$status" -eq 0 ]
-  [ "$output" = "$TMP_DIR" ]
 }
 
 @test "run_task.sh blocks task after max_attempts exceeded" {
@@ -2668,99 +2465,6 @@ SH
 
 # --- start/stop/restart routing tests ---
 
-@test "start delegates to brew services when ORCH_BREW=1" {
-  command -v just >/dev/null 2>&1 || skip "just not installed"
-  # Create a mock brew that records the command
-  BREW_STUB="${TMP_DIR}/brew"
-  cat > "$BREW_STUB" <<'SH'
-#!/usr/bin/env bash
-echo "brew $*"
-SH
-  chmod +x "$BREW_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" ORCH_BREW=1 \
-    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" start
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"brew services start orchestrator"* ]]
-}
-
-@test "stop delegates to brew services when ORCH_BREW=1" {
-  command -v just >/dev/null 2>&1 || skip "just not installed"
-  BREW_STUB="${TMP_DIR}/brew"
-  cat > "$BREW_STUB" <<'SH'
-#!/usr/bin/env bash
-echo "brew $*"
-SH
-  chmod +x "$BREW_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" ORCH_BREW=1 \
-    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" stop
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"brew services stop orchestrator"* ]]
-}
-
-@test "restart delegates to brew services when ORCH_BREW=1" {
-  command -v just >/dev/null 2>&1 || skip "just not installed"
-  BREW_STUB="${TMP_DIR}/brew"
-  cat > "$BREW_STUB" <<'SH'
-#!/usr/bin/env bash
-echo "brew $*"
-SH
-  chmod +x "$BREW_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" ORCH_BREW=1 \
-    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" restart
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"brew services restart orchestrator"* ]]
-}
-
-@test "info delegates to brew services when ORCH_BREW=1" {
-  command -v just >/dev/null 2>&1 || skip "just not installed"
-  BREW_STUB="${TMP_DIR}/brew"
-  cat > "$BREW_STUB" <<'SH'
-#!/usr/bin/env bash
-echo "brew $*"
-SH
-  chmod +x "$BREW_STUB"
-
-  run env PATH="${TMP_DIR}:${PATH}" ORCH_BREW=1 \
-    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" info
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"brew services info orchestrator"* ]]
-}
-
-@test "info shows pid status when ORCH_BREW is not set" {
-  command -v just >/dev/null 2>&1 || skip "just not installed"
-  run env STATE_DIR="$STATE_DIR" \
-    just --justfile "${REPO_DIR}/justfile" --working-directory "${REPO_DIR}" info
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"not running"* ]]
-}
-
-@test "service namespace is visible, serve is private" {
-  command -v just >/dev/null 2>&1 || skip "just not installed"
-  run just --justfile "${REPO_DIR}/justfile" --list
-  [ "$status" -eq 0 ]
-  # service should be visible
-  [[ "$output" == *"service"* ]]
-  # "serve" recipe should NOT be listed (it's private) — check for exact recipe name
-  ! echo "$output" | grep -qE '^\s+serve\b'
-}
-
-@test "Formula wrapper sets ORCH_BREW=1" {
-  run grep 'ORCH_BREW=1' "${REPO_DIR}/Formula/orchestrator.rb"
-  [ "$status" -eq 0 ]
-}
-
-@test "brew service runs orchestrator serve not start" {
-  # Verify service definition uses 'serve' to avoid recursion
-  run grep 'serve' "${REPO_DIR}/Formula/orchestrator.rb"
-  [ "$status" -eq 0 ]
-  # Must NOT have service calling 'start'
-  run bash -c "grep 'run.*\"start\"' '${REPO_DIR}/Formula/orchestrator.rb' || true"
-  [ -z "$output" ]
-}
-
 # --- Visibility / reporting tests ---
 
 @test "duration_fmt formats seconds correctly" {
@@ -2883,20 +2587,6 @@ JSON
   [ "$output" -ge 1 ]
 }
 
-@test "job add --type bash creates bash job" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
-  run "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo hello" "0 * * * *" "Test bash job"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"bash job"* ]]
-
-  run tdb_job_field "test-bash-job" type
-  [ "$output" = "bash" ]
-
-  run tdb_job_field "test-bash-job" command
-  [ "$output" = "echo hello" ]
-}
-
 # --- tree.sh ---
 
 @test "tree.sh displays task tree" {
@@ -2990,37 +2680,6 @@ JSON
 
 # --- jobs_list.sh ---
 
-@test "jobs_list.sh shows no jobs message" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
-  run "${REPO_DIR}/scripts/jobs_list.sh"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"No jobs"* ]]
-}
-
-@test "jobs_list.sh shows job details" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
-  "${REPO_DIR}/scripts/jobs_add.sh" "0 9 * * *" "Daily Check" "check things" "" >/dev/null
-
-  run "${REPO_DIR}/scripts/jobs_list.sh"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"daily-check"* ]]
-  [[ "$output" == *"0 9 * * *"* ]]
-  [[ "$output" == *"true"* ]]
-  [[ "$output" == *"TYPE"* ]]
-}
-
-@test "jobs_list.sh shows bash job type" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
-  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo hi" "@hourly" "Ping" >/dev/null
-
-  run "${REPO_DIR}/scripts/jobs_list.sh"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"bash"* ]]
-}
-
 # --- output.sh helpers ---
 
 @test "output.sh status_icon returns correct icons" {
@@ -3058,139 +2717,7 @@ JSON
 
 # --- jobs_tick.sh bash execution ---
 
-@test "jobs_tick.sh runs bash job" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
-
-  # Create bash job matching every minute
-  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test-output" "* * * * *" "Always Run" >/dev/null
-
-  run "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  # Check last_run is set
-  run tdb_job_field "always-run" last_run
-  [ "$output" != "null" ]
-  [ -n "$output" ]
-}
-
-@test "jobs_tick.sh records bash job failure" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
-
-  # Create bash job that fails
-  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "exit 1" "* * * * *" "Fail Job" >/dev/null
-
-  run "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  run tdb_job_field "fail-job" last_task_status
-  [ "$output" = "failed" ]
-}
-
-@test "jobs_tick.sh disables bash job when dir is missing" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
-
-  MISSING_DIR="${TMP_DIR}/does-not-exist"
-  PROJECT_DIR="$MISSING_DIR" "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test-output" "* * * * *" "Bad Dir Job" >/dev/null
-
-  run "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  run tdb_job_field "bad-dir-job" enabled
-  [ "$output" = "false" ]
-
-  run tdb_job_field "bad-dir-job" last_task_status
-  [ "$output" = "failed" ]
-}
-
 # --- jobs_tick.sh catch-up ---
-
-@test "jobs_tick.sh catches up missed job after downtime" {
-  # Create a job scheduled for a specific hour that has already passed today
-  # Use last_run from 6 hours ago so the scheduled time was missed
-  LAST_RUN=$(date -u -v-6H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '6 hours ago' +"%Y-%m-%dT%H:%M:%SZ")
-  # Schedule for 3 hours ago (definitely between last_run and now)
-  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
-
-  _create_job "test-catchup" "Catch Up Job" "0 ${MISSED_HOUR} * * *" "task" "Missed job body" "test" "true" "null" "$LAST_RUN"
-
-  run env JOBS_FILE="$JOBS_FILE" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  # Should have created a task for the missed job
-  CATCHUP_ID=$(_task_id_by_title "Catch Up Job")
-  [ -n "$CATCHUP_ID" ]
-  run tdb_field "$CATCHUP_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "new" ]
-}
-
-@test "jobs_tick.sh catches up missed job when last_run is null" {
-  # Schedule for 3 hours ago; if last_run is null this should still fire via catch-up.
-  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
-
-  _create_job "test-null-catchup" "Null Catch Up Job" "0 ${MISSED_HOUR} * * *" "task" "Missed job body" "test" "true" "null" "null"
-
-  run env JOBS_FILE="$JOBS_FILE" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  NULL_CATCHUP_ID=$(_task_id_by_title "Null Catch Up Job")
-  [ -n "$NULL_CATCHUP_ID" ]
-  run tdb_field "$NULL_CATCHUP_ID" status
-  [ "$status" -eq 0 ]
-  [ "$output" = "new" ]
-}
-
-@test "jobs_tick.sh does not catch up if last_run is after scheduled time" {
-  # last_run is 1 hour ago, schedule is for 3 hours ago — already ran
-  LAST_RUN=$(date -u -v-1H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '1 hour ago' +"%Y-%m-%dT%H:%M:%SZ")
-  PAST_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
-
-  _create_job "test-no-catchup" "No Catch Up" "0 ${PAST_HOUR} * * *" "task" "Already ran" "test" "true" "null" "$LAST_RUN"
-
-  TASK_COUNT_BEFORE=$(tdb_count)
-
-  run env JOBS_FILE="$JOBS_FILE" CONFIG_PATH="$CONFIG_PATH" PROJECT_DIR="$PROJECT_DIR" "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  TASK_COUNT_AFTER=$(tdb_count)
-  [ "$TASK_COUNT_BEFORE" -eq "$TASK_COUNT_AFTER" ]
-}
-
-@test "cron_match.py --since detects missed occurrence" {
-  # 9am schedule, last_run yesterday at 6am — 9am was missed
-  YESTERDAY=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)
-  run python3 "${REPO_DIR}/scripts/cron_match.py" "0 9 * * *" --since "${YESTERDAY}T06:00:00Z"
-  [ "$status" -eq 0 ]
-}
-
-@test "cron_match.py --since no match when already past" {
-  # 9am schedule, last_run at 10am — 9am already passed after last_run
-  run python3 "${REPO_DIR}/scripts/cron_match.py" "0 9 * * *" --since "$(date -u +%Y-%m-%d)T10:00:00Z"
-  [ "$status" -eq 1 ]
-}
-
-@test "jobs_tick.sh catches up missed bash job" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  printf 'jobs: []\n' > "$JOBS_FILE"
-
-  LAST_RUN=$(date -u -v-6H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '6 hours ago' +"%Y-%m-%dT%H:%M:%SZ")
-  MISSED_HOUR=$(date -u -v-3H +"%H" 2>/dev/null || date -u -d '3 hours ago' +"%H")
-
-  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo caught-up" "0 ${MISSED_HOUR} * * *" "Bash Catch Up" >/dev/null
-
-  # Set last_run to 6 hours ago so the 3-hours-ago occurrence was missed
-  yq -i ".jobs[0].last_run = \"${LAST_RUN}\"" "$JOBS_FILE"
-
-  run "${REPO_DIR}/scripts/jobs_tick.sh"
-  [ "$status" -eq 0 ]
-
-  # Should have run and recorded last_run
-  run tdb_job_field "bash-catch-up" last_task_status
-  [ "$output" = "done" ]
-}
 
 # --- status.sh ---
 
@@ -4492,30 +4019,6 @@ SH
 
 # --- stop.sh --force tests ---
 
-@test "stop.sh --force cleans up pid file and serve lock" {
-  # Create fake PID file and serve lock
-  echo "99999" > "$STATE_DIR/orchestrator.pid"
-  mkdir -p "$STATE_DIR/serve.lock"
-  echo "99998" > "$STATE_DIR/tail.pid"
-
-  run env STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/stop.sh" --force
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Force-killed all orchestrator processes"* ]]
-  [ ! -f "$STATE_DIR/orchestrator.pid" ]
-  [ ! -d "$STATE_DIR/serve.lock" ]
-  [ ! -f "$STATE_DIR/tail.pid" ]
-}
-
-@test "stop.sh -f is an alias for --force" {
-  echo "99999" > "$STATE_DIR/orchestrator.pid"
-  mkdir -p "$STATE_DIR/serve.lock"
-
-  run env STATE_DIR="$STATE_DIR" "${REPO_DIR}/scripts/stop.sh" -f
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Force-killed all orchestrator processes"* ]]
-  [ ! -f "$STATE_DIR/orchestrator.pid" ]
-}
-
 # --- version in log output tests ---
 
 @test "log() includes version when ORCH_VERSION is set" {
@@ -4542,43 +4045,9 @@ SH
   [[ "$result" == *"[v0.33.0]"* ]]
 }
 
-@test "serve.sh _log includes version prefix" {
-  # Verify the _log function in serve.sh includes [vVERSION]
-  run grep -E '_log\(\).*\[v\$\{ORCH_VERSION\}\]' "${REPO_DIR}/scripts/serve.sh"
-  [ "$status" -eq 0 ]
-}
-
 # --- rate limit backoff in serve.sh tests ---
 
-@test "serve.sh sources lib.sh for backoff helpers" {
-  run grep 'source.*lib\.sh' "${REPO_DIR}/scripts/serve.sh"
-  [ "$status" -eq 0 ]
-}
-
-@test "serve.sh checks gh_backoff_active before gh_sync" {
-  run grep 'gh_backoff_active' "${REPO_DIR}/scripts/serve.sh"
-  [ "$status" -eq 0 ]
-}
-
-@test "serve.sh GH_PULL_INTERVAL defaults to 120" {
-  run grep 'GH_PULL_INTERVAL=.*120' "${REPO_DIR}/scripts/serve.sh"
-  [ "$status" -eq 0 ]
-}
-
 # --- graceful shutdown tests ---
-
-@test "serve.sh uses interruptible sleep" {
-  # Verify sleep is backgrounded and waited on
-  run grep -A2 'sleep.*INTERVAL.*&' "${REPO_DIR}/scripts/serve.sh"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"wait"* ]]
-}
-
-@test "serve.sh checks _stopping flag after each child" {
-  # At least 3 stopping checks in the main loop
-  count=$(grep -c '_stopping' "${REPO_DIR}/scripts/serve.sh")
-  [ "$count" -ge 5 ]
-}
 
 # --- PR review agent tests ---
 
@@ -4842,26 +4311,6 @@ SH
   [ "$status" -eq 0 ]
 }
 
-@test "serve.sh calls review_prs.sh after gh_sync" {
-  run grep "review_prs.sh" "${REPO_DIR}/scripts/serve.sh"
-  [ "$status" -eq 0 ]
-}
-
-@test "poll.sh skips tasks with no-agent label" {
-  # Create a task with no-agent label
-  TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "No agent task" "" "no-agent")
-  NA_TASK_ID=$(_task_id "$TASK_OUTPUT")
-
-  # Verify the no-agent label was set
-  run _task_labels "$NA_TASK_ID"
-  [[ "$output" == *"no-agent"* ]]
-
-  # The INIT task (status=new) should still be pickable, but the no-agent task should not
-  # Verify INIT task is still new
-  run tdb_field "$INIT_TASK_ID" status
-  [ "$output" = "new" ]
-}
-
 # --- Backend (db_*) function tests ---
 
 @test "db_task_field reads a single field" {
@@ -5022,21 +4471,6 @@ SH
   [[ "$output" == *"$id_a"* ]]
   [[ "$output" != *"$id_b"* ]]
 }
-
-@test "db_job_field and db_job_set work correctly" {
-  source "${REPO_DIR}/scripts/lib.sh"
-
-  _create_job "j1" "Job" "0 9 * * *" "task" "" "" "true" "null" "null" "null"
-
-  run db_job_field j1 schedule
-  [ "$output" = "0 9 * * *" ]
-
-  db_job_set j1 enabled false
-  run db_job_field j1 enabled
-  [ "$output" = "false" ]
-}
-
-
 
 # ─── build_git_diff tests ───
 

@@ -74,11 +74,10 @@ fn parse_timestamp(s: &str) -> anyhow::Result<DateTime<Utc>> {
     anyhow::bail!("unrecognized timestamp format: {s}")
 }
 
-use chrono::Timelike;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
 
     #[test]
     fn every_minute_matches_now() {
