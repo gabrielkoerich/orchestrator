@@ -62,20 +62,6 @@ if [ "$PROJECT_DIR" = "/" ] || { [ ! -d "$PROJECT_DIR/.git" ] && ! is_bare_repo 
 fi
 export PROJECT_DIR
 
-# Augment PATH (brew services / launchd start with minimal PATH)
-# If $HOME/.path exists, source it to pick up user-configured paths;
-# otherwise fall back to common dev tool locations.
-if [[ -f "$HOME/.path" ]]; then
-  _OLD_PATH="$PATH"
-  source "$HOME/.path" >/dev/null 2>&1
-  # Preserve any paths that were already at the front (e.g. test mocks)
-  export PATH="${_OLD_PATH}:${PATH}"
-else
-  for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.local/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
-    [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
-  done
-fi
-
 load_project_config
 
 TASK_ID=${1:-}
@@ -882,7 +868,7 @@ RUNNER_EOF
   opencode)
     # If no model set (round_robin), pick random from agents.opencode.models
     if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
-      OPENCODE_MODELS=$(config_get '.agents.opencode.models // []' 2>/dev/null || true)
+      OPENCODE_MODELS=$(config_get '.agents.opencode.models // []' 2>/dev/null | yq -o=json - 2>/dev/null || echo "[]")
       if [ -n "$OPENCODE_MODELS" ] && [ "$OPENCODE_MODELS" != "[]" ]; then
         AGENT_MODEL=$(printf '%s' "$OPENCODE_MODELS" | jq -r ".[$(($(date +%s) % $(printf '%s' "$OPENCODE_MODELS" | jq 'length')))]")
       fi
