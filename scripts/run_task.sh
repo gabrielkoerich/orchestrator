@@ -457,13 +457,35 @@ DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash
 # Sandbox: block agent access to the main project directory
 SANDBOX_ENABLED=$(config_get '.workflow.sandbox // true')
 if [ "$SANDBOX_ENABLED" = "true" ] && [ -n "$MAIN_PROJECT_DIR" ] && [ "$PROJECT_DIR" != "$MAIN_PROJECT_DIR" ]; then
-  SANDBOX_PATTERNS="Bash(cd ${MAIN_PROJECT_DIR}*),Read(${MAIN_PROJECT_DIR}/*),Write(${MAIN_PROJECT_DIR}/*),Edit(${MAIN_PROJECT_DIR}/*)"
-  if [ -n "$DISALLOWED_TOOLS" ]; then
-    DISALLOWED_TOOLS="${DISALLOWED_TOOLS},${SANDBOX_PATTERNS}"
-  else
-    DISALLOWED_TOOLS="$SANDBOX_PATTERNS"
+  # When the worktree lives inside MAIN_PROJECT_DIR (e.g. .orchestrator/worktrees/…),
+  # a blanket MAIN_PROJECT_DIR/* pattern would also block the agent's own workspace.
+  # Instead, enumerate each top-level subdir and block those individually,
+  # skipping .orchestrator so the worktree remains accessible.
+  SANDBOX_PATTERNS=""
+  case "$PROJECT_DIR" in
+    "${MAIN_PROJECT_DIR}/"*)
+      # Worktree is inside main project — block each top-level subdir except .orchestrator
+      for _sd in "$MAIN_PROJECT_DIR"/*/; do
+        [ -d "$_sd" ] || continue
+        _sdname=$(basename "${_sd%/}")
+        [ "$_sdname" = ".orchestrator" ] && continue
+        _p="Bash(cd ${_sd%/}*),Read(${_sd%/}/*),Write(${_sd%/}/*),Edit(${_sd%/}/*)"
+        SANDBOX_PATTERNS="${SANDBOX_PATTERNS:+$SANDBOX_PATTERNS,}$_p"
+      done
+      ;;
+    *)
+      # Worktree is outside main project — safe to block the whole tree
+      SANDBOX_PATTERNS="Bash(cd ${MAIN_PROJECT_DIR}*),Read(${MAIN_PROJECT_DIR}/*),Write(${MAIN_PROJECT_DIR}/*),Edit(${MAIN_PROJECT_DIR}/*)"
+      ;;
+  esac
+  if [ -n "$SANDBOX_PATTERNS" ]; then
+    if [ -n "$DISALLOWED_TOOLS" ]; then
+      DISALLOWED_TOOLS="${DISALLOWED_TOOLS},${SANDBOX_PATTERNS}"
+    else
+      DISALLOWED_TOOLS="$SANDBOX_PATTERNS"
+    fi
+    log_err "[run] task=$TASK_ID sandbox enabled: blocking access to $MAIN_PROJECT_DIR"
   fi
-  log_err "[run] task=$TASK_ID sandbox enabled: blocking access to $MAIN_PROJECT_DIR"
 fi
 
 # Save prompt for debugging
