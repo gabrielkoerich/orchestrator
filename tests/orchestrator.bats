@@ -5587,7 +5587,7 @@ projects:
     path: /nonexistent/path/that/does/not/exist
 YAML
 
-  run env -u PROJECT_DIR bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_projects"
+  run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && db_task_projects"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
@@ -5597,7 +5597,7 @@ YAML
 projects: []
 YAML
 
-  run env -u PROJECT_DIR bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_projects 2>&1"
+  run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && db_task_projects 2>&1"
   [ "$status" -eq 0 ]
   [[ "$output" == *"no projects"* ]]
 }
@@ -5609,7 +5609,7 @@ YAML
 }
 
 @test "_jobs_file returns global path when PROJECT_DIR is unset" {
-  run env -u PROJECT_DIR bash -c "source '${REPO_DIR}/scripts/lib.sh' && _jobs_file"
+  run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && _jobs_file"
   [ "$status" -eq 0 ]
   [[ "$output" == *"jobs.yml" ]]
   # Should be global path (ORCH_HOME), not project-local
