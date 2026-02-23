@@ -14,9 +14,10 @@ setup() {
   export ORCH_HOME="${TMP_DIR}/orch_home"
   mkdir -p "$ORCH_HOME"
   export CONFIG_PATH="${ORCH_HOME}/config.yml"
-  export JOBS_FILE="${ORCH_HOME}/jobs.yml"
   export LOCK_PATH="${STATE_DIR}/locks"
   export PROJECT_DIR="${TMP_DIR}"
+  # Jobs file is per-project: PROJECT_DIR/.orchestrator/jobs.yml
+  export JOBS_FILE="${PROJECT_DIR}/.orchestrator/jobs.yml"
 
   # Initialize a git repo so worktree creation works
   git -C "$PROJECT_DIR" init -b main --quiet 2>/dev/null || true
@@ -3089,11 +3090,22 @@ JSON
 }
 
 @test "jobs_tick.sh disables bash job when dir is missing" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
+  printf 'jobs: []\n' > "$JOBS_FILE"
 
   MISSING_DIR="${TMP_DIR}/does-not-exist"
-  PROJECT_DIR="$MISSING_DIR" "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test-output" "* * * * *" "Bad Dir Job" >/dev/null
+  # Create job with dir pointing to a non-existent directory.
+  # Use _create_job directly so it writes to the test's JOBS_FILE.
+  local now
+  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  local job
+  job=$(jq -nc --arg d "$MISSING_DIR" --arg n "$now" \
+    '{id:"bad-dir-job", title:"Bad Dir Job", schedule:"* * * * *", type:"bash",
+      command:"echo test-output", body:"", labels:"", agent:null,
+      dir:$d, enabled:true, active_task_id:null, last_run:null,
+      last_task_status:null, created_at:$n}')
+  local jobs
+  jobs=$(yq -o=json '.jobs // []' "$JOBS_FILE" 2>/dev/null || echo '[]')
+  printf '%s' "$jobs" | jq --argjson j "$job" '. + [$j]' | yq -P '{"jobs": .}' > "$JOBS_FILE"
 
   run "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
@@ -5592,14 +5604,14 @@ YAML
   [ -z "$output" ]
 }
 
-@test "db_task_projects warns when registry has no paths" {
+@test "db_task_projects returns empty for empty registry" {
   cat > "${ORCH_HOME}/projects.yml" <<YAML
 projects: []
 YAML
 
-  run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && db_task_projects 2>&1"
+  run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && db_task_projects"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"no projects"* ]]
+  [ -z "$output" ]
 }
 
 @test "_jobs_file returns project-local path when PROJECT_DIR is set" {
@@ -5609,7 +5621,7 @@ YAML
 }
 
 @test "_jobs_file returns global path when PROJECT_DIR is unset" {
-  run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && _jobs_file"
+  run bash -c "unset PROJECT_DIR JOBS_FILE; source '${REPO_DIR}/scripts/lib.sh' && _jobs_file"
   [ "$status" -eq 0 ]
   [ "$output" = "${ORCH_HOME}/jobs.yml" ]
 }

@@ -1531,9 +1531,7 @@ db_task_projects() {
     if [ -f "$registry" ]; then
       local _reg_paths
       _reg_paths=$(yq -r '.projects[].path' "$registry" 2>/dev/null || true)
-      if [ -z "$_reg_paths" ]; then
-        log_err "[projects] $registry exists but has no projects[].path entries"
-      else
+      if [ -n "$_reg_paths" ]; then
         echo "$_reg_paths"
       fi
     fi

@@ -342,10 +342,11 @@ if [ ! -f "$REGISTRY" ]; then
   printf 'projects: []\n' > "$REGISTRY"
 fi
 # Check if project already registered (by path)
-_registered=$(yq -r ".projects[] | select(.path == \"$PROJECT_DIR\") | .path" "$REGISTRY" 2>/dev/null || true)
+_registered=$(PROJ_PATH="$PROJECT_DIR" yq -r '.projects[] | select(.path == strenv(PROJ_PATH)) | .path' "$REGISTRY" 2>/dev/null || true)
 if [ -z "$_registered" ]; then
   PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
-  yq -i ".projects += [{\"name\": \"$PROJECT_NAME\", \"path\": \"$PROJECT_DIR\"}]" "$REGISTRY"
+  PROJ_NAME="$PROJECT_NAME" PROJ_PATH="$PROJECT_DIR" \
+    yq -i '.projects += [{"name": strenv(PROJ_NAME), "path": strenv(PROJ_PATH)}]' "$REGISTRY"
   echo "  Registered in $REGISTRY"
 fi
 
