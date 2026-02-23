@@ -17,7 +17,7 @@ _GH_MODEL_PREFIX="model:"
 
 # Validation constants
 _GH_VALID_STATUSES="new routed in_progress done blocked in_review needs_review"
-_GH_VALID_AGENTS="claude codex opencode"
+_GH_VALID_AGENTS="claude codex opencode kimi minimax"
 _GH_VALID_COMPLEXITIES="simple medium complex"
 _GH_VALID_ROLES="general backend frontend docs devops security test"
 _GH_KNOWN_STANDALONE="plan scheduled blocked no-agent no-review has-error"

@@ -512,9 +512,12 @@ export GIT_COMMITTER_NAME="${TASK_AGENT}[bot]"
 export GIT_AUTHOR_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
 export GIT_COMMITTER_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
 
-# Resolve model from complexity + config model_map
-if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
-  AGENT_MODEL=$(model_for_complexity "$TASK_AGENT" "${TASK_COMPLEXITY:-medium}")
+# Resolve model from complexity + config model_map (skip for round_robin, let agents pick their own)
+_ROUTING_MODE=${_ROUTING_MODE:-$(config_get '.router.mode // "llm"')}
+if [ "$_ROUTING_MODE" != "round_robin" ]; then
+  if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
+    AGENT_MODEL=$(model_for_complexity "$TASK_AGENT" "${TASK_COMPLEXITY:-medium}")
+  fi
 fi
 
 # Set model: label on the issue for visibility (diagnostic, not blocking)
@@ -563,7 +566,7 @@ case "$TASK_AGENT" in
       done
     fi
     ALLOW_ARGS=()
-    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // [] | join(",")' 2>/dev/null || true)
+    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
     if [ -n "$ALLOWED_TOOLS" ]; then
       IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
       for _t in "${_atools[@]}"; do
@@ -645,6 +648,170 @@ RUNNER_ENV
         "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
     fi
     ;;
+  kimi)
+    log_err "[run] cmd: kimi -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
+    DISALLOW_ARGS=()
+    if [ -n "$DISALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
+      for _t in "${_tools[@]}"; do
+        DISALLOW_ARGS+=(--disallowedTools "$_t")
+      done
+    fi
+    ALLOW_ARGS=()
+    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
+    if [ -n "$ALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
+      for _t in "${_atools[@]}"; do
+        ALLOW_ARGS+=(--allowedTools "$_t")
+      done
+    fi
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
+      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
+      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
+      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
+      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
+      {
+        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
+        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
+      } > "$TOOL_ARGS_FILE"
+
+      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+RUNNER_EOF
+      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+export ORCH_HOME="$ORCH_HOME"
+cd "$PROJECT_DIR"
+TOOL_ARGS=()
+while IFS= read -r arg; do
+  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
+done < "$TOOL_ARGS_FILE"
+kimi -p \
+  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+  --permission-mode bypassPermissions \
+  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
+  --output-format json \
+  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
+  "\$(cat "$PROMPT_MSG_FILE")" \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_ENV
+      chmod +x "$RUNNER_SCRIPT"
+
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
+      run_hook on_agent_session_start
+
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
+      run_hook on_agent_session_end
+
+      if [ -f "$TMUX_RESPONSE_FILE" ]; then
+        RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
+      fi
+      if [ -f "$TMUX_STATUS_FILE" ]; then
+        CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
+      fi
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout kimi -p \
+        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+        --permission-mode bypassPermissions \
+        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
+        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
+        --output-format json \
+        --append-system-prompt "$SYSTEM_PROMPT" \
+        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
+    ;;
+  minimax)
+    log_err "[run] cmd: minimax -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
+    DISALLOW_ARGS=()
+    if [ -n "$DISALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
+      for _t in "${_tools[@]}"; do
+        DISALLOW_ARGS+=(--disallowedTools "$_t")
+      done
+    fi
+    ALLOW_ARGS=()
+    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
+    if [ -n "$ALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
+      for _t in "${_atools[@]}"; do
+        ALLOW_ARGS+=(--allowedTools "$_t")
+      done
+    fi
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
+      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
+      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
+      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
+      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
+      {
+        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
+        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
+      } > "$TOOL_ARGS_FILE"
+
+      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+RUNNER_EOF
+      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+export ORCH_HOME="$ORCH_HOME"
+cd "$PROJECT_DIR"
+TOOL_ARGS=()
+while IFS= read -r arg; do
+  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
+done < "$TOOL_ARGS_FILE"
+minimax -p \
+  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+  --permission-mode bypassPermissions \
+  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
+  --output-format json \
+  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
+  "\$(cat "$PROMPT_MSG_FILE")" \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_ENV
+      chmod +x "$RUNNER_SCRIPT"
+
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
+      run_hook on_agent_session_start
+
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
+      run_hook on_agent_session_end
+
+      if [ -f "$TMUX_RESPONSE_FILE" ]; then
+        RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
+      fi
+      if [ -f "$TMUX_STATUS_FILE" ]; then
+        CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
+      fi
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout minimax -p \
+        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+        --permission-mode bypassPermissions \
+        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
+        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
+        --output-format json \
+        --append-system-prompt "$SYSTEM_PROMPT" \
+        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
+    ;;
   codex)
     log_err "[run] cmd: codex ${AGENT_MODEL:+-m $AGENT_MODEL} --ask-for-approval never --sandbox <mode> exec --json <stdin>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
@@ -713,6 +880,13 @@ RUNNER_EOF
     fi
     ;;
   opencode)
+    # If no model set (round_robin), pick random from agents.opencode.models
+    if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
+      OPENCODE_MODELS=$(config_get '.agents.opencode.models // []' 2>/dev/null || true)
+      if [ -n "$OPENCODE_MODELS" ] && [ "$OPENCODE_MODELS" != "[]" ]; then
+        AGENT_MODEL=$(printf '%s' "$OPENCODE_MODELS" | jq -r ".[$(($(date +%s) % $(printf '%s' "$OPENCODE_MODELS" | jq 'length')))]")
+      fi
+    fi
     log_err "[run] cmd: opencode run ${AGENT_MODEL:+-m $AGENT_MODEL} --format json <message>"
     FULL_MESSAGE="${SYSTEM_PROMPT}
 
@@ -790,6 +964,14 @@ case "$TASK_AGENT" in
   opencode)
     # OpenCode JSON: extract errors from failed events
     DENIALS=$(printf '%s' "$RESPONSE" | jq -r 'select(.type == "error") | .message // empty' 2>/dev/null || true)
+    ;;
+  kimi)
+    # Kimi uses same CLI interface as claude
+    DENIALS=$(printf '%s' "$RESPONSE" | jq -r '.permission_denials[]? | "\(.tool_name)(\(.tool_input.command // .tool_input | tostring | .[0:80]))"' 2>/dev/null || true)
+    ;;
+  minimax)
+    # MiniMax uses same CLI interface as claude
+    DENIALS=$(printf '%s' "$RESPONSE" | jq -r '.permission_denials[]? | "\(.tool_name)(\(.tool_input.command // .tool_input | tostring | .[0:80]))"' 2>/dev/null || true)
     ;;
 esac
 if [ -n "$DENIALS" ]; then

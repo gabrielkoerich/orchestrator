@@ -333,7 +333,7 @@ available_agents() {
   local agents=""
   local disabled=""
   disabled=$(yq -r '.router.disabled_agents // [] | join(",")' "$CONFIG_PATH" 2>/dev/null || true)
-  for agent in claude codex opencode; do
+  for agent in claude codex opencode kimi minimax; do
     if command -v "$agent" >/dev/null 2>&1; then
       # Skip disabled agents
       if [ -n "$disabled" ] && printf '%s' ",$disabled," | grep -q ",$agent,"; then
