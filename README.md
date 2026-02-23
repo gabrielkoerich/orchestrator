@@ -46,14 +46,18 @@ GitHub Issue (status:new) → Route (LLM picks agent) → Worktree (isolated bra
 ## Files
 
 All runtime state lives in `~/.orchestrator/` (`ORCH_HOME`):
-- `orchestrator.db` — SQLite database (task metadata cache, jobs)
-- `jobs.yml` — scheduled job definitions
-- `config.yml` — runtime configuration
+- `config.yml` — global runtime configuration
+- `projects.yml` — registered projects for multi-project polling
 - `skills.yml` — approved skill repositories and catalog
 - `skills/` — cloned skill repositories (via `skills-sync`)
 - `projects/` — bare-cloned repositories (`owner/repo.git`)
 - `worktrees/` — project-local git worktrees per task
 - `.orchestrator/` — runtime state (pid, logs, locks, sidecars, prompts)
+
+Per-project files (in each project root):
+- `orchestrator.yml` — project config (GitHub repo, project ID)
+- `.orchestrator/jobs.yml` — scheduled job definitions
+- `.orchestrator/` — project runtime state (output, prompts, locks)
 
 Source files:
 - `prompts/system.md` — system prompt (output format, workflow, constraints)
@@ -255,17 +259,34 @@ The agent writes results to `.orchestrator/output-{task_id}.json`. If the file i
 
 ## Per-Project Isolation
 
-Each task is tagged with its project directory. When you run commands from a project, you only see that project's tasks:
+Each project is initialized separately and registered in a global project registry:
 
 ```bash
-cd ~/projects/app-a && orchestrator task add "Task A"
-cd ~/projects/app-b && orchestrator task add "Task B"
-
-cd ~/projects/app-a && orchestrator task list  # shows only Task A
-cd ~/projects/app-b && orchestrator task list  # shows only Task B
+cd ~/projects/app-a && orchestrator init    # registers project
+cd ~/projects/app-b && orchestrator init    # registers project
 ```
 
-A single `orchestrator serve` handles all projects — it reads each task's `dir` field and runs agents in the correct directory. Use `orchestrator dashboard` to see active projects and worktrees.
+`orchestrator init` does three things:
+1. Creates `orchestrator.yml` in the project root (GitHub repo, project ID)
+2. Creates `.orchestrator/` state directory
+3. Registers the project in `~/.orchestrator/projects.yml`
+
+The registry file (`~/.orchestrator/projects.yml`) tracks all managed projects:
+```yaml
+projects:
+  - name: app-a
+    path: /Users/you/projects/app-a
+  - name: app-b
+    path: /Users/you/projects/app-b
+```
+
+A single `orchestrator serve` polls all registered projects. Each project gets its own GitHub repo context, labels, and task isolation:
+```bash
+cd ~/projects/app-a && orchestrator task list  # shows only app-a tasks
+cd ~/projects/app-b && orchestrator task list  # shows only app-b tasks
+```
+
+Use `orchestrator dashboard` to see active projects and worktrees.
 
 ## Background Service
 
@@ -280,7 +301,7 @@ Auto-starts on login, auto-restarts on crash via `brew services`.
 
 ## Scheduled Jobs (Cron)
 
-Jobs are defined in `jobs.yml` and create regular tasks on a schedule. They flow through the full pipeline (route, run, review, delegate, GitHub sync).
+Jobs are defined per-project in `.orchestrator/jobs.yml` and create regular tasks on a schedule. They flow through the full pipeline (route, run, review, delegate, GitHub sync).
 
 ### How It Works
 1. Define a job with a cron expression and a task template.
@@ -301,7 +322,7 @@ Two job types:
 - **bash**: runs a shell command directly, no LLM involved
 
 ```yaml
-# jobs.yml
+# .orchestrator/jobs.yml (per-project)
 jobs:
   - id: daily-sync
     schedule: "0 9 * * *"

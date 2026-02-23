@@ -1525,10 +1525,19 @@ db_task_usage_tsv() {
 db_task_projects() {
   {
     _read_jobs | jq -r '.[].dir // empty' 2>/dev/null || true
-    [ -n "${PROJECT_DIR:-}" ] && echo "$PROJECT_DIR"
+    [ -n "${PROJECT_DIR:-}" ] && echo "$PROJECT_DIR" || true
+    # Read from projects.yml registry
+    local registry="${ORCH_HOME:-$HOME/.orchestrator}/projects.yml"
+    if [ -f "$registry" ]; then
+      local _reg_paths
+      _reg_paths=$(yq -r '.projects[].path' "$registry" 2>/dev/null || true)
+      if [ -n "$_reg_paths" ]; then
+        echo "$_reg_paths"
+      fi
+    fi
   } | sort -u | while IFS= read -r d; do
     [ -n "$d" ] && [ "$d" != "null" ] && [ -d "$d" ] && echo "$d"
-  done
+  done || true
 }
 
 # Active task count for a specific dir.

@@ -3,6 +3,10 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
+# Load project-local config (merges .orchestrator.yml into CONFIG_PATH)
+# so _GH_REPO and other settings resolve for the correct project.
+load_project_config || true
+
 JOBS=${POLL_JOBS:-4}
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 

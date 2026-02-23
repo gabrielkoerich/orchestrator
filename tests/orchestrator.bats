@@ -14,9 +14,10 @@ setup() {
   export ORCH_HOME="${TMP_DIR}/orch_home"
   mkdir -p "$ORCH_HOME"
   export CONFIG_PATH="${ORCH_HOME}/config.yml"
-  export JOBS_FILE="${ORCH_HOME}/jobs.yml"
   export LOCK_PATH="${STATE_DIR}/locks"
   export PROJECT_DIR="${TMP_DIR}"
+  # Jobs file is per-project: PROJECT_DIR/.orchestrator/jobs.yml
+  export JOBS_FILE="${PROJECT_DIR}/.orchestrator/jobs.yml"
 
   # Initialize a git repo so worktree creation works
   git -C "$PROJECT_DIR" init -b main --quiet 2>/dev/null || true
@@ -3089,11 +3090,22 @@ JSON
 }
 
 @test "jobs_tick.sh disables bash job when dir is missing" {
-  export JOBS_PATH="${TMP_DIR}/jobs.yml"
-  echo '[]' > "$JOBS_FILE"
+  printf 'jobs: []\n' > "$JOBS_FILE"
 
   MISSING_DIR="${TMP_DIR}/does-not-exist"
-  PROJECT_DIR="$MISSING_DIR" "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test-output" "* * * * *" "Bad Dir Job" >/dev/null
+  # Create job with dir pointing to a non-existent directory.
+  # Use _create_job directly so it writes to the test's JOBS_FILE.
+  local now
+  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  local job
+  job=$(jq -nc --arg d "$MISSING_DIR" --arg n "$now" \
+    '{id:"bad-dir-job", title:"Bad Dir Job", schedule:"* * * * *", type:"bash",
+      command:"echo test-output", body:"", labels:"", agent:null,
+      dir:$d, enabled:true, active_task_id:null, last_run:null,
+      last_task_status:null, created_at:$n}')
+  local jobs
+  jobs=$(yq -o=json '.jobs // []' "$JOBS_FILE" 2>/dev/null || echo '[]')
+  printf '%s' "$jobs" | jq --argjson j "$job" '. + [$j]' | yq -P '{"jobs": .}' > "$JOBS_FILE"
 
   run "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
@@ -3392,6 +3404,8 @@ YAML
 @test "all scripts set PROJECT_DIR before load_project_config" {
   # This is a lint test — ensures no script calls load_project_config
   # before setting PROJECT_DIR, which causes wrong config loading.
+  # Scripts that never assign PROJECT_DIR= are fine — they receive it
+  # from the environment (e.g. serve.sh passes PROJECT_DIR=X poll.sh).
   FAILURES=""
   for f in "${REPO_DIR}"/scripts/*.sh; do
     [ -f "$f" ] || continue
@@ -3399,10 +3413,15 @@ YAML
     # Skip lib.sh (defines the function)
     [ "$fname" = "lib.sh" ] && continue
     grep -q 'load_project_config' "$f" || continue
-    pd_line=$(grep -n 'PROJECT_DIR=' "$f" | head -1 | cut -d: -f1)
+    # Only count standalone PROJECT_DIR= assignments (export/local/bare),
+    # not inline env prefixes like $(PROJECT_DIR=x cmd args)
+    pd_line=$(grep -En '^[[:space:]]*(export )?PROJECT_DIR=' "$f" | head -1 | cut -d: -f1)
     lp_line=$(grep -n 'load_project_config' "$f" | head -1 | cut -d: -f1)
-    if [ -z "$pd_line" ] || [ "$pd_line" -gt "$lp_line" ]; then
-      FAILURES="${FAILURES}${fname}: PROJECT_DIR set at line ${pd_line:-MISSING}, load_project_config at line ${lp_line}\n"
+    # If no standalone PROJECT_DIR= assignment exists, the script inherits
+    # it from the environment (safe: load_project_config no-ops when unset)
+    [ -z "$pd_line" ] && continue
+    if [ "$pd_line" -gt "$lp_line" ]; then
+      FAILURES="${FAILURES}${fname}: PROJECT_DIR set at line ${pd_line}, load_project_config at line ${lp_line}\n"
     fi
   done
   if [ -n "$FAILURES" ]; then
@@ -5532,4 +5551,77 @@ SH
   run bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_ids_by_status routed"
   [ "$status" -eq 0 ]
   [[ \"$output\" != *\"${TASK2_ID}\"* ]]
+}
+
+# --- Multi-project and projects.yml tests ---
+
+@test "db_task_projects returns PROJECT_DIR when set" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && PROJECT_DIR='${PROJECT_DIR}' db_task_projects"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"${PROJECT_DIR}"* ]]
+}
+
+@test "db_task_projects reads projects.yml registry" {
+  # Create a real directory for the registered project
+  PROJ_REG="${TMP_DIR}/proj_from_registry"
+  mkdir -p "$PROJ_REG"
+
+  cat > "${ORCH_HOME}/projects.yml" <<YAML
+projects:
+  - name: test-project
+    path: ${PROJ_REG}
+YAML
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_projects"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"${PROJ_REG}"* ]]
+}
+
+@test "db_task_projects deduplicates paths" {
+  cat > "${ORCH_HOME}/projects.yml" <<YAML
+projects:
+  - name: main-project
+    path: ${PROJECT_DIR}
+YAML
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && PROJECT_DIR='${PROJECT_DIR}' db_task_projects"
+  [ "$status" -eq 0 ]
+  # Should appear exactly once despite being in both PROJECT_DIR and registry
+  local count
+  count=$(echo "$output" | grep -c "^${PROJECT_DIR}$" || true)
+  [ "$count" -eq 1 ]
+}
+
+@test "db_task_projects skips non-existent registry paths" {
+  cat > "${ORCH_HOME}/projects.yml" <<YAML
+projects:
+  - name: ghost
+    path: /nonexistent/path/that/does/not/exist
+YAML
+
+  run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && db_task_projects"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "db_task_projects returns empty for empty registry" {
+  cat > "${ORCH_HOME}/projects.yml" <<YAML
+projects: []
+YAML
+
+  run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && db_task_projects"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "_jobs_file returns project-local path when PROJECT_DIR is set" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && PROJECT_DIR='${PROJECT_DIR}' _jobs_file"
+  [ "$status" -eq 0 ]
+  [ "$output" = "${PROJECT_DIR}/.orchestrator/jobs.yml" ]
+}
+
+@test "_jobs_file returns global path when PROJECT_DIR is unset" {
+  run bash -c "unset PROJECT_DIR JOBS_FILE; source '${REPO_DIR}/scripts/lib.sh' && _jobs_file"
+  [ "$status" -eq 0 ]
+  [ "$output" = "${ORCH_HOME}/jobs.yml" ]
 }
