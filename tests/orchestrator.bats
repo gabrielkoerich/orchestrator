@@ -879,8 +879,8 @@ SH
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Usage Limit Reroute" "Should reroute on rate limit" "")
   TASK2_ID=$(_task_id "$TASK_OUTPUT")
 
-  # Keep fallback deterministic across environments (dev machines may have opencode installed).
-  yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+  # Keep fallback deterministic: only claude and codex available.
+  yq -i '.router.disabled_agents = ["opencode", "kimi", "minimax"]' "$CONFIG_PATH"
 
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
@@ -920,8 +920,8 @@ SH
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Usage Limit Non-JSON" "Should reroute even if response is not JSON" "")
   TASK2_ID=$(_task_id "$TASK_OUTPUT")
 
-  # Keep fallback deterministic across environments (dev machines may have opencode installed).
-  yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+  # Keep fallback deterministic: only claude and codex available.
+  yq -i '.router.disabled_agents = ["opencode", "kimi", "minimax"]' "$CONFIG_PATH"
 
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
@@ -956,8 +956,8 @@ SH
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Usage Limit Ping Pong" "Should not bounce back to previous agent" "")
   TASK2_ID=$(_task_id "$TASK_OUTPUT")
 
-  # Keep fallback deterministic across environments (dev machines may have opencode installed).
-  yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+  # Keep fallback deterministic: only claude and codex available.
+  yq -i '.router.disabled_agents = ["opencode", "kimi", "minimax"]' "$CONFIG_PATH"
 
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
@@ -1005,7 +1005,8 @@ SH
   TASK_OUTPUT=$("${REPO_DIR}/scripts/add_task.sh" "Usage Limit In-Progress Chain" "Chain must survive in_progress" "")
   TASK2_ID=$(_task_id "$TASK_OUTPUT")
 
-  yq -i '.router.disabled_agents = ["opencode"]' "$CONFIG_PATH"
+  # Keep fallback deterministic: only claude and codex available.
+  yq -i '.router.disabled_agents = ["opencode", "kimi", "minimax"]' "$CONFIG_PATH"
 
   # codex reports rate limit → triggers reroute to claude
   CODEX_STUB="${TMP_DIR}/codex"

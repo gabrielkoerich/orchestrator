@@ -336,9 +336,8 @@ else
   GIT_DIFF=""
 fi
 
-# Output file for agentic mode
-mkdir -p "${PROJECT_DIR}/.orchestrator"
-OUTPUT_FILE="${PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json"
+# Output file for agentic mode — use /tmp to avoid gitignore restrictions (opencode won't write to .orchestrator/)
+OUTPUT_FILE="/tmp/output-${TASK_ID}.json"
 rm -f "$OUTPUT_FILE"
 export OUTPUT_FILE
 
@@ -1181,8 +1180,9 @@ if [ -f "$OUTPUT_FILE" ]; then
   log_err "[run] read output from $OUTPUT_FILE"
 else
   for _alt in "${STATE_DIR}/output-${TASK_ID}.json" \
-              "${PROJECT_DIR}/.orchestrator-output-${TASK_ID}.json" \
-              "/tmp/output-${TASK_ID}.json"; do
+              "${MAIN_PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json" \
+              "${PROJECT_DIR}/.orchestrator/output-${TASK_ID}.json" \
+              "${PROJECT_DIR}/.orchestrator-output-${TASK_ID}.json"; do
     if [ -f "$_alt" ]; then
       RESPONSE_JSON=$(cat "$_alt")
       rm -f "$_alt"
@@ -1192,13 +1192,52 @@ else
   done
   if [ -z "$RESPONSE_JSON" ]; then
     log_err "[run] output file not found, trying stdout fallback"
-    RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+    # For opencode: stdout is NDJSON events — extract the last text block that looks like JSON
+    if [ "$TASK_AGENT" = "opencode" ]; then
+      RESPONSE_JSON=$(printf '%s' "$RESPONSE" | python3 -c "
+import sys, json
+text_parts = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    try:
+        ev = json.loads(line)
+        if ev.get('type') == 'text':
+            text_parts.append(ev.get('part', {}).get('text', ''))
+    except: pass
+# Find last text block containing JSON
+for text in reversed(text_parts):
+    text = text.strip()
+    start = text.find('{')
+    if start >= 0:
+        try:
+            candidate = text[start:]
+            json.loads(candidate)
+            print(candidate)
+            break
+        except: pass
+" 2>/dev/null || true)
+    fi
+    if [ -z "$RESPONSE_JSON" ]; then
+      RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
+    fi
   fi
 fi
 
 if [ -z "$RESPONSE_JSON" ]; then
   if is_usage_limit_error "${RESPONSE}${AGENT_STDERR}"; then
     reroute_on_usage_limit "${RESPONSE}${AGENT_STDERR}" "invalid/empty response (likely due to usage limit)" || true
+    exit 0
+  fi
+  if printf '%s' "${RESPONSE}${AGENT_STDERR}" | rg -qi 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|expired.*(key|token|plan)|billing|insufficient.*credit|payment.*required|credit.balance.*too.low'; then
+    error_log "[run] task=$TASK_ID AUTH/BILLING ERROR (exit=0) for agent=$TASK_AGENT"
+    NEXT_AGENT=$(pick_fallback_agent "$TASK_AGENT" "" 2>/dev/null || true)
+    if [ -n "$NEXT_AGENT" ]; then
+      db_task_update "$TASK_ID" "agent=$NEXT_AGENT" "agent_model=" "status=new" "last_error=$TASK_AGENT auth/billing error (exit=0), switched to $NEXT_AGENT"
+      append_history "$TASK_ID" "new" "$TASK_AGENT auth/billing error — switched to $NEXT_AGENT"
+    else
+      mark_needs_review "$TASK_ID" "$ATTEMPTS" "auth/billing error for $TASK_AGENT (exit=0) — no other agents available"
+    fi
     exit 0
   fi
   log_err "[run] task=$TASK_ID invalid JSON response"
