@@ -331,6 +331,24 @@ elif [ -t 0 ]; then
   fi
 fi
 
+# Ensure project state directory exists
+mkdir -p "$PROJECT_DIR/.orchestrator"
+
+# Register project in global projects.yml for multi-project polling
+ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
+REGISTRY="${ORCH_HOME}/projects.yml"
+mkdir -p "$ORCH_HOME"
+if [ ! -f "$REGISTRY" ]; then
+  printf 'projects: []\n' > "$REGISTRY"
+fi
+# Check if project already registered (by path)
+_registered=$(yq -r ".projects[] | select(.path == \"$PROJECT_DIR\") | .path" "$REGISTRY" 2>/dev/null || true)
+if [ -z "$_registered" ]; then
+  PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
+  yq -i ".projects += [{\"name\": \"$PROJECT_NAME\", \"path\": \"$PROJECT_DIR\"}]" "$REGISTRY"
+  echo "  Registered in $REGISTRY"
+fi
+
 # Sync skills on first init
 echo ""
 echo "Syncing skills..."
