@@ -24,19 +24,35 @@ source "$_BACKEND_IMPL"
 # Jobs CRUD (YAML file backed — stays the same across backends)
 # ============================================================
 
+# Jobs file is per-project: PROJECT_DIR/.orchestrator/jobs.yml
+# Falls back to ORCH_HOME/jobs.yml for backward compat
+_jobs_file() {
+  local pf="${PROJECT_DIR:+${PROJECT_DIR}/.orchestrator/jobs.yml}"
+  if [ -n "$pf" ] && [ -f "$pf" ]; then
+    echo "$pf"
+  else
+    echo "${JOBS_FILE:-${ORCH_HOME}/jobs.yml}"
+  fi
+}
+
 JOBS_FILE="${JOBS_FILE:-${ORCH_HOME}/jobs.yml}"
 
 # Ensure jobs file exists
 backend_init_jobs() {
-  if [ ! -f "$JOBS_FILE" ]; then
-    printf 'jobs: []\n' > "$JOBS_FILE"
+  local jf
+  jf=$(_jobs_file)
+  if [ ! -f "$jf" ]; then
+    mkdir -p "$(dirname "$jf")"
+    printf 'jobs: []\n' > "$jf"
   fi
 }
 
 # Read jobs array from YAML as JSON
 _read_jobs() {
-  if [ -f "$JOBS_FILE" ]; then
-    yq -o=json '.jobs // []' "$JOBS_FILE" 2>/dev/null || echo '[]'
+  local jf
+  jf=$(_jobs_file)
+  if [ -f "$jf" ]; then
+    yq -o=json '.jobs // []' "$jf" 2>/dev/null || echo '[]'
   else
     echo '[]'
   fi
@@ -45,7 +61,10 @@ _read_jobs() {
 # Write JSON array back to YAML
 _write_jobs() {
   local json="$1"
-  printf '%s' "$json" | yq -P '{"jobs": .}' > "$JOBS_FILE"
+  local jf
+  jf=$(_jobs_file)
+  mkdir -p "$(dirname "$jf")"
+  printf '%s' "$json" | yq -P '{"jobs": .}' > "$jf"
 }
 
 db_create_job() {

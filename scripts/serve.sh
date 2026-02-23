@@ -159,9 +159,29 @@ fi
 while true; do
   $_stopping && { _log "[serve] shutting down gracefully" >> "$LOG_FILE"; run_hook on_service_stop; break; }
   _log "[serve] tick" >> "$LOG_FILE"
-  "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
+  # Poll all registered projects
+  POLL_DIRS=$(db_task_projects 2>/dev/null || true)
+  if [ -n "$POLL_DIRS" ]; then
+    while IFS= read -r pdir; do
+      $_stopping && break
+      [ -n "$pdir" ] && [ -d "$pdir" ] || continue
+      _log "[serve] poll project=$pdir" >> "$LOG_FILE"
+      PROJECT_DIR="$pdir" "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
+    done <<< "$POLL_DIRS"
+  else
+    "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
+  fi
   $_stopping && break
-  "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
+  # Run job scheduler for each project (project-local jobs.yml)
+  if [ -n "$POLL_DIRS" ]; then
+    while IFS= read -r pdir; do
+      $_stopping && break
+      [ -n "$pdir" ] && [ -d "$pdir" ] || continue
+      PROJECT_DIR="$pdir" "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
+    done <<< "$POLL_DIRS"
+  else
+    "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
+  fi
   $_stopping && break
   NOW_EPOCH=$(date +%s)
   if [ $((NOW_EPOCH - LAST_GH_PULL)) -ge "$GH_PULL_INTERVAL" ]; then

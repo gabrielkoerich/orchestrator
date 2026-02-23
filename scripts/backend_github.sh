@@ -1526,6 +1526,11 @@ db_task_projects() {
   {
     _read_jobs | jq -r '.[].dir // empty' 2>/dev/null || true
     [ -n "${PROJECT_DIR:-}" ] && echo "$PROJECT_DIR"
+    # Read from projects.yml registry
+    local registry="${ORCH_HOME:-$HOME/.orchestrator}/projects.yml"
+    if [ -f "$registry" ]; then
+      yq -r '.projects[]?.path // empty' "$registry" 2>/dev/null || true
+    fi
   } | sort -u | while IFS= read -r d; do
     [ -n "$d" ] && [ "$d" != "null" ] && [ -d "$d" ] && echo "$d"
   done
