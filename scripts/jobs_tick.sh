@@ -126,6 +126,10 @@ for JOB_ID in $JOB_IDS; do
   fi
 
   # Task job: create a task for agent processing
+  # Update last_run BEFORE creation to prevent duplicate catch-up runs
+  NOW=$(now_iso)
+  db_job_set "$JOB_ID" "last_run" "$NOW"
+
   # Add job tracking labels
   if [ -n "$JOB_LABELS" ] && [ "$JOB_LABELS" != "null" ]; then
     JOB_LABELS="${JOB_LABELS},scheduled,job:${JOB_ID}"
@@ -142,8 +146,6 @@ for JOB_ID in $JOB_IDS; do
   fi
 
   # Update job state
-  NOW=$(now_iso)
-  db_job_set "$JOB_ID" "last_run" "$NOW"
   db_job_set "$JOB_ID" "active_task_id" "$NEW_TASK_ID"
 
   export TASK_ID="$NEW_TASK_ID"

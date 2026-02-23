@@ -13,6 +13,24 @@ LOCK_PATH=${LOCK_PATH:-"${ORCH_HOME}/.orchestrator/locks"}
 CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
 STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
+
+# Augment PATH and load functions (brew services / launchd start with minimal env)
+_path_found=false
+if [[ -f "$HOME/.path" ]]; then
+  _old_path="$PATH"
+  source "$HOME/.path" >/dev/null 2>&1
+  export PATH="${_old_path}:${PATH}"
+  _path_found=true
+fi
+if [[ -f "$HOME/.functions" ]]; then
+  source "$HOME/.functions" >/dev/null 2>&1
+fi
+# Fallback dev tool locations if no .path file found
+if ! $_path_found; then
+  for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.local/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
+    [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
+  done
+fi
 # Source backend layer (GitHub, etc.)
 _LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [ -f "${_LIB_DIR}/backend.sh" ]; then
