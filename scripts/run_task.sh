@@ -512,7 +512,7 @@ ASYNC_TMUX=${ASYNC_TMUX:-$(config_get '.workflow.async_tmux // "true"')}
 _USED_TMUX=false
 TMUX_RESPONSE_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-response-${ATTEMPTS}.txt"
 TMUX_STATUS_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-status-${ATTEMPTS}.txt"
-TMUX_SESSION="orch-${TASK_ID}"
+TMUX_SESSION="orch-${PROJECT_NAME}-${TASK_ID}"
 USE_TMUX=${USE_TMUX:-$(config_get '.workflow.use_tmux // "true"')}
 
 # Collect agent output and update task. Called after agent finishes (sync or async).
