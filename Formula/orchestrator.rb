@@ -24,7 +24,6 @@ class Orchestrator < Formula
       set -euo pipefail
 
       export ORCH_VERSION="#{version}"
-      export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
       export ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
       export ORCH_BREW=1
 
@@ -32,6 +31,11 @@ class Orchestrator < Formula
       case "${1:-}" in
         --version|-V) echo "orchestrator $ORCH_VERSION"; exit 0 ;;
       esac
+
+      # Set PROJECT_DIR from cwd, but not for serve (service runs from /)
+      if [ "${1:-}" != "serve" ] && [ "${1:-}" != "_service_serve" ] && [ "${1:-}" != "start" ]; then
+        export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+      fi
 
       mkdir -p "$ORCH_HOME"
 

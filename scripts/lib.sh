@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ORCH_HOME="${ORCH_HOME:-$HOME/.orchestrator}"
+# Guard against empty/root PROJECT_DIR (e.g. brew service starts from /)
+if [ "${PROJECT_DIR:-}" = "/" ] || [ "${PROJECT_DIR:-}" = "" ]; then
+  unset PROJECT_DIR
+fi
 mkdir -p "$ORCH_HOME"
 
 ORCH_WORKTREES="${ORCH_WORKTREES:-${ORCH_HOME}/worktrees}"
