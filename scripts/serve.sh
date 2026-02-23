@@ -172,7 +172,8 @@ while true; do
     "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
   fi
   $_stopping && break
-  # Run job scheduler: per-project for those with a local jobs.yml
+  # Run job scheduler: per-project for those with a local jobs.yml,
+  # then always run global scheduler for ORCH_HOME/jobs.yml (backward compat)
   if [ -n "$POLL_DIRS" ]; then
     while IFS= read -r pdir; do
       $_stopping && break
@@ -180,9 +181,8 @@ while true; do
       [ -f "$pdir/.orchestrator/jobs.yml" ] || continue
       PROJECT_DIR="$pdir" "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
     done <<< "$POLL_DIRS"
-  else
-    "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
   fi
+  $_stopping || "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
   $_stopping && break
   NOW_EPOCH=$(date +%s)
   if [ $((NOW_EPOCH - LAST_GH_PULL)) -ge "$GH_PULL_INTERVAL" ]; then

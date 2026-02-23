@@ -3403,7 +3403,7 @@ YAML
     grep -q 'load_project_config' "$f" || continue
     # Only count standalone PROJECT_DIR= assignments (export/local/bare),
     # not inline env prefixes like $(PROJECT_DIR=x cmd args)
-    pd_line=$(grep -n '^\s*\(export \)\?PROJECT_DIR=' "$f" | head -1 | cut -d: -f1)
+    pd_line=$(grep -En '^[[:space:]]*(export )?PROJECT_DIR=' "$f" | head -1 | cut -d: -f1)
     lp_line=$(grep -n 'load_project_config' "$f" | head -1 | cut -d: -f1)
     # If no standalone PROJECT_DIR= assignment exists, the script inherits
     # it from the environment (safe: load_project_config no-ops when unset)
@@ -5611,7 +5611,5 @@ YAML
 @test "_jobs_file returns global path when PROJECT_DIR is unset" {
   run bash -c "unset PROJECT_DIR; source '${REPO_DIR}/scripts/lib.sh' && _jobs_file"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"jobs.yml" ]]
-  # Should be global path (ORCH_HOME), not project-local
-  [[ "$output" == *"orch_home"* ]]
+  [ "$output" = "${ORCH_HOME}/jobs.yml" ]
 }
