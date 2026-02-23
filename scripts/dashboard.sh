@@ -78,9 +78,8 @@ fi
 # Show active worktrees
 section "Worktrees:"
 _WT_FOUND=false
-for _wt_dir in "${ORCH_WORKTREES}"; do
-  [ -d "$_wt_dir" ] || continue
-  _WTS=$(fd --min-depth 1 --max-depth 2 --type d . "$_wt_dir" 2>/dev/null || true)
+if [ -d "$ORCH_WORKTREES" ]; then
+  _WTS=$(fd --min-depth 1 --max-depth 3 --type d . "$ORCH_WORKTREES" 2>/dev/null || true)
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
     # Only show directories that are actual git worktrees
@@ -89,7 +88,7 @@ for _wt_dir in "${ORCH_WORKTREES}"; do
     printf '  %s (%s)\n' "$wt" "$branch"
     _WT_FOUND=true
   done <<< "$_WTS"
-done
+fi
 if [ "$_WT_FOUND" = false ]; then
   echo "  (none)"
 fi

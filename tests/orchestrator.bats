@@ -88,11 +88,7 @@ tdb_job_count() {
 }
 
 teardown() {
-  # Clean up project-local worktrees
-  if [ -d "${TMP_DIR}/.orchestrator/worktrees" ]; then
-    (cd "$TMP_DIR" && git worktree prune 2>/dev/null) || true
-  fi
-  # Clean up global worktrees (legacy location)
+  # Clean up global worktrees
   PROJECT_NAME=$(basename "$TMP_DIR")
   WORKTREE_BASE="${ORCH_HOME}/worktrees/${PROJECT_NAME}"
   if [ -d "$WORKTREE_BASE" ]; then
@@ -3509,9 +3505,9 @@ STUB
     "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
   [ "$status" -eq 0 ]
 
-  # Verify worktree was created (project-local location)
+  # Verify worktree was created (global location ~/.orchestrator/worktrees/<project>/)
   # In GitHub backend, task ID = issue number, so branch uses TASK2_ID
-  WORKTREE_DIR="${PROJECT_DIR}/.orchestrator/worktrees/gh-task-${TASK2_ID}-add-readme"
+  WORKTREE_DIR="${ORCH_HOME}/worktrees/$(basename "$PROJECT_DIR")/gh-task-${TASK2_ID}-add-readme"
   [ -d "$WORKTREE_DIR" ]
 
   BRANCH_NAME="gh-task-${TASK2_ID}-add-readme"
@@ -3608,10 +3604,10 @@ STUB
     "${REPO_DIR}/scripts/run_task.sh" "$TASK2_ID"
   [ "$status" -eq 0 ]
 
-  # Verify worktree was created (project-local location)
+  # Verify worktree was created (global location ~/.orchestrator/worktrees/<project>/)
   # In GitHub backend, task ID = issue number
   BRANCH_NAME="gh-task-${TASK2_ID}-add-license"
-  WORKTREE_DIR="${PROJECT_DIR}/.orchestrator/worktrees/${BRANCH_NAME}"
+  WORKTREE_DIR="${ORCH_HOME}/worktrees/$(basename "$PROJECT_DIR")/${BRANCH_NAME}"
   [ -d "$WORKTREE_DIR" ]
 
   # Verify orchestrator auto-committed the changes
