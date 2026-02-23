@@ -508,412 +508,15 @@ if [ -n "$AGENT_MODEL" ] && [ "$AGENT_MODEL" != "null" ]; then
 fi
 
 CMD_STATUS=0
+ASYNC_TMUX=${ASYNC_TMUX:-$(config_get '.workflow.async_tmux // "true"')}
+_USED_TMUX=false
 TMUX_RESPONSE_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-response-${ATTEMPTS}.txt"
 TMUX_STATUS_FILE="${STATE_DIR}/${FILE_PREFIX}-tmux-status-${ATTEMPTS}.txt"
 TMUX_SESSION="orch-${TASK_ID}"
 USE_TMUX=${USE_TMUX:-$(config_get '.workflow.use_tmux // "true"')}
 
-# Wait for tmux session to finish with a timeout
-# Usage: tmux_wait <session_name> <timeout_seconds>
-tmux_wait() {
-  local session="$1"
-  local timeout="${2:-${AGENT_TIMEOUT_SECONDS:-1800}}"
-  local elapsed=0
-  while tmux has-session -t "$session" 2>/dev/null; do
-    sleep 5
-    if [ "$timeout" != "0" ]; then
-      elapsed=$((elapsed + 5))
-      if [ "$elapsed" -ge "$timeout" ]; then
-        log_err "[run] task=$TASK_ID tmux session timed out after ${timeout}s"
-        tmux kill-session -t "$session" 2>/dev/null || true
-        CMD_STATUS=124
-        return 1
-      fi
-    fi
-  done
-  return 0
-}
-
-# Build agent command into a runner script for tmux
-RUNNER_SCRIPT="${STATE_DIR}/${FILE_PREFIX}-runner-${ATTEMPTS}.sh"
-
-case "$TASK_AGENT" in
-  claude)
-    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
-    DISALLOW_ARGS=()
-    if [ -n "$DISALLOWED_TOOLS" ]; then
-      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
-      for _t in "${_tools[@]}"; do
-        DISALLOW_ARGS+=(--disallowedTools "$_t")
-      done
-    fi
-    ALLOW_ARGS=()
-    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
-    if [ -n "$ALLOWED_TOOLS" ]; then
-      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
-      for _t in "${_atools[@]}"; do
-        ALLOW_ARGS+=(--allowedTools "$_t")
-      done
-    fi
-
-    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
-      # Write prompt content to temp files to avoid shell injection from task data
-      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
-      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
-      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
-      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
-      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
-      # Write tool args one per line for safe reading
-      {
-        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
-        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
-      } > "$TOOL_ARGS_FILE"
-
-      # Use quoted heredoc to prevent variable expansion in the script body
-      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-RUNNER_EOF
-      # Append environment setup (safe values only — no user-controlled data)
-      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
-export PATH="$PATH"
-export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
-export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
-export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
-export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
-export ORCH_HOME="$ORCH_HOME"
-cd "$PROJECT_DIR"
-TOOL_ARGS=()
-while IFS= read -r arg; do
-  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
-done < "$TOOL_ARGS_FILE"
-claude -p \
-  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
-  --permission-mode bypassPermissions \
-  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
-  --output-format json \
-  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
-  "\$(cat "$PROMPT_MSG_FILE")" \
-  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
-echo \$? > "$TMUX_STATUS_FILE"
-RUNNER_ENV
-      chmod +x "$RUNNER_SCRIPT"
-
-      # Kill any existing session for this task
-      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-
-      # Start tmux session with the runner
-      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
-      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
-      run_hook on_agent_session_start
-
-      # Wait for the session to complete (with timeout)
-      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
-      run_hook on_agent_session_end
-
-      # Read response from file
-      if [ -f "$TMUX_RESPONSE_FILE" ]; then
-        RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
-      fi
-      if [ -f "$TMUX_STATUS_FILE" ]; then
-        CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
-      fi
-    else
-      # No tmux — run directly (original behavior)
-      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
-        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
-        --permission-mode bypassPermissions \
-        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
-        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
-        --output-format json \
-        --append-system-prompt "$SYSTEM_PROMPT" \
-        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
-    fi
-    ;;
-  kimi)
-    log_err "[run] cmd: kimi -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
-    DISALLOW_ARGS=()
-    if [ -n "$DISALLOWED_TOOLS" ]; then
-      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
-      for _t in "${_tools[@]}"; do
-        DISALLOW_ARGS+=(--disallowedTools "$_t")
-      done
-    fi
-    ALLOW_ARGS=()
-    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
-    if [ -n "$ALLOWED_TOOLS" ]; then
-      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
-      for _t in "${_atools[@]}"; do
-        ALLOW_ARGS+=(--allowedTools "$_t")
-      done
-    fi
-
-    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
-      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
-      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
-      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
-      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
-      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
-      {
-        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
-        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
-      } > "$TOOL_ARGS_FILE"
-
-      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-RUNNER_EOF
-      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
-export PATH="$PATH"
-export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
-export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
-export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
-export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
-export ORCH_HOME="$ORCH_HOME"
-cd "$PROJECT_DIR"
-TOOL_ARGS=()
-while IFS= read -r arg; do
-  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
-done < "$TOOL_ARGS_FILE"
-kimi -p \
-  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
-  --permission-mode bypassPermissions \
-  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
-  --output-format json \
-  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
-  "\$(cat "$PROMPT_MSG_FILE")" \
-  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
-echo \$? > "$TMUX_STATUS_FILE"
-RUNNER_ENV
-      chmod +x "$RUNNER_SCRIPT"
-
-      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
-      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
-      run_hook on_agent_session_start
-
-      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
-      run_hook on_agent_session_end
-
-      if [ -f "$TMUX_RESPONSE_FILE" ]; then
-        RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
-      fi
-      if [ -f "$TMUX_STATUS_FILE" ]; then
-        CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
-      fi
-    else
-      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout kimi -p \
-        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
-        --permission-mode bypassPermissions \
-        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
-        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
-        --output-format json \
-        --append-system-prompt "$SYSTEM_PROMPT" \
-        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
-    fi
-    ;;
-  minimax)
-    log_err "[run] cmd: minimax -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
-    DISALLOW_ARGS=()
-    if [ -n "$DISALLOWED_TOOLS" ]; then
-      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
-      for _t in "${_tools[@]}"; do
-        DISALLOW_ARGS+=(--disallowedTools "$_t")
-      done
-    fi
-    ALLOW_ARGS=()
-    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
-    if [ -n "$ALLOWED_TOOLS" ]; then
-      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
-      for _t in "${_atools[@]}"; do
-        ALLOW_ARGS+=(--allowedTools "$_t")
-      done
-    fi
-
-    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
-      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
-      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
-      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
-      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
-      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
-      {
-        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
-        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
-      } > "$TOOL_ARGS_FILE"
-
-      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-RUNNER_EOF
-      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
-export PATH="$PATH"
-export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
-export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
-export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
-export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
-export ORCH_HOME="$ORCH_HOME"
-cd "$PROJECT_DIR"
-TOOL_ARGS=()
-while IFS= read -r arg; do
-  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
-done < "$TOOL_ARGS_FILE"
-minimax -p \
-  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
-  --permission-mode bypassPermissions \
-  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
-  --output-format json \
-  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
-  "\$(cat "$PROMPT_MSG_FILE")" \
-  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
-echo \$? > "$TMUX_STATUS_FILE"
-RUNNER_ENV
-      chmod +x "$RUNNER_SCRIPT"
-
-      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
-      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
-      run_hook on_agent_session_start
-
-      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
-      run_hook on_agent_session_end
-
-      if [ -f "$TMUX_RESPONSE_FILE" ]; then
-        RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
-      fi
-      if [ -f "$TMUX_STATUS_FILE" ]; then
-        CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
-      fi
-    else
-      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout minimax -p \
-        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
-        --permission-mode bypassPermissions \
-        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
-        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
-        --output-format json \
-        --append-system-prompt "$SYSTEM_PROMPT" \
-        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
-    fi
-    ;;
-  codex)
-    log_err "[run] cmd: codex ${AGENT_MODEL:+-m $AGENT_MODEL} --ask-for-approval never --sandbox <mode> exec --json <stdin>"
-    FULL_MESSAGE="${SYSTEM_PROMPT}
-
-${AGENT_MESSAGE}"
-    CODEX_SANDBOX=${CODEX_SANDBOX:-$(config_get '.agents.codex.sandbox // "full-auto"')}
-    CODEX_ARGS=()
-    # Orchestrator runs Codex non-interactively; approvals will never be granted, so disable them.
-    CODEX_ARGS+=(--ask-for-approval never)
-    case "$CODEX_SANDBOX" in
-      full-auto)
-        # Avoid `--full-auto` (implies `--ask-for-approval on-request`); keep sandboxed execution.
-        CODEX_ARGS+=(--sandbox workspace-write)
-        CODEX_ARGS+=(-c 'sandbox_workspace_write.network_access=true')
-        CODEX_ARGS+=(-c 'sandbox_permissions=["disk-full-read-access"]')
-        CODEX_ARGS+=(-c 'shell_environment_policy.inherit=all')
-        ;;
-      workspace-write)
-        CODEX_ARGS+=(--sandbox workspace-write)
-        CODEX_ARGS+=(-c 'sandbox_workspace_write.network_access=true')
-        CODEX_ARGS+=(-c 'sandbox_permissions=["disk-full-read-access"]')
-        CODEX_ARGS+=(-c 'shell_environment_policy.inherit=all')
-        ;;
-      danger-full-access)
-        CODEX_ARGS+=(--sandbox danger-full-access)
-        ;;
-      none)
-        CODEX_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
-        ;;
-    esac
-
-    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
-      PROMPT_INPUT_FILE="${STATE_DIR}/${FILE_PREFIX}-codex-input-${ATTEMPTS}.txt"
-      printf '%s' "$FULL_MESSAGE" > "$PROMPT_INPUT_FILE"
-      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export PATH="$PATH"
-export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
-export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
-export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
-export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
-cd "$PROJECT_DIR"
-cat "$PROMPT_INPUT_FILE" | codex \
-  ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-  $(printf '%s ' ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"}) \
-  exec --json - \
-  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
-echo \$? > "$TMUX_STATUS_FILE"
-RUNNER_EOF
-      chmod +x "$RUNNER_SCRIPT"
-      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
-      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
-
-      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
-
-      [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
-      [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
-    else
-      RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex \
-        ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-        ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"} \
-        exec --json - \
-        2>"$STDERR_FILE") || CMD_STATUS=$?
-    fi
-    ;;
-  opencode)
-    # If no model set (round_robin), pick random from agents.opencode.models
-    if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
-      OPENCODE_MODELS=$(config_get '.agents.opencode.models // []' 2>/dev/null | yq -o=json - 2>/dev/null || echo "[]")
-      if [ -n "$OPENCODE_MODELS" ] && [ "$OPENCODE_MODELS" != "[]" ]; then
-        AGENT_MODEL=$(printf '%s' "$OPENCODE_MODELS" | jq -r ".[$(($(date +%s) % $(printf '%s' "$OPENCODE_MODELS" | jq 'length')))]")
-      fi
-    fi
-    log_err "[run] cmd: opencode run ${AGENT_MODEL:+-m $AGENT_MODEL} --format json <message>"
-    FULL_MESSAGE="${SYSTEM_PROMPT}
-
-${AGENT_MESSAGE}"
-
-    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
-      PROMPT_INPUT_FILE="${STATE_DIR}/${FILE_PREFIX}-opencode-input-${ATTEMPTS}.txt"
-      printf '%s' "$FULL_MESSAGE" > "$PROMPT_INPUT_FILE"
-      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export PATH="$PATH"
-export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
-export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
-export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
-export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
-cd "$PROJECT_DIR"
-opencode run \
-  ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-  --format json \
-  "\$(cat "$PROMPT_INPUT_FILE")" > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
-echo \$? > "$TMUX_STATUS_FILE"
-RUNNER_EOF
-      chmod +x "$RUNNER_SCRIPT"
-      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
-      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
-
-      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
-
-      [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE")
-      [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE")
-    else
-      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
-        ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
-        --format json \
-        "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
-    fi
-    ;;
-  *)
-    log_err "[run] task=$TASK_ID unknown agent: $TASK_AGENT"
-    exit 1
-    ;;
-esac
-
+# Collect agent output and update task. Called after agent finishes (sync or async).
+_collect_agent_output() {
 stop_spinner
 cleanup_monitor
 AGENT_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -1590,3 +1193,398 @@ case "$AGENT_STATUS" in
   needs_review)   run_hook on_task_failed ;;
   *)              run_hook on_task_completed ;;
 esac
+}
+
+# Wait for tmux session to finish with a timeout
+# Usage: tmux_wait <session_name> <timeout_seconds>
+tmux_wait() {
+  local session="$1"
+  local timeout="${2:-${AGENT_TIMEOUT_SECONDS:-1800}}"
+  local elapsed=0
+  while tmux has-session -t "$session" 2>/dev/null; do
+    sleep 5
+    if [ "$timeout" != "0" ]; then
+      elapsed=$((elapsed + 5))
+      if [ "$elapsed" -ge "$timeout" ]; then
+        log_err "[run] task=$TASK_ID tmux session timed out after ${timeout}s"
+        tmux kill-session -t "$session" 2>/dev/null || true
+        CMD_STATUS=124
+        return 1
+      fi
+    fi
+  done
+  return 0
+}
+
+# Build agent command into a runner script for tmux
+RUNNER_SCRIPT="${STATE_DIR}/${FILE_PREFIX}-runner-${ATTEMPTS}.sh"
+
+case "$TASK_AGENT" in
+  claude)
+    log_err "[run] cmd: claude -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
+    DISALLOW_ARGS=()
+    if [ -n "$DISALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
+      for _t in "${_tools[@]}"; do
+        DISALLOW_ARGS+=(--disallowedTools "$_t")
+      done
+    fi
+    ALLOW_ARGS=()
+    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
+    if [ -n "$ALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
+      for _t in "${_atools[@]}"; do
+        ALLOW_ARGS+=(--allowedTools "$_t")
+      done
+    fi
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      # Write prompt content to temp files to avoid shell injection from task data
+      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
+      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
+      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
+      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
+      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
+      # Write tool args one per line for safe reading
+      {
+        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
+        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
+      } > "$TOOL_ARGS_FILE"
+
+      # Use quoted heredoc to prevent variable expansion in the script body
+      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+RUNNER_EOF
+      # Append environment setup (safe values only — no user-controlled data)
+      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+export ORCH_HOME="$ORCH_HOME"
+cd "$PROJECT_DIR"
+TOOL_ARGS=()
+while IFS= read -r arg; do
+  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
+done < "$TOOL_ARGS_FILE"
+claude -p \
+  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+  --permission-mode bypassPermissions \
+  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
+  --output-format json \
+  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
+  "\$(cat "$PROMPT_MSG_FILE")" \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_ENV
+      chmod +x "$RUNNER_SCRIPT"
+
+      # Kill any existing session for this task
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+      # Start tmux session with the runner
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
+      run_hook on_agent_session_start
+      _USED_TMUX=true
+    else
+      # No tmux — run directly (original behavior)
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout claude -p \
+        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+        --permission-mode bypassPermissions \
+        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
+        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
+        --output-format json \
+        --append-system-prompt "$SYSTEM_PROMPT" \
+        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
+    ;;
+  kimi)
+    log_err "[run] cmd: kimi -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
+    DISALLOW_ARGS=()
+    if [ -n "$DISALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
+      for _t in "${_tools[@]}"; do
+        DISALLOW_ARGS+=(--disallowedTools "$_t")
+      done
+    fi
+    ALLOW_ARGS=()
+    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
+    if [ -n "$ALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
+      for _t in "${_atools[@]}"; do
+        ALLOW_ARGS+=(--allowedTools "$_t")
+      done
+    fi
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
+      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
+      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
+      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
+      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
+      {
+        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
+        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
+      } > "$TOOL_ARGS_FILE"
+
+      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+RUNNER_EOF
+      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+export ORCH_HOME="$ORCH_HOME"
+cd "$PROJECT_DIR"
+TOOL_ARGS=()
+while IFS= read -r arg; do
+  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
+done < "$TOOL_ARGS_FILE"
+kimi -p \
+  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+  --permission-mode bypassPermissions \
+  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
+  --output-format json \
+  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
+  "\$(cat "$PROMPT_MSG_FILE")" \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_ENV
+      chmod +x "$RUNNER_SCRIPT"
+
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
+      run_hook on_agent_session_start
+      _USED_TMUX=true
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout kimi -p \
+        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+        --permission-mode bypassPermissions \
+        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
+        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
+        --output-format json \
+        --append-system-prompt "$SYSTEM_PROMPT" \
+        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
+    ;;
+  minimax)
+    log_err "[run] cmd: minimax -p ${AGENT_MODEL:+--model $AGENT_MODEL} --permission-mode bypassPermissions --output-format json --append-system-prompt <prompt> <message>"
+    DISALLOW_ARGS=()
+    if [ -n "$DISALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _tools <<< "$DISALLOWED_TOOLS"
+      for _t in "${_tools[@]}"; do
+        DISALLOW_ARGS+=(--disallowedTools "$_t")
+      done
+    fi
+    ALLOW_ARGS=()
+    ALLOWED_TOOLS=$(config_get '.agents.claude.allowed_tools // .router.allowed_tools // [] | join(",")' 2>/dev/null || true)
+    if [ -n "$ALLOWED_TOOLS" ]; then
+      IFS=',' read -ra _atools <<< "$ALLOWED_TOOLS"
+      for _t in "${_atools[@]}"; do
+        ALLOW_ARGS+=(--allowedTools "$_t")
+      done
+    fi
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_SYS_FILE="${STATE_DIR}/${FILE_PREFIX}-sys-prompt-${ATTEMPTS}.txt"
+      PROMPT_MSG_FILE="${STATE_DIR}/${FILE_PREFIX}-message-${ATTEMPTS}.txt"
+      TOOL_ARGS_FILE="${STATE_DIR}/${FILE_PREFIX}-tool-args-${ATTEMPTS}.txt"
+      printf '%s' "$SYSTEM_PROMPT" > "$PROMPT_SYS_FILE"
+      printf '%s' "$AGENT_MESSAGE" > "$PROMPT_MSG_FILE"
+      {
+        for _a in ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"}; do printf '%s\n' "$_a"; done
+        for _d in ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"}; do printf '%s\n' "$_d"; done
+      } > "$TOOL_ARGS_FILE"
+
+      cat > "$RUNNER_SCRIPT" <<'RUNNER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+RUNNER_EOF
+      cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+export ORCH_HOME="$ORCH_HOME"
+cd "$PROJECT_DIR"
+TOOL_ARGS=()
+while IFS= read -r arg; do
+  [ -n "\$arg" ] && TOOL_ARGS+=("\$arg")
+done < "$TOOL_ARGS_FILE"
+minimax -p \
+  ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+  --permission-mode bypassPermissions \
+  \${TOOL_ARGS[@]+"\${TOOL_ARGS[@]}"} \
+  --output-format json \
+  --append-system-prompt "\$(cat "$PROMPT_SYS_FILE")" \
+  "\$(cat "$PROMPT_MSG_FILE")" \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_ENV
+      chmod +x "$RUNNER_SCRIPT"
+
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION (attach: orch task attach $TASK_ID)"
+      run_hook on_agent_session_start
+      _USED_TMUX=true
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout minimax -p \
+        ${AGENT_MODEL:+--model "$AGENT_MODEL"} \
+        --permission-mode bypassPermissions \
+        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} \
+        ${DISALLOW_ARGS[@]+"${DISALLOW_ARGS[@]}"} \
+        --output-format json \
+        --append-system-prompt "$SYSTEM_PROMPT" \
+        "$AGENT_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
+    ;;
+  codex)
+    log_err "[run] cmd: codex ${AGENT_MODEL:+-m $AGENT_MODEL} --ask-for-approval never --sandbox <mode> exec --json <stdin>"
+    FULL_MESSAGE="${SYSTEM_PROMPT}
+
+${AGENT_MESSAGE}"
+    CODEX_SANDBOX=${CODEX_SANDBOX:-$(config_get '.agents.codex.sandbox // "full-auto"')}
+    CODEX_ARGS=()
+    # Orchestrator runs Codex non-interactively; approvals will never be granted, so disable them.
+    CODEX_ARGS+=(--ask-for-approval never)
+    case "$CODEX_SANDBOX" in
+      full-auto)
+        # Avoid `--full-auto` (implies `--ask-for-approval on-request`); keep sandboxed execution.
+        CODEX_ARGS+=(--sandbox workspace-write)
+        CODEX_ARGS+=(-c 'sandbox_workspace_write.network_access=true')
+        CODEX_ARGS+=(-c 'sandbox_permissions=["disk-full-read-access"]')
+        CODEX_ARGS+=(-c 'shell_environment_policy.inherit=all')
+        ;;
+      workspace-write)
+        CODEX_ARGS+=(--sandbox workspace-write)
+        CODEX_ARGS+=(-c 'sandbox_workspace_write.network_access=true')
+        CODEX_ARGS+=(-c 'sandbox_permissions=["disk-full-read-access"]')
+        CODEX_ARGS+=(-c 'shell_environment_policy.inherit=all')
+        ;;
+      danger-full-access)
+        CODEX_ARGS+=(--sandbox danger-full-access)
+        ;;
+      none)
+        CODEX_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+        ;;
+    esac
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_INPUT_FILE="${STATE_DIR}/${FILE_PREFIX}-codex-input-${ATTEMPTS}.txt"
+      printf '%s' "$FULL_MESSAGE" > "$PROMPT_INPUT_FILE"
+      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+cd "$PROJECT_DIR"
+cat "$PROMPT_INPUT_FILE" | codex \
+  ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+  $(printf '%s ' ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"}) \
+  exec --json - \
+  > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_EOF
+      chmod +x "$RUNNER_SCRIPT"
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
+      run_hook on_agent_session_start
+      _USED_TMUX=true
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && printf '%s' "$FULL_MESSAGE" | run_with_timeout codex \
+        ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+        ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"} \
+        exec --json - \
+        2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
+    ;;
+  opencode)
+    # If no model set (round_robin), pick random from agents.opencode.models
+    if [ -z "$AGENT_MODEL" ] || [ "$AGENT_MODEL" = "null" ]; then
+      OPENCODE_MODELS=$(config_get '.agents.opencode.models // []' 2>/dev/null | yq -o=json - 2>/dev/null || echo "[]")
+      if [ -n "$OPENCODE_MODELS" ] && [ "$OPENCODE_MODELS" != "[]" ]; then
+        AGENT_MODEL=$(printf '%s' "$OPENCODE_MODELS" | jq -r ".[$(($(date +%s) % $(printf '%s' "$OPENCODE_MODELS" | jq 'length')))]")
+      fi
+    fi
+    log_err "[run] cmd: opencode run ${AGENT_MODEL:+-m $AGENT_MODEL} --format json <message>"
+    FULL_MESSAGE="${SYSTEM_PROMPT}
+
+${AGENT_MESSAGE}"
+
+    if [ "$USE_TMUX" = "true" ] && command -v tmux >/dev/null 2>&1; then
+      PROMPT_INPUT_FILE="${STATE_DIR}/${FILE_PREFIX}-opencode-input-${ATTEMPTS}.txt"
+      printf '%s' "$FULL_MESSAGE" > "$PROMPT_INPUT_FILE"
+      cat > "$RUNNER_SCRIPT" <<RUNNER_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$PATH"
+export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+cd "$PROJECT_DIR"
+opencode run \
+  ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+  --format json \
+  "\$(cat "$PROMPT_INPUT_FILE")" > "$TMUX_RESPONSE_FILE" 2>"$STDERR_FILE"
+echo \$? > "$TMUX_STATUS_FILE"
+RUNNER_EOF
+      chmod +x "$RUNNER_SCRIPT"
+      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 "$RUNNER_SCRIPT"
+      log_err "[run] task=$TASK_ID tmux session started: $TMUX_SESSION"
+      run_hook on_agent_session_start
+      _USED_TMUX=true
+    else
+      RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run \
+        ${AGENT_MODEL:+-m "$AGENT_MODEL"} \
+        --format json \
+        "$FULL_MESSAGE" 2>"$STDERR_FILE") || CMD_STATUS=$?
+    fi
+    ;;
+  *)
+    log_err "[run] task=$TASK_ID unknown agent: $TASK_AGENT"
+    exit 1
+    ;;
+esac
+
+# Async or sync collection of tmux agent output
+if [ "$_USED_TMUX" = "true" ]; then
+  if [ "$ASYNC_TMUX" = "true" ]; then
+    # Spawn background subshell: wait for tmux session, then collect output
+    (
+      TASK_LOCK_OWNED=true
+      echo "$BASHPID" > "$TASK_LOCK/pid"
+      trap '_run_task_cleanup' EXIT
+      tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
+      run_hook on_agent_session_end
+      [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE") || RESPONSE=""
+      [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE" | tr -d '[:space:]') || CMD_STATUS=0
+      _collect_agent_output
+    ) &
+    disown
+    # Transfer lock ownership to background collector
+    TASK_LOCK_OWNED=false
+    exit 0
+  fi
+  # Sync tmux: wait here
+  tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
+  run_hook on_agent_session_end
+  [ -f "$TMUX_RESPONSE_FILE" ] && RESPONSE=$(cat "$TMUX_RESPONSE_FILE") || RESPONSE=""
+  [ -f "$TMUX_STATUS_FILE" ] && CMD_STATUS=$(cat "$TMUX_STATUS_FILE" | tr -d '[:space:]') || CMD_STATUS=0
+fi
+
+_collect_agent_output
