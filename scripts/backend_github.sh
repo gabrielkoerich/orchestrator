@@ -1529,7 +1529,13 @@ db_task_projects() {
     # Read from projects.yml registry
     local registry="${ORCH_HOME:-$HOME/.orchestrator}/projects.yml"
     if [ -f "$registry" ]; then
-      yq -r '.projects[]?.path // empty' "$registry" 2>/dev/null || true
+      local _reg_paths
+      _reg_paths=$(yq -r '.projects[].path' "$registry" 2>/dev/null || true)
+      if [ -z "$_reg_paths" ]; then
+        log_err "[projects] $registry exists but has no projects[].path entries"
+      else
+        echo "$_reg_paths"
+      fi
     fi
   } | sort -u | while IFS= read -r d; do
     [ -n "$d" ] && [ "$d" != "null" ] && [ -d "$d" ] && echo "$d"

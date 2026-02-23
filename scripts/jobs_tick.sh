@@ -4,10 +4,10 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_jq
 
-# Load project-local config if PROJECT_DIR is set
-load_project_config 2>/dev/null || true
-
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
+# Load project-local config if PROJECT_DIR is set
+load_project_config || true
 
 ensure_state_dir
 JOBS_LOG="${STATE_DIR}/jobs.log"

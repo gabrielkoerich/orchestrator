@@ -25,17 +25,14 @@ source "$_BACKEND_IMPL"
 # ============================================================
 
 # Jobs file is per-project: PROJECT_DIR/.orchestrator/jobs.yml
-# Falls back to ORCH_HOME/jobs.yml for backward compat
+# Falls back to ORCH_HOME/jobs.yml when no PROJECT_DIR is set
 _jobs_file() {
-  local pf="${PROJECT_DIR:+${PROJECT_DIR}/.orchestrator/jobs.yml}"
-  if [ -n "$pf" ] && [ -f "$pf" ]; then
-    echo "$pf"
+  if [ -n "${PROJECT_DIR:-}" ]; then
+    echo "${PROJECT_DIR}/.orchestrator/jobs.yml"
   else
     echo "${JOBS_FILE:-${ORCH_HOME}/jobs.yml}"
   fi
 }
-
-JOBS_FILE="${JOBS_FILE:-${ORCH_HOME}/jobs.yml}"
 
 # Ensure jobs file exists
 backend_init_jobs() {

@@ -3392,6 +3392,8 @@ YAML
 @test "all scripts set PROJECT_DIR before load_project_config" {
   # This is a lint test — ensures no script calls load_project_config
   # before setting PROJECT_DIR, which causes wrong config loading.
+  # Scripts that never assign PROJECT_DIR= are fine — they receive it
+  # from the environment (e.g. serve.sh passes PROJECT_DIR=X poll.sh).
   FAILURES=""
   for f in "${REPO_DIR}"/scripts/*.sh; do
     [ -f "$f" ] || continue
@@ -3399,10 +3401,15 @@ YAML
     # Skip lib.sh (defines the function)
     [ "$fname" = "lib.sh" ] && continue
     grep -q 'load_project_config' "$f" || continue
-    pd_line=$(grep -n 'PROJECT_DIR=' "$f" | head -1 | cut -d: -f1)
+    # Only count standalone PROJECT_DIR= assignments (export/local/bare),
+    # not inline env prefixes like $(PROJECT_DIR=x cmd args)
+    pd_line=$(grep -n '^\s*\(export \)\?PROJECT_DIR=' "$f" | head -1 | cut -d: -f1)
     lp_line=$(grep -n 'load_project_config' "$f" | head -1 | cut -d: -f1)
-    if [ -z "$pd_line" ] || [ "$pd_line" -gt "$lp_line" ]; then
-      FAILURES="${FAILURES}${fname}: PROJECT_DIR set at line ${pd_line:-MISSING}, load_project_config at line ${lp_line}\n"
+    # If no standalone PROJECT_DIR= assignment exists, the script inherits
+    # it from the environment (safe: load_project_config no-ops when unset)
+    [ -z "$pd_line" ] && continue
+    if [ "$pd_line" -gt "$lp_line" ]; then
+      FAILURES="${FAILURES}${fname}: PROJECT_DIR set at line ${pd_line}, load_project_config at line ${lp_line}\n"
     fi
   done
   if [ -n "$FAILURES" ]; then
@@ -5532,4 +5539,79 @@ SH
   run bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_ids_by_status routed"
   [ "$status" -eq 0 ]
   [[ \"$output\" != *\"${TASK2_ID}\"* ]]
+}
+
+# --- Multi-project and projects.yml tests ---
+
+@test "db_task_projects returns PROJECT_DIR when set" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && PROJECT_DIR='${PROJECT_DIR}' db_task_projects"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"${PROJECT_DIR}"* ]]
+}
+
+@test "db_task_projects reads projects.yml registry" {
+  # Create a real directory for the registered project
+  PROJ_REG="${TMP_DIR}/proj_from_registry"
+  mkdir -p "$PROJ_REG"
+
+  cat > "${ORCH_HOME}/projects.yml" <<YAML
+projects:
+  - name: test-project
+    path: ${PROJ_REG}
+YAML
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_projects"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"${PROJ_REG}"* ]]
+}
+
+@test "db_task_projects deduplicates paths" {
+  cat > "${ORCH_HOME}/projects.yml" <<YAML
+projects:
+  - name: main-project
+    path: ${PROJECT_DIR}
+YAML
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && PROJECT_DIR='${PROJECT_DIR}' db_task_projects"
+  [ "$status" -eq 0 ]
+  # Should appear exactly once despite being in both PROJECT_DIR and registry
+  local count
+  count=$(echo "$output" | grep -c "^${PROJECT_DIR}$" || true)
+  [ "$count" -eq 1 ]
+}
+
+@test "db_task_projects skips non-existent registry paths" {
+  cat > "${ORCH_HOME}/projects.yml" <<YAML
+projects:
+  - name: ghost
+    path: /nonexistent/path/that/does/not/exist
+YAML
+
+  run env -u PROJECT_DIR bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_projects"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "db_task_projects warns when registry has no paths" {
+  cat > "${ORCH_HOME}/projects.yml" <<YAML
+projects: []
+YAML
+
+  run env -u PROJECT_DIR bash -c "source '${REPO_DIR}/scripts/lib.sh' && db_task_projects 2>&1"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no projects"* ]]
+}
+
+@test "_jobs_file returns project-local path when PROJECT_DIR is set" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh' && PROJECT_DIR='${PROJECT_DIR}' _jobs_file"
+  [ "$status" -eq 0 ]
+  [ "$output" = "${PROJECT_DIR}/.orchestrator/jobs.yml" ]
+}
+
+@test "_jobs_file returns global path when PROJECT_DIR is unset" {
+  run env -u PROJECT_DIR bash -c "source '${REPO_DIR}/scripts/lib.sh' && _jobs_file"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"jobs.yml" ]]
+  # Should be global path (ORCH_HOME), not project-local
+  [[ "$output" == *"orch_home"* ]]
 }

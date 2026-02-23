@@ -172,11 +172,12 @@ while true; do
     "$SCRIPT_DIR/poll.sh" >> "$LOG_FILE" 2>&1 || true
   fi
   $_stopping && break
-  # Run job scheduler for each project (project-local jobs.yml)
+  # Run job scheduler: per-project for those with a local jobs.yml
   if [ -n "$POLL_DIRS" ]; then
     while IFS= read -r pdir; do
       $_stopping && break
       [ -n "$pdir" ] && [ -d "$pdir" ] || continue
+      [ -f "$pdir/.orchestrator/jobs.yml" ] || continue
       PROJECT_DIR="$pdir" "$SCRIPT_DIR/jobs_tick.sh" >> "$LOG_FILE" 2>&1 || true
     done <<< "$POLL_DIRS"
   else
