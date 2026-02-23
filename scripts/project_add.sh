@@ -33,6 +33,14 @@ BARE_DIR="${PROJECTS_DIR}/${OWNER}/${REPO_NAME}.git"
 
 CLONE_URL="git@github.com:${SLUG}.git"
 
+# Detect if we're already inside a local checkout of this repo
+_current_remote=$(git -C "${PROJECT_DIR:-$(pwd)}" remote get-url origin 2>/dev/null \
+  | sed -E 's#^https?://github\.com/##; s#^git@github\.com:##; s#\.git$##' || true)
+if [ -n "$_current_remote" ] && [ "$_current_remote" = "$SLUG" ]; then
+  echo "Already inside a local checkout of ${SLUG} — running init instead of bare clone."
+  exec "$SCRIPT_DIR/init.sh" --repo "$SLUG"
+fi
+
 if [ -d "$BARE_DIR" ]; then
   echo "Already cloned — fetching latest..."
   git -C "$BARE_DIR" fetch --all --prune

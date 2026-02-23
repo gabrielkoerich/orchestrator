@@ -212,9 +212,8 @@ SAVED_BRANCH="$TASK_BRANCH"
 SAVED_WORKTREE="$TASK_WORKTREE"
 PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 
-# Project-local worktrees: stored inside the project at .orchestrator/worktrees/
-# Falls back to the old global location for backward compatibility
-WORKTREES_BASE="${MAIN_PROJECT_DIR}/.orchestrator/worktrees"
+# Worktrees stored globally at ~/.orchestrator/worktrees/<project>/
+WORKTREES_BASE="${ORCH_WORKTREES}/${PROJECT_NAME}"
 mkdir -p "$WORKTREES_BASE"
 
 if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
@@ -227,17 +226,14 @@ if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
 else
   # Try to find an existing worktree by issue/task prefix
   EXISTING_WT=""
-  # Check project-local location first, then fall back to old global location
-  for _wt_search in "$WORKTREES_BASE" "${ORCH_WORKTREES}/${PROJECT_NAME}"; do
-    [ -d "$_wt_search" ] || continue
+  if [ -d "$WORKTREES_BASE" ]; then
     if [ -n "${GH_ISSUE_NUMBER:-}" ] && [ "$GH_ISSUE_NUMBER" != "null" ] && [ "$GH_ISSUE_NUMBER" != "0" ]; then
-      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1 || true)
+      EXISTING_WT=$(fd -g "gh-task-${GH_ISSUE_NUMBER}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1 || true)
     fi
     if [ -z "$EXISTING_WT" ]; then
-      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$_wt_search" 2>/dev/null | head -1 || true)
+      EXISTING_WT=$(fd -g "task-${TASK_ID}-*" --max-depth 1 --type d "$WORKTREES_BASE" 2>/dev/null | head -1 || true)
     fi
-    [ -n "$EXISTING_WT" ] && break
-  done
+  fi
 
   if [ -n "$EXISTING_WT" ]; then
     BRANCH_NAME=$(basename "$EXISTING_WT")
@@ -443,35 +439,13 @@ DISALLOWED_TOOLS=$(config_get '.workflow.disallowed_tools // ["Bash(rm *)","Bash
 # Sandbox: block agent access to the main project directory
 SANDBOX_ENABLED=$(config_get '.workflow.sandbox // true')
 if [ "$SANDBOX_ENABLED" = "true" ] && [ -n "$MAIN_PROJECT_DIR" ] && [ "$PROJECT_DIR" != "$MAIN_PROJECT_DIR" ]; then
-  # When the worktree lives inside MAIN_PROJECT_DIR (e.g. .orchestrator/worktrees/…),
-  # a blanket MAIN_PROJECT_DIR/* pattern would also block the agent's own workspace.
-  # Instead, enumerate each top-level subdir and block those individually,
-  # skipping .orchestrator so the worktree remains accessible.
-  SANDBOX_PATTERNS=""
-  case "$PROJECT_DIR" in
-    "${MAIN_PROJECT_DIR}/"*)
-      # Worktree is inside main project — block each top-level subdir except .orchestrator
-      for _sd in "$MAIN_PROJECT_DIR"/*/; do
-        [ -d "$_sd" ] || continue
-        _sdname=$(basename "${_sd%/}")
-        [ "$_sdname" = ".orchestrator" ] && continue
-        _p="Bash(cd ${_sd%/}*),Read(${_sd%/}/*),Write(${_sd%/}/*),Edit(${_sd%/}/*)"
-        SANDBOX_PATTERNS="${SANDBOX_PATTERNS:+$SANDBOX_PATTERNS,}$_p"
-      done
-      ;;
-    *)
-      # Worktree is outside main project — safe to block the whole tree
-      SANDBOX_PATTERNS="Bash(cd ${MAIN_PROJECT_DIR}*),Read(${MAIN_PROJECT_DIR}/*),Write(${MAIN_PROJECT_DIR}/*),Edit(${MAIN_PROJECT_DIR}/*)"
-      ;;
-  esac
-  if [ -n "$SANDBOX_PATTERNS" ]; then
-    if [ -n "$DISALLOWED_TOOLS" ]; then
-      DISALLOWED_TOOLS="${DISALLOWED_TOOLS},${SANDBOX_PATTERNS}"
-    else
-      DISALLOWED_TOOLS="$SANDBOX_PATTERNS"
-    fi
-    log_err "[run] task=$TASK_ID sandbox enabled: blocking access to $MAIN_PROJECT_DIR"
+  SANDBOX_PATTERNS="Bash(cd ${MAIN_PROJECT_DIR}*),Read(${MAIN_PROJECT_DIR}/*),Write(${MAIN_PROJECT_DIR}/*),Edit(${MAIN_PROJECT_DIR}/*)"
+  if [ -n "$DISALLOWED_TOOLS" ]; then
+    DISALLOWED_TOOLS="${DISALLOWED_TOOLS},${SANDBOX_PATTERNS}"
+  else
+    DISALLOWED_TOOLS="$SANDBOX_PATTERNS"
   fi
+  log_err "[run] task=$TASK_ID sandbox enabled: blocking access to $MAIN_PROJECT_DIR"
 fi
 
 # Save prompt for debugging

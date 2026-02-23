@@ -75,11 +75,10 @@ else
   done <<< "$PROJECTS"
 fi
 
-# Show active worktrees (project-local + legacy global)
+# Show active worktrees
 section "Worktrees:"
 _WT_FOUND=false
-# Check project-local worktrees for each managed project
-for _wt_dir in "${PROJECT_DIR:-.}/.orchestrator/worktrees" "${ORCH_WORKTREES}"; do
+for _wt_dir in "${ORCH_WORKTREES}"; do
   [ -d "$_wt_dir" ] || continue
   _WTS=$(fd --min-depth 1 --max-depth 2 --type d . "$_wt_dir" 2>/dev/null || true)
   while IFS= read -r wt; do

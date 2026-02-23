@@ -510,7 +510,6 @@ load_project_config() {
   # Set project-local state dir
   if [ -n "${PROJECT_DIR:-}" ]; then
     STATE_DIR="${PROJECT_DIR}/.orchestrator"
-    ORCH_WORKTREES="${PROJECT_DIR}/.orchestrator/worktrees"
   fi
   ensure_state_dir
   local merged="${STATE_DIR}/config-merged.yml"
