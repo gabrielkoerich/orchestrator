@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENTS=(claude codex opencode)
+AGENTS=(claude codex opencode kimi minimax)
 
 for agent in "${AGENTS[@]}"; do
   if command -v "$agent" >/dev/null 2>&1; then
