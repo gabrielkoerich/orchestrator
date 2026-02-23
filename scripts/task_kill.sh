@@ -10,16 +10,24 @@ if [ -z "$TASK_ID" ]; then
   exit 1
 fi
 
-SESSION="orch-${TASK_ID}"
-
 if ! command -v tmux >/dev/null 2>&1; then
   log_err "tmux is not installed"
   exit 1
 fi
 
-if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+# Session names include project: orch-{project}-{task_id}. Search by task ID suffix.
+_SESSIONS=$(tmux list-sessions -F '#{session_name}' 2>/dev/null \
+  | grep -E "^orch-.*-${TASK_ID}$" || true)
+SESSION=$(printf '%s' "$_SESSIONS" | head -1)
+
+if [ -z "$SESSION" ]; then
   log_err "No active tmux session for task $TASK_ID"
   exit 1
+fi
+
+_SESSION_COUNT=$(printf '%s\n' "$_SESSIONS" | grep -c . || true)
+if [ "$_SESSION_COUNT" -gt 1 ]; then
+  log_err "Warning: multiple sessions found for task $TASK_ID — killing first ($SESSION)"
 fi
 
 log "Killing tmux session $SESSION for task $TASK_ID"

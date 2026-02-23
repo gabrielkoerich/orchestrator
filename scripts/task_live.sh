@@ -23,7 +23,7 @@ printf '  %-20s %-8s %-10s %s\n' "SESSION" "TASK" "AGENT" "STARTED"
 printf '  %-20s %-8s %-10s %s\n' "-------" "----" "-----" "-------"
 
 while IFS=' ' read -r name created activity; do
-  TASK_ID="${name#orch-}"
+  TASK_ID="${name##*-}"
   AGENT=$(db_task_field "$TASK_ID" "agent" 2>/dev/null || echo "?")
   TITLE=$(db_task_field "$TASK_ID" "title" 2>/dev/null || echo "")
   TITLE="${TITLE:0:40}"
