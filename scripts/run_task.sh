@@ -213,7 +213,8 @@ SAVED_WORKTREE="$TASK_WORKTREE"
 PROJECT_NAME=$(basename "$PROJECT_DIR" .git)
 
 # Worktrees stored globally at ~/.orchestrator/worktrees/<project>/
-WORKTREES_BASE="${ORCH_WORKTREES}/${PROJECT_NAME}"
+# Use ORCH_HOME directly — ORCH_WORKTREES may be overridden to a project-local path by load_project_config
+WORKTREES_BASE="${ORCH_HOME}/worktrees/${PROJECT_NAME}"
 mkdir -p "$WORKTREES_BASE"
 
 if [ -n "$SAVED_BRANCH" ] && [ "$SAVED_BRANCH" != "null" ]; then
