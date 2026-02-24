@@ -43,9 +43,11 @@ for JOB_ID in $JOB_IDS; do
       job_log "[jobs] job=$JOB_ID active task $ACTIVE_TASK_ID not found, clearing"
       db_job_set "$JOB_ID" "active_task_id" ""
       ACTIVE_TASK_ID=""
-    elif [ "$TASK_STATUS" != "done" ]; then
+    elif [ "$TASK_STATUS" = "in_progress" ] || [ "$TASK_STATUS" = "routed" ] || [ "$TASK_STATUS" = "new" ]; then
       continue
     else
+      # done, needs_review, blocked — all terminal: clear and allow next scheduled run
+      [ "$TASK_STATUS" != "done" ] && job_log "[jobs] job=$JOB_ID active task $ACTIVE_TASK_ID ended with status=$TASK_STATUS, clearing"
       db_job_set "$JOB_ID" "active_task_id" ""
       db_job_set "$JOB_ID" "last_task_status" "$TASK_STATUS"
       ACTIVE_TASK_ID=""
