@@ -1536,7 +1536,7 @@ RUNNER_EOF
 ${AGENT_MESSAGE}"
 
     # Write opencode.json to worktree so tool calls are auto-approved (no interactive prompts)
-    _OPENCODE_PERM=$(config_get '.agents.opencode.permission // null' 2>/dev/null || true)
+    _OPENCODE_PERM=$(config_get '.agents.opencode.permission // null' 2>/dev/null | yq -o=json - 2>/dev/null || true)
     if [ -n "$_OPENCODE_PERM" ] && [ "$_OPENCODE_PERM" != "null" ]; then
       printf '{"permission":%s}\n' "$_OPENCODE_PERM" > "${PROJECT_DIR}/opencode.json"
     fi
