@@ -60,6 +60,22 @@ model_map:
     - opencode/glm-5-free
     - opencode/minimax-m2.5-free
     - opencode/trinity-large-preview-free
+agents:
+  opencode:
+    # Tool permissions written as opencode.json in the worktree before each run.
+    # Allows all tools without interactive prompts (required for non-interactive tmux sessions).
+    permission:
+      bash:
+        "*": "allow"
+      edit: "allow"
+      webfetch: "allow"
+      external_directory: "allow"
+    models:
+      - github-copilot/gpt-5-mini
+      - github-copilot/gpt-5.1-codex
+      - github-copilot/claude-opus-4.5
+  claude:
+    allowed_tools: []  # see config reference for full list
 git:
   name: "orchestrator[bot]"
   email: "orchestrator@orchestrator.bot"

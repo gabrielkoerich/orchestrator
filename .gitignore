@@ -13,3 +13,4 @@ __pycache__/
 jobs.yml
 docs/public/
 orchestrator.db
+opencode.json
