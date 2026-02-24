@@ -130,7 +130,7 @@ _task_id() {
 _task_id_by_title() {
   local title="$1"
   if [ -f "$GH_MOCK_STATE" ]; then
-    jq -r --arg t "$title" '.issues | to_entries[] | select(.value.title == $t) | .key' "$GH_MOCK_STATE" | head -1
+    jq -r --arg t "$title" '.issues | to_entries[] | select(.value.title | startswith($t)) | .key' "$GH_MOCK_STATE" | head -1
   fi
 }
 
