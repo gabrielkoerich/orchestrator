@@ -835,7 +835,22 @@ if [ -z "$RESPONSE_JSON" ]; then
     exit 0
   fi
   if printf '%s' "${RESPONSE}${AGENT_STDERR}" | rg -qi 'unauthorized|invalid.*(api|key|token)|auth.*fail|401|403|expired.*(key|token|plan)|billing|insufficient.*credit|payment.*required|credit.balance.*too.low'; then
-    error_log "[run] task=$TASK_ID AUTH/BILLING ERROR (exit=0) for agent=$TASK_AGENT"
+    error_log "[run] task=$TASK_ID AUTH/BILLING ERROR (exit=0) for agent=$TASK_AGENT model=$AGENT_MODEL"
+    # For opencode: model-level auth errors — cycle to next model before switching agents
+    if [ "$TASK_AGENT" = "opencode" ] && [ -n "$AGENT_MODEL" ] && [ "$AGENT_MODEL" != "null" ]; then
+      _OC_MODELS=$(config_get '.agents.opencode.models // []' 2>/dev/null | yq -o=json - 2>/dev/null || echo "[]")
+      _OC_COUNT=$(printf '%s' "$_OC_MODELS" | jq 'length' 2>/dev/null || echo "0")
+      if [ "$_OC_COUNT" -gt 1 ]; then
+        _CUR_IDX=$(printf '%s' "$_OC_MODELS" | jq -r "indices(\"$AGENT_MODEL\")[0] // -1" 2>/dev/null || echo "-1")
+        _NEXT_IDX=$(( (_CUR_IDX + 1) % _OC_COUNT ))
+        _NEXT_MODEL=$(printf '%s' "$_OC_MODELS" | jq -r ".[$_NEXT_IDX]")
+        if [ -n "$_NEXT_MODEL" ] && [ "$_NEXT_MODEL" != "null" ] && [ "$_NEXT_MODEL" != "$AGENT_MODEL" ]; then
+          db_task_update "$TASK_ID" "agent=opencode" "agent_model=$_NEXT_MODEL" "status=new" "last_error=model auth error ($AGENT_MODEL), cycling to $_NEXT_MODEL"
+          append_history "$TASK_ID" "new" "model auth error for $AGENT_MODEL — cycling to $_NEXT_MODEL"
+          exit 0
+        fi
+      fi
+    fi
     NEXT_AGENT=$(pick_fallback_agent "$TASK_AGENT" "" 2>/dev/null || true)
     if [ -n "$NEXT_AGENT" ]; then
       db_task_update "$TASK_ID" "agent=$NEXT_AGENT" "agent_model=" "status=new" "last_error=$TASK_AGENT auth/billing error (exit=0), switched to $NEXT_AGENT"
