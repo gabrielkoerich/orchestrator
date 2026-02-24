@@ -387,11 +387,17 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
     if command -v parallel &>/dev/null; then
-      # Extract test names from @test "name" { lines and run in parallel
+      # Extract test names and run in parallel with fail-fast
       # --halt now,fail=1 stops all jobs immediately when any job fails
+      BATS_TMP_SCRIPT=$(mktemp)
+      REPO_ABSPATH="$(pwd)"
+      echo '#!/usr/bin/env bash' > "$BATS_TMP_SCRIPT"
+      echo "cd '$REPO_ABSPATH' && bats --filter \"\$1\" tests/orchestrator.bats" >> "$BATS_TMP_SCRIPT"
+      chmod +x "$BATS_TMP_SCRIPT"
+      trap 'rm -f "$BATS_TMP_SCRIPT"' EXIT
+
       grep -h '^@test' tests/*.bats | sed 's/@test "//; s/".*$//' | \
-        parallel --halt now,fail=1 --jobs 0 --line-buffer \
-          'bats --filter "{}" tests/*.bats'
+        parallel --halt now,fail=1 --jobs 0 --line-buffer "$BATS_TMP_SCRIPT"
     else
       # Fallback to serial execution
       echo "Note: GNU parallel not found, running tests serially"
