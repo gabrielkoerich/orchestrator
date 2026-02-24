@@ -381,22 +381,10 @@ info:
 serve interval="10":
     @just _service_serve {{ interval }}
 
-# Run tests (bats test suite, parallel with fail-fast)
+# Run tests (bats test suite)
 [private]
 test:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if command -v parallel &>/dev/null; then
-      # Extract test names from @test "name" { lines and run in parallel
-      # --halt now,fail=1 stops all jobs immediately when any job fails
-      grep -h '^@test' tests/*.bats | sed 's/@test "//; s/".*$//' | \
-        parallel --halt now,fail=1 --jobs 0 --line-buffer \
-          'bats --filter "{}" tests/*.bats'
-    else
-      # Fallback to serial execution
-      echo "Note: GNU parallel not found, running tests serially"
-      bats tests
-    fi
+    @bats tests
 
 # Release: commit, push, watch CI, brew upgrade, restart
 [private]
