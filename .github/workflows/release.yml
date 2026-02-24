@@ -20,28 +20,14 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bats jq ripgrep bsdmainutils fd-find parallel
+          sudo apt-get install -y bats jq ripgrep bsdmainutils fd-find
           # fd-find installs as 'fdfind' on Debian/Ubuntu — symlink to 'fd'
           sudo ln -sf "$(which fdfind)" /usr/local/bin/fd
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Run tests (parallel, fail-fast)
-        run: |
-          set -euo pipefail
-          # Create wrapper script for parallel execution
-          REPO_ABSPATH="$(pwd)"
-          BATS_TMP_SCRIPT=$(mktemp)
-          echo '#!/usr/bin/env bash' > "$BATS_TMP_SCRIPT"
-          echo "cd '$REPO_ABSPATH' && bats --filter \"\$1\" tests/orchestrator.bats" >> "$BATS_TMP_SCRIPT"
-          chmod +x "$BATS_TMP_SCRIPT"
-          trap 'rm -f "$BATS_TMP_SCRIPT"' EXIT
-
-          # Extract test names and run in parallel with fail-fast
-          # --halt now,fail=1 stops all jobs immediately when any job fails
-          grep -h '^@test' tests/*.bats | sed 's/@test "//; s/".*$//' | \
-            parallel --halt now,fail=1 --jobs 0 --line-buffer "$BATS_TMP_SCRIPT"
-        shell: bash
+      - name: Run tests
+        run: bats tests
 
   shellcheck:
     runs-on: ubuntu-latest
