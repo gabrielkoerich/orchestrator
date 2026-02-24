@@ -148,6 +148,7 @@ Agents execute inside `$PROJECT_DIR` (the directory you ran `orchestrator` from)
 Agents are constrained by rules in the system prompt:
 - **No `rm`**: `--disallowedTools` blocks `rm` — agents must use `trash` (macOS) or `trash-put` (Linux)
 - **No commits to main**: Agents must always work in feature branches
+- **Git identity**: Commits are authored as `{agent}[bot]` (e.g. `claude[bot]`, `opencode[bot]`) so you can see which agent made each commit. Configurable via `git.name` / `git.email` in `config.yml`.
 - **Required skills**: Skills listed in `workflow.required_skills` are marked `[REQUIRED]` in the agent prompt and must be followed exactly
 - **GitHub issue linking**: If a task has a linked issue, the agent receives the issue reference for branch naming and PR linking
 - **Cost-conscious sub-agents**: Agents are instructed to use cheap models for routine sub-agent work
