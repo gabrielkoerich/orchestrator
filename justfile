@@ -381,10 +381,21 @@ info:
 serve interval="10":
     @just _service_serve {{ interval }}
 
-# Run tests (bats test suite)
+# Run tests (bats test suite, parallel with fail-fast)
 [private]
 test:
-    @bats tests
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v parallel &>/dev/null; then
+      # Parallel execution with GNU parallel: stops all on first failure (--halt now,fail=1)
+      bats --list-tests tests/*.bats | \
+        parallel --halt now,fail=1 --jobs 0 --line-buffer \
+          'bats --filter "{1}" tests/*.bats || kill $$'
+    else
+      # Fallback to bats built-in parallel (no fail-fast)
+      echo "Note: GNU parallel not found, using bats built-in parallel mode"
+      bats --jobs "${BATS_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}" tests
+    fi
 
 # Release: commit, push, watch CI, brew upgrade, restart
 [private]
