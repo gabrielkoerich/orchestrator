@@ -381,10 +381,10 @@ info:
 serve interval="10":
     @just _service_serve {{ interval }}
 
-# Run tests (bats test suite)
+# Run tests (bats test suite, fail-fast)
 [private]
 test:
-    @bats tests
+    @bats --abort tests
 
 # Release: commit, push, watch CI, brew upgrade, restart
 [private]
