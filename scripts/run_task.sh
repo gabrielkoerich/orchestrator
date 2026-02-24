@@ -1259,6 +1259,8 @@ RUNNER_EOF
       # Append environment setup (safe values only — no user-controlled data)
       cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
 export PATH="$PATH"
+export ORCH_SCRIPT_DIR="$SCRIPT_DIR"
+[[ -f "\$ORCH_SCRIPT_DIR/path.sh" ]] && source "\$ORCH_SCRIPT_DIR/path.sh" >/dev/null 2>&1 || true
 export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
 export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
@@ -1336,11 +1338,14 @@ set -euo pipefail
 RUNNER_EOF
       cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
 export PATH="$PATH"
+export ORCH_SCRIPT_DIR="$SCRIPT_DIR"
+[[ -f "\$ORCH_SCRIPT_DIR/path.sh" ]] && source "\$ORCH_SCRIPT_DIR/path.sh" >/dev/null 2>&1 || true
 export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
 export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
 export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
 export ORCH_HOME="$ORCH_HOME"
+[[ -f "\$HOME/.functions" ]] && source "\$HOME/.functions" >/dev/null 2>&1 || true
 cd "$PROJECT_DIR"
 TOOL_ARGS=()
 while IFS= read -r arg; do
@@ -1409,6 +1414,8 @@ set -euo pipefail
 RUNNER_EOF
       cat >> "$RUNNER_SCRIPT" <<RUNNER_ENV
 export PATH="$PATH"
+export ORCH_SCRIPT_DIR="$SCRIPT_DIR"
+[[ -f "\$ORCH_SCRIPT_DIR/path.sh" ]] && source "\$ORCH_SCRIPT_DIR/path.sh" >/dev/null 2>&1 || true
 export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
 export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
@@ -1485,6 +1492,8 @@ ${AGENT_MESSAGE}"
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH="$PATH"
+export ORCH_SCRIPT_DIR="$SCRIPT_DIR"
+[[ -f "\$ORCH_SCRIPT_DIR/path.sh" ]] && source "\$ORCH_SCRIPT_DIR/path.sh" >/dev/null 2>&1 || true
 export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
 export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
@@ -1531,6 +1540,8 @@ ${AGENT_MESSAGE}"
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH="$PATH"
+export ORCH_SCRIPT_DIR="$SCRIPT_DIR"
+[[ -f "\$ORCH_SCRIPT_DIR/path.sh" ]] && source "\$ORCH_SCRIPT_DIR/path.sh" >/dev/null 2>&1 || true
 export GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
 export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
