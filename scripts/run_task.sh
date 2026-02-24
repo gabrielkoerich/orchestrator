@@ -488,11 +488,13 @@ MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 MONITOR_PID=$!
 cleanup_monitor() { kill "$MONITOR_PID" 2>/dev/null || true; wait "$MONITOR_PID" 2>/dev/null || true; }
 
-# Set git identity for agent commits
-export GIT_AUTHOR_NAME="${TASK_AGENT}[bot]"
-export GIT_COMMITTER_NAME="${TASK_AGENT}[bot]"
-export GIT_AUTHOR_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
-export GIT_COMMITTER_EMAIL="${TASK_AGENT}[bot]@users.noreply.github.com"
+# Set git identity for agent commits (configurable via config.yml git.name / git.email)
+_GIT_NAME_CFG=$(config_get '.git.name // ""' 2>/dev/null || true)
+_GIT_EMAIL_CFG=$(config_get '.git.email // ""' 2>/dev/null || true)
+export GIT_AUTHOR_NAME="${_GIT_NAME_CFG:-${TASK_AGENT}[bot]}"
+export GIT_COMMITTER_NAME="${_GIT_NAME_CFG:-${TASK_AGENT}[bot]}"
+export GIT_AUTHOR_EMAIL="${_GIT_EMAIL_CFG:-${TASK_AGENT}[bot]@users.noreply.github.com}"
+export GIT_COMMITTER_EMAIL="${_GIT_EMAIL_CFG:-${TASK_AGENT}[bot]@users.noreply.github.com}"
 
 # Resolve model from complexity + config model_map (skip for round_robin, let agents pick their own)
 _ROUTING_MODE=${_ROUTING_MODE:-$(config_get '.router.mode // "llm"')}

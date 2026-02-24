@@ -60,6 +60,9 @@ model_map:
     - opencode/glm-5-free
     - opencode/minimax-m2.5-free
     - opencode/trinity-large-preview-free
+git:
+  name: "orchestrator[bot]"
+  email: "orchestrator@orchestrator.bot"
 llm:
   input_format: ""
   output_format: "json"
