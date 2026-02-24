@@ -27,7 +27,7 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Run tests
-        run: bats --abort tests
+        run: bats tests
 
   shellcheck:
     runs-on: ubuntu-latest
