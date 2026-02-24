@@ -137,7 +137,8 @@ for JOB_ID in $JOB_IDS; do
     JOB_LABELS="scheduled,job:${JOB_ID}"
   fi
 
-  ADD_OUTPUT=$(PROJECT_DIR="$JOB_DIR" "${SCRIPT_DIR}/add_task.sh" "$JOB_TITLE" "$JOB_BODY" "$JOB_LABELS")
+  JOB_DATE=$(date -u +"%Y-%m-%d")
+  ADD_OUTPUT=$(PROJECT_DIR="$JOB_DIR" "${SCRIPT_DIR}/add_task.sh" "${JOB_TITLE} (${JOB_DATE})" "$JOB_BODY" "$JOB_LABELS")
   NEW_TASK_ID=$(printf '%s' "$ADD_OUTPUT" | rg -o 'task [^ :]+' | head -1 | sed 's/^task //')
 
   # Set agent if specified
