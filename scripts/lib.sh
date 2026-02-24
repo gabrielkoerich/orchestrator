@@ -374,7 +374,7 @@ is_usage_limit_error() {
   # avoid false positives from generic network errors (e.g. 503 Service Unavailable,
   # SSH timeouts). "service overloaded" is Anthropic-specific. "service unavailable"
   # and bare "temporarily unavailable" are omitted — too common in unrelated errors.
-  printf '%s' "$text" | rg -qi '(?:\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|\bquota\b|insufficient[_ -]?quota|exceeded[_ -]?quota|limit (?:reached|exceeded)|overloaded[_ -]?error|service overloaded)'
+  printf '%s' "$text" | rg -qi '(?:\b429\b|too many requests|rate[ _-]?limit|usage[ _-]?limit|\bquota\b|insufficient[_ -]?quota|exceeded[_ -]?quota|limit (?:reached|exceeded|hit)|hit your limit|you.ve hit|overloaded[_ -]?error|service overloaded)'
 }
 
 # Redact common API key/token patterns before publishing text to GitHub comments.

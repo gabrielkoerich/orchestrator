@@ -1065,6 +1065,17 @@ SH
   [ "$status" -eq 0 ]
 }
 
+@test "is_usage_limit_error detects claude hit your limit message" {
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error \"You've hit your limit · resets 1pm\""
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error 'hit your limit'"
+  [ "$status" -eq 0 ]
+
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; is_usage_limit_error \"you've hit the limit\""
+  [ "$status" -eq 0 ]
+}
+
 @test "is_usage_limit_error does not match generic network errors" {
   # Plain "503 Service Unavailable" must NOT trigger a reroute — it is a generic
   # HTTP error unrelated to AI provider rate limits.
