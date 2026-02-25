@@ -224,11 +224,12 @@ _review_pr() {
   # Build comment body
   local BADGE ICON COMMENT_BODY
   BADGE=$(_review_badge "$REVIEW_AGENT")
-  if [ "$DECISION" = "approve" ]; then
-    ICON="approve"
-  else
-    ICON="request_changes"
-  fi
+  case "$DECISION" in
+    approve)          ICON="approve" ;;
+    reject)           ICON="request_changes" ;;
+    request_changes)  ICON="request_changes" ;;
+    *)                ICON="request_changes" ;;
+  esac
 
   COMMENT_BODY=$(cat <<EOF
 ## ${BADGE} Automated Review — $([ "$ICON" = "approve" ] && echo "Approve" || echo "Changes Requested")
@@ -249,6 +250,13 @@ EOF
     gh pr review "$pr_number" --repo "$REPO" --request-changes --body "$COMMENT_BODY" 2>/dev/null \
       || gh pr comment "$pr_number" --repo "$REPO" --body "$COMMENT_BODY" 2>/dev/null \
       || log_err "[review_prs] failed to post review on PR #$pr_number"
+  fi
+
+  # Close PR on reject
+  if [ "$DECISION" = "reject" ]; then
+    gh pr close "$pr_number" --repo "$REPO" --comment "Review rejected: $NOTES" 2>/dev/null \
+      || log_err "[review_prs] failed to close PR #$pr_number on reject"
+    log "[review_prs] [$PROJECT_NAME] PR #$pr_number: closed (reject)"
   fi
 
   # Record in state
