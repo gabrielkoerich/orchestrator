@@ -236,9 +236,11 @@ _review_pr() {
       ;;
     opencode)
       _review_prompt_file=$(mktemp)
+      _review_stderr=$(mktemp)
       printf '%s' "$REVIEW_PROMPT" > "$_review_prompt_file"
-      REVIEW_RESPONSE=$(run_with_timeout opencode run ${REVIEW_MODEL:+-m "$REVIEW_MODEL"} --format json - < "$_review_prompt_file") 2>&1 || REVIEW_RC=$?
-      rm -f "$_review_prompt_file"
+      REVIEW_RESPONSE=$(cd "$PROJECT_DIR" && run_with_timeout opencode run ${REVIEW_MODEL:+-m "$REVIEW_MODEL"} --format json - < "$_review_prompt_file" 2>"$_review_stderr") || REVIEW_RC=$?
+      [ -s "$_review_stderr" ] && log_err "[review_prs] opencode stderr: $(cat "$_review_stderr")"
+      rm -f "$_review_prompt_file" "$_review_stderr"
       ;;
     *)
       log_err "[review_prs] unknown review agent: $REVIEW_AGENT"
