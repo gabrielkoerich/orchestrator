@@ -74,8 +74,19 @@ export TASK_ID TASK_TITLE TASK_LABELS TASK_BODY SKILLS_CATALOG AVAILABLE_AGENTS
 
 # ── Round-robin mode: skip LLM router, cycle through agents ──
 if [ "$ROUTING_MODE" = "round_robin" ]; then
-  IFS=',' read -ra _agents <<< "$AVAILABLE_AGENTS"
+  # Only cycle through primary agents (exclude kimi/minimax which are Claude Code aliases)
+  IFS=',' read -ra _all_agents <<< "$AVAILABLE_AGENTS"
+  _agents=()
+  for agent in "${_all_agents[@]}"; do
+    if [ "$agent" != "kimi" ] && [ "$agent" != "minimax" ]; then
+      _agents+=("$agent")
+    fi
+  done
   _agent_count=${#_agents[@]}
+  if [ "$_agent_count" -eq 0 ]; then
+    log_err "[route] round_robin: no primary agents available"
+    exit 1
+  fi
   ROUTED_AGENT="${_agents[$((TASK_ID % _agent_count))]}"
   REASON="round_robin (task $TASK_ID % $_agent_count agents)"
   COMPLEXITY="medium"
