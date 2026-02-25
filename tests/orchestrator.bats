@@ -5769,3 +5769,88 @@ YAML
   [ "$status" -eq 0 ]
   [ "$output" = "${ORCH_HOME}/jobs.yml" ]
 }
+
+# --- pick_fallback_agent ---
+
+@test "pick_fallback_agent skips current and returns next agent" {
+  run bash -c '
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    available_agents() { echo "claude,codex,opencode"; }
+    pick_fallback_agent "claude"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+}
+
+@test "pick_fallback_agent wraps around to first agent" {
+  run bash -c '
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    available_agents() { echo "claude,codex,opencode"; }
+    pick_fallback_agent "opencode"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+}
+
+@test "pick_fallback_agent skips excluded agents" {
+  run bash -c '
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    available_agents() { echo "claude,codex,opencode"; }
+    pick_fallback_agent "claude" "codex"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "opencode" ]
+}
+
+@test "pick_fallback_agent returns first agent when current not found" {
+  run bash -c '
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    available_agents() { echo "claude,codex,opencode"; }
+    pick_fallback_agent "unknown"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+}
+
+@test "pick_fallback_agent returns first non-excluded when current not found" {
+  run bash -c '
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    available_agents() { echo "claude,codex,opencode"; }
+    pick_fallback_agent "unknown" "claude"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+}
+
+@test "pick_fallback_agent returns failure when all agents excluded" {
+  run bash -c '
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    available_agents() { echo "claude,codex"; }
+    pick_fallback_agent "claude" "codex"
+  '
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "pick_fallback_agent with current at index 0 does not skip first agent" {
+  # This was the original bug: when current is at index 0,
+  # the first agent (index 0) should be skipped (it's current),
+  # and the next agent should be returned.
+  run bash -c '
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    available_agents() { echo "claude,codex,opencode"; }
+    pick_fallback_agent "claude"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex" ]
+}
+
+@test "pick_fallback_agent with empty current returns first agent" {
+  run bash -c '
+    source "'"$REPO_DIR"'/scripts/lib.sh"
+    available_agents() { echo "claude,codex,opencode"; }
+    pick_fallback_agent ""
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude" ]
+}
