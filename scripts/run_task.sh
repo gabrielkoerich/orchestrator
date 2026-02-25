@@ -1362,7 +1362,6 @@ export GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
 export GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
 export GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
 export ORCH_HOME="$ORCH_HOME"
-[[ -f "\$HOME/.functions" ]] && source "\$HOME/.functions" >/dev/null 2>&1 || true
 cd "$PROJECT_DIR"
 TOOL_ARGS=()
 while IFS= read -r arg; do

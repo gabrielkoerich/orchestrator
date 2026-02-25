@@ -22,9 +22,6 @@ if [[ -f "$HOME/.path" ]]; then
   export PATH="${_old_path}:${PATH}"
   _path_found=true
 fi
-if [[ -f "$HOME/.functions" ]]; then
-  source "$HOME/.functions" >/dev/null 2>&1
-fi
 # Fallback dev tool locations if no .path file found
 if ! $_path_found; then
   for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.local/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
