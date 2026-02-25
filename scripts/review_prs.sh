@@ -31,7 +31,18 @@ if [ -z "$REPO" ] || [ "$REPO" = "null" ]; then
 fi
 
 # Config
-REVIEW_AGENT=${REVIEW_AGENT:-$(config_get '.workflow.review_agent // "claude"')}
+_REVIEW_AGENT_CONFIG=$(config_get '.workflow.review_agent // ""')
+
+# Round-robin: use PR number as index to pick agent (excludes task agent after we find it below)
+if [ -z "$_REVIEW_AGENT_CONFIG" ] || [ "$_REVIEW_AGENT_CONFIG" = "null" ] || [ "$_REVIEW_AGENT_CONFIG" = "round_robin" ]; then
+  AVAILABLE_AGENTS=$(available_agents)
+  IFS=',' read -ra _agents <<< "$AVAILABLE_AGENTS"
+  _agent_count=${#_agents[@]}
+  # Will be set per-PR after we find the task agent
+  _round_robin_idx=""
+fi
+
+REVIEW_AGENT=${REVIEW_AGENT:-$_REVIEW_AGENT_CONFIG}
 DIFF_LIMIT=${REVIEW_DIFF_LIMIT:-$(config_get '.workflow.review_diff_limit // 5000')}
 REVIEW_DRAFTS=${REVIEW_DRAFTS:-$(config_get '.workflow.review_drafts // false')}
 MERGE_COMMANDS=${MERGE_COMMANDS:-$(config_get '.workflow.merge_commands // "merge,lgtm,ship it"')}
@@ -169,6 +180,32 @@ _review_pr() {
   local pr_number="$1" pr_title="$2" pr_body="$3" pr_author="$4" pr_sha="$5" pr_branch="$6"
 
   log "[review_prs] [$PROJECT_NAME] reviewing PR #$pr_number: $pr_title (by $pr_author)"
+
+  # Round-robin: find task agent and exclude from selection
+  if [ -z "$REVIEW_AGENT" ] || [ "$REVIEW_AGENT" = "round_robin" ]; then
+    local task_agent=""
+    local task_id
+    task_id=$(db_task_id_by_branch "$pr_branch" "$PROJECT_DIR" 2>/dev/null || true)
+    if [ -n "$task_id" ] && [ "$task_id" != "null" ]; then
+      task_agent=$(db_task_field "$task_id" "agent" 2>/dev/null || true)
+    fi
+
+    # Get available agents and pick one excluding task_agent
+    IFS=',' read -ra _agents <<< "$AVAILABLE_AGENTS"
+    _agent_count=${#_agents[@]}
+
+    # Try agents starting from pr_number offset, skip task_agent
+    for i in $(seq 0 $((_agent_count - 1))); do
+      local idx=$(( (pr_number + i) % _agent_count ))
+      local candidate="${_agents[$idx]}"
+      if [ "$candidate" != "$task_agent" ]; then
+        REVIEW_AGENT="$candidate"
+        break
+      fi
+    done
+  fi
+
+  [ -z "$REVIEW_AGENT" ] && REVIEW_AGENT="minimax"
 
   # Get diff
   local GIT_DIFF

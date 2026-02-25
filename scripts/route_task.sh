@@ -52,7 +52,10 @@ if [ -z "$TASK_TITLE" ] || [ "$TASK_TITLE" = "null" ]; then
 fi
 
 SKILLS_CATALOG=""
-if [ -f "skills.yml" ]; then
+# Look in ORCH_HOME first, then CWD
+if [ -f "${ORCH_HOME}/skills.yml" ]; then
+  SKILLS_CATALOG=$(yq -o=json -I=0 '.skills // []' "${ORCH_HOME}/skills.yml" 2>/dev/null || echo '[]')
+elif [ -f "skills.yml" ]; then
   SKILLS_CATALOG=$(yq -o=json -I=0 '.skills // []' "skills.yml" 2>/dev/null || echo '[]')
 fi
 if [ -z "$SKILLS_CATALOG" ] || [ "$SKILLS_CATALOG" = "[]" ] || [ "$SKILLS_CATALOG" = "null" ]; then
