@@ -457,6 +457,38 @@ normalize_json_response() {
   return 1
 }
 
+# Safe JSON normalization that always saves raw response for debugging.
+# Args: raw_response output_file_path
+# Returns normalized JSON on stdout, or empty string on failure.
+# Prints the path to the saved raw file to stderr.
+safe_normalize_json() {
+  local raw="$1"
+  local output_path="$2"
+  local raw_path=""
+
+  # Always save raw response before normalization
+  if [ -n "$output_path" ]; then
+    mkdir -p "$(dirname "$output_path")"
+    printf '%s' "$raw" > "$output_path"
+    raw_path="$output_path"
+  fi
+
+  # Attempt normalization
+  local normalized
+  normalized=$(normalize_json_response "$raw" 2>/dev/null || true)
+
+  if [ -z "$normalized" ] || ! printf '%s' "$normalized" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    if [ -n "$raw_path" ]; then
+      echo "Malformed response saved to: $raw_path" >&2
+    fi
+    echo ""
+    return 1
+  fi
+
+  printf '%s' "$normalized"
+  return 0
+}
+
 # Legacy compat — ensures backend is initialized.
 init_tasks_file() {
   db_init

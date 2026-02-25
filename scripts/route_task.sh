@@ -204,17 +204,20 @@ if [ "${CMD_STATUS:-0}" -ne 0 ]; then
   exit 0
 fi
 
+# Always save raw response before normalization for debugging
+mkdir -p "$CONTEXTS_DIR"
+RAW_RESPONSE_PATH="${CONTEXTS_DIR}/route-response-${TASK_ID}.md"
+printf '%s' "$RESPONSE" > "$RAW_RESPONSE_PATH"
+
 RESPONSE_JSON=$(normalize_json_response "$RESPONSE" 2>/dev/null || true)
 if [ -z "$RESPONSE_JSON" ] || ! printf '%s' "$RESPONSE_JSON" | jq -e 'type=="object"' >/dev/null 2>&1; then
-  log_err "[route] invalid JSON response"
+  log_err "[route] invalid JSON response (saved to $RAW_RESPONSE_PATH)"
   db_task_update "$TASK_ID" \
     "status=needs_review" \
-    "last_error=router response invalid JSON" \
+    "last_error=router response invalid JSON (see $RAW_RESPONSE_PATH)" \
     "summary=Router error: invalid JSON response"
-  db_set_blockers "$TASK_ID" "Router failed to return valid JSON"
-  mkdir -p "$CONTEXTS_DIR"
-  printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/route-response-${TASK_ID}.md"
-  append_history "$TASK_ID" "needs_review" "router response invalid JSON"
+  db_set_blockers "$TASK_ID" "Router failed to return valid JSON. See: $RAW_RESPONSE_PATH"
+  append_history "$TASK_ID" "needs_review" "router response invalid JSON (saved to $RAW_RESPONSE_PATH)"
   exit 0
 fi
 
