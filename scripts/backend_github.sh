@@ -189,7 +189,7 @@ _gh_model_from_labels() {
 _gh_ensure_label() {
   local name="$1" color="${2:-ededed}" description="${3:-}"
   _gh_validate_label "$name" || return 1
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   local encoded
   encoded=$(printf '%s' "$name" | jq -sRr @uri)
   local existing
@@ -403,9 +403,9 @@ db_task_field() {
   esac
 
   # For core fields, query GitHub
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   local json
-  json=$(gh_api "repos/$_GH_REPO/issues/$id" --cache 60s 2>/dev/null) || return 0
+  json=$(gh_api "repos/$_GH_REPO/issues/$id" --cache 60s 2>/dev/null) || return 1
 
   case "$field" in
     title)       printf '%s' "$json" | jq -r '.title // empty' ;;
@@ -449,7 +449,7 @@ db_task_field() {
 # Usage: db_task_set <id> <column> <value>
 db_task_set() {
   local id="$1" field="$2" value="$3"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   case "$field" in
     title)
@@ -488,7 +488,7 @@ _gh_set_status_label() {
     log_err "[validate] invalid status: $status (allowed: $_GH_VALID_STATUSES)"
     return 1
   fi
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   # Remove existing status labels
   local existing_labels
@@ -498,7 +498,7 @@ _gh_set_status_label() {
   for lbl in $old_status_labels; do
     local encoded
     encoded=$(printf '%s' "$lbl" | jq -sRr @uri)
-    gh_api "repos/$_GH_REPO/issues/$id/labels/$encoded" -X DELETE >/dev/null 2>&1 || true
+    gh_api "repos/$_GH_REPO/issues/$id/labels/$encoded" -X DELETE >/dev/null 2>&1 || return 1
   done
 
   # Add new status label
@@ -514,7 +514,7 @@ _gh_set_status_label() {
 # Remove all labels with a given prefix from an issue
 _gh_remove_prefixed_labels() {
   local id="$1" prefix="$2"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   local existing_labels
   existing_labels=$(gh_api "repos/$_GH_REPO/issues/$id" --cache 0s -q '[.labels[].name]' 2>/dev/null || echo '[]')
@@ -523,14 +523,14 @@ _gh_remove_prefixed_labels() {
   for lbl in $old_labels; do
     local encoded
     encoded=$(printf '%s' "$lbl" | jq -sRr @uri)
-    gh_api "repos/$_GH_REPO/issues/$id/labels/$encoded" -X DELETE >/dev/null 2>&1 || true
+    gh_api "repos/$_GH_REPO/issues/$id/labels/$encoded" -X DELETE >/dev/null 2>&1 || return 1
   done
 }
 
 # Set a prefixed label (remove old prefix:* labels, add new one)
 _gh_set_prefixed_label() {
   local id="$1" prefix="$2" value="$3"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   if [ -z "$value" ] || [ "$value" = "null" ] || [ "$value" = "NULL" ]; then return 0; fi
 
   local label="${prefix}${value}"
@@ -582,7 +582,7 @@ db_task_count() {
 # Usage: db_task_ids_by_status <status> [exclude_label]
 db_task_ids_by_status() {
   local _ids_status="$1" exclude_label="${2:-}"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   local state="open"
   [ "$_ids_status" = "done" ] && state="closed"
@@ -593,7 +593,7 @@ db_task_ids_by_status() {
   local needs_review_label="${_GH_STATUS_PREFIX}needs_review"
 
   local json
-  json=$(gh_api -X GET "repos/$_GH_REPO/issues" "${args[@]}" 2>/dev/null) || return 0
+  json=$(gh_api -X GET "repos/$_GH_REPO/issues" "${args[@]}" 2>/dev/null) || return 1
   # Handle pagination: flatten arrays
   json=$(printf '%s' "$json" | jq -s 'if type == "array" and length > 0 and (.[0] | type) == "array" then [.[][]] else . end' 2>/dev/null || echo "$json")
 
@@ -629,11 +629,11 @@ db_task_ids_by_status() {
 # Normalize open issues: add status:new to any open issue missing a status: label.
 # This ensures externally-created issues (by agents, humans, retrospective jobs) get picked up.
 db_normalize_new_issues() {
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   local json
   json=$(gh_api -X GET "repos/$_GH_REPO/issues" \
-    -f state=open -f per_page=50 -f sort=created -f direction=desc 2>/dev/null) || return 0
+    -f state=open -f per_page=50 -f sort=created -f direction=desc 2>/dev/null) || return 1
 
   # Fail closed: if we can't determine allowed authors, skip all issues
   if ! _gh_allowed_authors >/dev/null 2>&1; then
@@ -795,8 +795,8 @@ db_task_update() {
 
   # Apply GitHub patches
   if [ ${#gh_patches[@]} -gt 0 ]; then
-    _gh_ensure_repo || return 0
-    gh_api "repos/$_GH_REPO/issues/$id" -X PATCH "${gh_patches[@]}" >/dev/null 2>&1 || true
+    _gh_ensure_repo || return 1
+    gh_api "repos/$_GH_REPO/issues/$id" -X PATCH "${gh_patches[@]}" >/dev/null 2>&1 || return 1
   fi
 
   # Apply status label change
@@ -898,7 +898,7 @@ db_load_task() {
 # Append a history entry as an issue comment.
 db_append_history() {
   local task_id="$1" _ah_status="$2" note="$3"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   local now
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   gh_api "repos/$_GH_REPO/issues/$task_id/comments" \
@@ -908,7 +908,7 @@ db_append_history() {
 # Get task history from comments.
 db_task_history() {
   local task_id="$1"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   gh_api -X GET "repos/$_GH_REPO/issues/$task_id/comments" -f per_page=100 2>/dev/null \
     | jq -r '.[].body' 2>/dev/null || true
 }
@@ -916,7 +916,7 @@ db_task_history() {
 # Get task history as formatted strings (last N entries).
 db_task_history_formatted() {
   local id="$1" limit="${2:-5}"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   gh_api -X GET "repos/$_GH_REPO/issues/$id/comments" -f per_page=100 2>/dev/null \
     | jq -r ".[-${limit}:] | .[].body" 2>/dev/null || true
 }
@@ -924,28 +924,28 @@ db_task_history_formatted() {
 # Get task labels as newline-separated list.
 db_task_labels() {
   local task_id="$1"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   gh_api "repos/$_GH_REPO/issues/$task_id" --cache 60s -q '[.labels[].name] | .[]' 2>/dev/null || true
 }
 
 # Get task labels as comma-separated string.
 db_task_labels_csv() {
   local task_id="$1"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   gh_api "repos/$_GH_REPO/issues/$task_id" --cache 60s -q '[.labels[].name] | join(",")' 2>/dev/null || true
 }
 
 # Get task labels as JSON array.
 db_task_labels_json() {
   local task_id="$1"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   gh_api "repos/$_GH_REPO/issues/$task_id" --cache 60s -q '[.labels[].name]' 2>/dev/null || echo '[]'
 }
 
 # Set labels for a task (replaces existing).
 db_set_labels() {
   local task_id="$1" labels_csv="$2"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   local labels_json='[]'
   if [ -n "$labels_csv" ]; then
     labels_json=$(printf '%s' "$labels_csv" | jq -Rc 'split(",") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
@@ -958,7 +958,7 @@ db_set_labels() {
 db_add_label() {
   local task_id="$1" label="$2"
   _gh_validate_label "$label" || return 1
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   _gh_ensure_label "$label" "c5def5" ""
   gh_api "repos/$_GH_REPO/issues/$task_id/labels" \
     --input - <<< "{\"labels\":[\"$label\"]}" >/dev/null 2>&1 || true
@@ -967,10 +967,10 @@ db_add_label() {
 # Remove a label from a task.
 db_remove_label() {
   local task_id="$1" label="$2"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   local encoded
   encoded=$(printf '%s' "$label" | jq -sRr @uri)
-  gh_api "repos/$_GH_REPO/issues/$task_id/labels/$encoded" -X DELETE >/dev/null 2>&1 || true
+  gh_api "repos/$_GH_REPO/issues/$task_id/labels/$encoded" -X DELETE >/dev/null 2>&1 || return 1
 }
 
 # Check if a task has a specific label.
@@ -1002,7 +1002,7 @@ db_task_files_csv() {
 # Get child task IDs (via sub-issues API).
 db_task_children() {
   local parent_id="$1"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   local node_id
   node_id=$(gh_api "repos/$_GH_REPO/issues/$parent_id" -q '.node_id' 2>/dev/null || true)
   [ -z "$node_id" ] && return 0
@@ -1124,7 +1124,7 @@ db_store_agent_arrays() {
 # Post the structured agent response comment on the issue.
 _gh_post_agent_comment() {
   local id="$1"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   local sc
   sc=$(_sidecar_full "$id")
@@ -1265,7 +1265,7 @@ ${files_list}"
     return 0
   fi
 
-  gh_api "repos/$_GH_REPO/issues/$id/comments" -f body="$comment" >/dev/null 2>&1 || true
+  gh_api "repos/$_GH_REPO/issues/$id/comments" -f body="$comment" >/dev/null 2>&1 || return 1
   _sidecar_write "$id" "last_comment_hash" "$new_hash"
 
   # If this task was created from a GitHub mention, also mirror the result back
@@ -1287,7 +1287,7 @@ ${files_list}"
       mirror_hash=$(printf '%s' "$mirror_comment" | shasum -a 256 | cut -c1-16)
       old_mirror_hash=$(_sidecar_read "$id" "mention_last_mirror_hash")
       if [ "$mirror_hash" != "$old_mirror_hash" ]; then
-        gh_api "repos/${target_repo}/issues/${mention_target_issue}/comments" -f body="$mirror_comment" >/dev/null 2>&1 || true
+        gh_api "repos/${target_repo}/issues/${mention_target_issue}/comments" -f body="$mirror_comment" >/dev/null 2>&1 || return 1
         _sidecar_write "$id" "mention_last_mirror_hash" "$mirror_hash"
       fi
     fi
@@ -1340,7 +1340,7 @@ db_task_set_synced() { :; }
 
 # Get all task IDs (open issues).
 db_all_task_ids() {
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   gh_api -X GET "repos/$_GH_REPO/issues" -f state=open -f per_page=100 2>/dev/null \
     | jq -r '.[] | select(.pull_request == null) | .number' 2>/dev/null || true
 }
@@ -1467,7 +1467,7 @@ db_total_filtered_count() {
 # List tasks as TSV for table display.
 db_task_display_tsv() {
   local extra_filter="${1:-true}" order="${2:-id}" limit="${3:-}"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   local json
   json=$(gh_api -X GET "repos/$_GH_REPO/issues" -f state=open -f per_page="${limit:-100}" -f sort=created -f direction=desc 2>/dev/null || echo '[]')
@@ -1486,7 +1486,7 @@ db_task_display_tsv() {
 db_task_display_tsv_global() {
   local extra_filter="${1:-true}" order="${2:-updated_at}" limit="${3:-10}"
   # For global view, same as display_tsv but with project column
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   local json
   json=$(gh_api -X GET "repos/$_GH_REPO/issues" -f state=open -f per_page="$limit" -f sort=updated -f direction=desc 2>/dev/null || echo '[]')
@@ -1559,7 +1559,7 @@ db_task_active_count_for_dir() {
 
 # Root task IDs (no parent — issues without sub-issue parent).
 db_task_roots() {
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
   # For simplicity, return all open issues (sub-issue detection is expensive)
   gh_api -X GET "repos/$_GH_REPO/issues" -f state=open -f per_page=100 2>/dev/null \
     | jq -r '.[] | select(.pull_request == null) | .number' 2>/dev/null || true
@@ -1640,7 +1640,7 @@ map_status_to_project() {
 
 sync_project_status() {
   local issue_number="$1" status="$2"
-  _gh_ensure_repo || return 0
+  _gh_ensure_repo || return 1
 
   local project_id project_status_field_id project_status_map_json
   project_id=$(config_get '.gh.project_id // ""' 2>/dev/null || true)
