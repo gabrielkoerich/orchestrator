@@ -3097,6 +3097,67 @@ JSON
   [ "$output" = "failed" ]
 }
 
+# --- validate_job_command security tests ---
+
+@test "validate_job_command accepts safe commands" {
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo hello'" 2>/dev/null
+  [ "$?" -eq 0 ]
+
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'curl -s https://example.com'" 2>/dev/null
+  [ "$?" -eq 0 ]
+
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'npm run build'" 2>/dev/null
+  [ "$?" -eq 0 ]
+}
+
+@test "validate_job_command rejects command injection" {
+  # Semicolon - command chaining
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test; rm -rf /'" 2>/dev/null
+
+  # Pipe
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test | cat'" 2>/dev/null
+
+  # Logical AND
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test && rm -rf /'" 2>/dev/null
+
+  # Logical OR
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test || rm -rf /'" 2>/dev/null
+
+  # Backticks
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\`ls\`'" 2>/dev/null
+
+  # Command substitution $()
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\$(ls)'" 2>/dev/null
+
+  # Redirection
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test > /tmp/out'" 2>/dev/null
+
+  # Double quotes
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo \"test\"'" 2>/dev/null
+
+  # Single quotes (some contexts)
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command \"echo '\${VAR}'\"" 2>/dev/null
+}
+
+@test "jobs_tick.sh rejects bash job with shell metacharacters" {
+  export JOBS_PATH="${TMP_DIR}/jobs.yml"
+  echo '[]' > "$JOBS_FILE"
+
+  # Create bash job with command injection attempt
+  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test; rm -rf /" "* * * * *" "Bad Cmd Job" >/dev/null
+
+  run "${REPO_DIR}/scripts/jobs_tick.sh"
+  [ "$status" -eq 0 ]
+
+  # Job should be disabled due to unsafe command
+  run tdb_job_field "bad-cmd-job" enabled
+  [ "$output" = "false" ]
+
+  # Job should be marked as failed
+  run tdb_job_field "bad-cmd-job" last_task_status
+  [ "$output" = "failed" ]
+}
+
 @test "jobs_tick.sh disables bash job when dir is missing" {
   printf 'jobs: []\n' > "$JOBS_FILE"
 

@@ -344,6 +344,34 @@ require_agent() {
   fi
 }
 
+# Validate a bash job command to prevent command injection attacks.
+# Rejects commands containing shell metacharacters that could enable arbitrary code execution.
+# Returns 0 if command is safe, 1 if it contains dangerous characters.
+validate_job_command() {
+  local cmd="${1:-}"
+  [ -n "$cmd" ] || return 1
+
+  # Check for dangerous shell metacharacters
+  # These characters can be used to chain commands, redirect output, or spawn subshells
+  # Use fixed string matching for special chars that break regex: $ ( ) ` |
+  printf '%s' "$cmd" | rg -q -F ';' && return 1
+  printf '%s' "$cmd" | rg -q -F '&&' && return 1
+  printf '%s' "$cmd" | rg -q -F '||' && return 1
+  printf '%s' "$cmd" | rg -q -F '`' && return 1
+  printf '%s' "$cmd" | rg -q -F '$(' && return 1
+  printf '%s' "$cmd" | rg -q -F ')' && return 1
+  printf '%s' "$cmd" | rg -q -F '|' && return 1
+  printf '%s' "$cmd" | rg -q -F '{' && return 1
+  printf '%s' "$cmd" | rg -q -F '}' && return 1
+  printf '%s' "$cmd" | rg -q -F '[' && return 1
+  printf '%s' "$cmd" | rg -q -F ']' && return 1
+  printf '%s' "$cmd" | rg -q -F '!' && return 1
+  printf '%s' "$cmd" | rg -q -F '<' && return 1
+  printf '%s' "$cmd" | rg -q -F '>' && return 1
+
+  return 0
+}
+
 available_agents() {
   local agents=""
   local disabled=""
