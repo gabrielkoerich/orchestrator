@@ -1389,5 +1389,6 @@ except subprocess.TimeoutExpired:
 PY
     return $?
   fi
-  "$@"
+  echo "Error: No timeout utility available (timeout, gtimeout, or python3 required)" >&2
+  return 2
 }
