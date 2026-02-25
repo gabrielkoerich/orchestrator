@@ -235,7 +235,7 @@ _review_pr() {
       REVIEW_RESPONSE=$(run_with_timeout claude ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
       ;;
     opencode)
-      REVIEW_RESPONSE=$(run_with_timeout opencode ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
+      REVIEW_RESPONSE=$(run_with_timeout opencode run ${REVIEW_MODEL:+-m "$REVIEW_MODEL"} --format json - <<< "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
       ;;
     *)
       log_err "[review_prs] unknown review agent: $REVIEW_AGENT"
