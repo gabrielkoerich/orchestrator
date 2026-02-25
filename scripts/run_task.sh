@@ -1103,6 +1103,12 @@ if [ "$AGENT_STATUS" = "in_review" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ] && [
       opencode)
         response=$(run_with_timeout opencode ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
         ;;
+      kimi)
+        response=$(run_with_timeout kimi -p ${model:+--model "$model"} "$prompt") || _rra_status=$?
+        ;;
+      minimax)
+        response=$(run_with_timeout minimax -p ${model:+--model "$model"} "$prompt") || _rra_status=$?
+        ;;
       *)
         log_err "[run] task=$TASK_ID unknown review agent: $agent"
         _rra_status=1
