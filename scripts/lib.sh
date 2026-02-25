@@ -424,29 +424,44 @@ pick_fallback_agent() {
   IFS=',' read -ra list <<< "$agents"
 
   local n="${#list[@]}"
-  # Default start so that when current is not found we begin from list[0].
-  local start=$(( n - 1 ))
+  local current_idx=""
   for i in "${!list[@]}"; do
     if [ "${list[$i]}" = "$current" ]; then
-      start="$i"
+      current_idx="$i"
       break
     fi
   done
 
   local offset idx candidate
-  for offset in $(seq 1 "$n"); do
-    idx=$(((start + offset) % n))
-    candidate="${list[$idx]}"
-    [ -n "$candidate" ] || continue
-    if [ -n "$current" ] && [ "$candidate" = "$current" ]; then
-      continue
-    fi
-    if [ -n "$exclude_csv" ] && printf ',%s,' "$exclude_csv" | grep -qF ",${candidate},"; then
-      continue
-    fi
-    printf '%s' "$candidate"
-    return 0
-  done
+  if [ -n "$current_idx" ]; then
+    # Current found: start from the next agent after current
+    for offset in $(seq 1 "$n"); do
+      idx=$(((current_idx + offset) % n))
+      candidate="${list[$idx]}"
+      [ -n "$candidate" ] || continue
+      if [ "$candidate" = "$current" ]; then
+        continue
+      fi
+      if [ -n "$exclude_csv" ] && printf ',%s,' "$exclude_csv" | grep -qF ",${candidate},"; then
+        continue
+      fi
+      printf '%s' "$candidate"
+      return 0
+    done
+  else
+    # Current not found: iterate from the first agent
+    for candidate in "${list[@]}"; do
+      [ -n "$candidate" ] || continue
+      if [ -n "$current" ] && [ "$candidate" = "$current" ]; then
+        continue
+      fi
+      if [ -n "$exclude_csv" ] && printf ',%s,' "$exclude_csv" | grep -qF ",${candidate},"; then
+        continue
+      fi
+      printf '%s' "$candidate"
+      return 0
+    done
+  fi
   return 1
 }
 
