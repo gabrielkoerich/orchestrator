@@ -4820,6 +4820,61 @@ SH
   [[ "$output" == *"request_changes"* ]]
 }
 
+@test "review_prs.sh reject decision closes PR" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.workflow.review_agent = "claude"' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  CLOSED_FILE="${TMP_DIR}/closed_prs.txt"
+  cat > "$GH_STUB" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = "api" ] && [[ "\$*" == *"repos/owner/repo/pulls"* ]] && [[ "\$*" != *"issues"* ]]; then
+  echo '[{"number":7,"title":"Bad PR","body":"","user":{"login":"dev"},"head":{"sha":"bad123","ref":"feat/bad"},"draft":false}]'
+  exit 0
+fi
+if [ "\$1" = "api" ] && [[ "\$*" == *"issues"* ]]; then
+  echo '[]'
+  exit 0
+fi
+if [ "\$1" = "pr" ] && [ "\$2" = "diff" ]; then
+  echo "+bad code"
+  exit 0
+fi
+if [ "\$1" = "pr" ] && [ "\$2" = "review" ]; then
+  exit 0
+fi
+if [ "\$1" = "pr" ] && [ "\$2" = "close" ]; then
+  echo "closed" >> "${CLOSED_FILE}"
+  exit 0
+fi
+if [ "\$1" = "pr" ] && [ "\$2" = "comment" ]; then
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"decision":"reject","notes":"Hallucinated API calls, does not compile."}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" AGENT_TIMEOUT_SECONDS=10 "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+
+  # PR should have been closed
+  [ -f "$CLOSED_FILE" ]
+
+  # State should record the reject decision
+  run grep "7" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"reject"* ]]
+}
+
 @test "review_prs.sh handles merge command from owner" {
   run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
   run yq -i '.workflow.review_owner = "gabriel"' "$CONFIG_PATH"
