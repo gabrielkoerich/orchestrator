@@ -5854,3 +5854,32 @@ YAML
   [ "$status" -eq 0 ]
   [ "$output" = "claude" ]
 }
+ 
+@test "run_with_timeout fails with exit 2 when no timeout utility available" {
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    export AGENT_TIMEOUT_SECONDS=10
+    # Override 'command' to hide timeout/gtimeout/python3 from 'command -v'
+    command() {
+      if [ \"\$1\" = '-v' ]; then
+        case \"\$2\" in
+          timeout|gtimeout|python3) return 1 ;;
+        esac
+      fi
+      builtin command \"\$@\"
+    }
+    run_with_timeout echo hello
+  "
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"No timeout utility available"* ]]
+}
+
+@test "run_with_timeout runs command directly when timeout is 0" {
+  run bash -c "
+    source '${REPO_DIR}/scripts/lib.sh'
+    export AGENT_TIMEOUT_SECONDS=0
+    run_with_timeout echo hello
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"hello"* ]]
+}
