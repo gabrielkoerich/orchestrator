@@ -345,22 +345,44 @@ ATTEMPTS=$((ATTEMPTS + 1))
 NOW=$(now_iso)
 export NOW ATTEMPTS
 
-# Check max attempts before starting
-MAX=$(max_attempts)
+# Detect retry loops: if 4+ attempts and last 3 blocked comments have identical text.
+# Sets RETRY_LOOP_DETECTED=true if detected.
+# NOTE: This function must be called in the parent shell, NOT via command substitution,
+# because variables set in a subshell are not accessible in the parent shell.
+detect_retry_loop() {
+  local task_id="$1"
+  local attempts="$2"
 
-# Detect retry loops: if 4+ attempts and last 3 blocked comments have identical text, stop
-if [ "$ATTEMPTS" -ge 4 ]; then
+  RETRY_LOOP_DETECTED=false
+
+  if [ "$attempts" -lt 4 ]; then
+    return 0
+  fi
+
   # Strip timestamp prefix (e.g. "[2026-01-01T00:00:00Z] ") before comparing for uniqueness
-  _COMMENTS_JSON=$(gh_api -X GET "repos/$(_gh_ensure_repo 2>/dev/null; echo "$_GH_REPO")/issues/$TASK_ID/comments" -f per_page=100 2>/dev/null || echo '[]')
+  local _COMMENTS_JSON
+  _COMMENTS_JSON=$(gh_api -X GET "repos/$(_gh_ensure_repo 2>/dev/null; echo "$_GH_REPO")/issues/$task_id/comments" -f per_page=100 2>/dev/null || echo '[]')
+  local BLOCKED_NOTES
   BLOCKED_NOTES=$(printf '%s' "$_COMMENTS_JSON" \
     | jq -r '[.[] | select(.body | test("blocked:"; "i"))] | .[-3:] | [.[] | (.body | sub("^\\[\\d{4}-[^]]+\\] "; ""))] | unique | length' 2>/dev/null || echo "0")
+  local BLOCKED_COUNT
   BLOCKED_COUNT=$(printf '%s' "$_COMMENTS_JSON" \
     | jq '[.[] | select(.body | test("blocked:"; "i"))] | .[-3:] | length' 2>/dev/null || echo "0")
   if [ "$BLOCKED_COUNT" -ge 3 ] && [ "$BLOCKED_NOTES" -eq 1 ]; then
-    log_err "[run] task=$TASK_ID retry loop detected (same error 3x)"
-    mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
-    exit 0
+    RETRY_LOOP_DETECTED=true
   fi
+}
+
+# Check max attempts before starting
+MAX=$(max_attempts)
+
+# Detect retry loops - must call function in parent shell (not via $(...))
+# so that RETRY_LOOP_DETECTED is accessible here
+detect_retry_loop "$TASK_ID" "$ATTEMPTS"
+if [ "$RETRY_LOOP_DETECTED" = "true" ]; then
+  log_err "[run] task=$TASK_ID retry loop detected (same error 3x)"
+  mark_needs_review "$TASK_ID" "$ATTEMPTS" "retry loop: same error repeated 3 times"
+  exit 0
 fi
 
 if [ "$ATTEMPTS" -gt "$MAX" ]; then
