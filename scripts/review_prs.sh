@@ -225,16 +225,17 @@ _review_pr() {
   # Run review agent
   local REVIEW_MODEL REVIEW_RESPONSE="" REVIEW_RC=0
   REVIEW_MODEL=$(model_for_complexity "$REVIEW_AGENT" "review")
+  log "[review_prs] [$PROJECT_NAME] PR #$pr_number: using agent=$REVIEW_AGENT model=${REVIEW_MODEL:-default}"
 
   case "$REVIEW_AGENT" in
     codex)
-      REVIEW_RESPONSE=$(run_with_timeout codex ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") || REVIEW_RC=$?
+      REVIEW_RESPONSE=$(run_with_timeout codex ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
       ;;
-    claude)
-      REVIEW_RESPONSE=$(run_with_timeout claude ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") || REVIEW_RC=$?
+    claude|kimi|minimax)
+      REVIEW_RESPONSE=$(run_with_timeout claude ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
       ;;
     opencode)
-      REVIEW_RESPONSE=$(run_with_timeout opencode ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") || REVIEW_RC=$?
+      REVIEW_RESPONSE=$(run_with_timeout opencode ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
       ;;
     *)
       log_err "[review_prs] unknown review agent: $REVIEW_AGENT"
@@ -243,7 +244,13 @@ _review_pr() {
   esac
 
   if [ "$REVIEW_RC" -ne 0 ] || [ -z "$REVIEW_RESPONSE" ]; then
-    log_err "[review_prs] [$PROJECT_NAME] PR #$pr_number: agent failed (rc=$REVIEW_RC)"
+    log_err "[review_prs] [$PROJECT_NAME] PR #$pr_number: agent=$REVIEW_AGENT failed (rc=$REVIEW_RC)"
+    # Log truncated response for debugging
+    local _truncated
+    _truncated=$(printf '%s' "$REVIEW_RESPONSE" | head -c 500)
+    if [ -n "$_truncated" ]; then
+      log_err "[review_prs] response: $_truncated"
+    fi
     return 0
   fi
 
