@@ -392,6 +392,26 @@ RAW
   [ "$output" = "codex" ]
 }
 
+@test "safe_normalize_json preserves malformed JSON for debugging" {
+  MALFORMED_RAW='{"this is": "not valid json"'
+  OUTPUT_PATH="${TMP_DIR}/malformed-response.md"
+  
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; safe_normalize_json '${MALFORMED_RAW}' '${OUTPUT_PATH}'" 2>/dev/null
+  [ "$status" -eq 1 ]
+  [ -f "$OUTPUT_PATH" ]
+  [ "$(cat "$OUTPUT_PATH")" = "${MALFORMED_RAW}" ]
+}
+
+@test "safe_normalize_json returns valid JSON when parseable" {
+  # Write JSON to temp file to avoid shell escaping issues
+  printf '{"executor":"claude","reason":"test"}' > "${TMP_DIR}/valid-input.json"
+  OUTPUT_PATH="${TMP_DIR}/valid-response.md"
+  
+  run bash -c "source '${REPO_DIR}/scripts/lib.sh'; json=\$(cat '${TMP_DIR}/valid-input.json'); safe_normalize_json \"\$json\" '${OUTPUT_PATH}'" 2>/dev/null
+  [ "$status" -eq 0 ]
+  [ -f "$OUTPUT_PATH" ]
+}
+
 @test "gh_api sets backoff on rate limit and respects skip mode" {
   GH_STUB="${TMP_DIR}/gh"
   cat > "$GH_STUB" <<'SH'

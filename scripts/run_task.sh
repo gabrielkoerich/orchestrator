@@ -797,6 +797,10 @@ else
   done
   if [ -z "$RESPONSE_JSON" ]; then
     log_err "[run] output file not found, trying stdout fallback"
+    # Always save raw response for debugging before normalization
+    mkdir -p "$CONTEXTS_DIR"
+    RAW_RESPONSE_PATH="${CONTEXTS_DIR}/${FILE_PREFIX}-response-${ATTEMPTS}.md"
+    printf '%s' "$RESPONSE" > "$RAW_RESPONSE_PATH"
     # For opencode: stdout is NDJSON events — extract the last text block that looks like JSON
     if [ "$TASK_AGENT" = "opencode" ]; then
       RESPONSE_JSON=$(printf '%s' "$RESPONSE" | python3 -c "
@@ -860,10 +864,8 @@ if [ -z "$RESPONSE_JSON" ]; then
     fi
     exit 0
   fi
-  log_err "[run] task=$TASK_ID invalid JSON response"
-  mkdir -p "$CONTEXTS_DIR"
-  printf '%s' "$RESPONSE" > "${CONTEXTS_DIR}/${FILE_PREFIX}-response-${ATTEMPTS}.md"
-  mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response invalid YAML/JSON"
+  log_err "[run] task=$TASK_ID invalid JSON response (saved to $RAW_RESPONSE_PATH)"
+  mark_needs_review "$TASK_ID" "$ATTEMPTS" "agent response invalid YAML/JSON (see $RAW_RESPONSE_PATH)"
   exit 0
 fi
 
