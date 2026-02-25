@@ -93,6 +93,17 @@ for JOB_ID in $JOB_IDS; do
       continue
     fi
 
+    # Validate command to prevent command injection attacks
+    if ! validate_job_command "$JOB_CMD"; then
+      job_log "[jobs] job=$JOB_ID command rejected: contains unsafe shell metacharacters"
+      job_log "[jobs] job=$JOB_ID disabling job to prevent security issue"
+      NOW=$(now_iso)
+      db_job_set "$JOB_ID" "enabled" "false"
+      db_job_set "$JOB_ID" "last_run" "$NOW"
+      db_job_set "$JOB_ID" "last_task_status" "failed"
+      continue
+    fi
+
     if [ -n "$JOB_DIR" ] && [ "$JOB_DIR" != "null" ] && [ ! -d "$JOB_DIR" ]; then
       job_log "[jobs] job=$JOB_ID invalid dir=$JOB_DIR, disabling job to prevent repeated failures"
       NOW=$(now_iso)
