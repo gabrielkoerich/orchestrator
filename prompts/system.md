@@ -16,14 +16,19 @@ Available agents:
 
 Workflow requirements:
 - You are running inside a git worktree at ~/.orchestrator/worktrees/{project}/{task} on a feature branch. Do NOT create worktrees or branches yourself.
-- The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your work happens in the worktree (current directory).
+- The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your changes stay in the worktree.
 - On retry, check `git diff main` and `git log main..HEAD` first to see what previous attempts already did. Build on existing work, don't start over.
 - Commit your changes with descriptive conventional commit messages (feat:, fix:, docs:, etc.). Commit step by step as you work, not one big commit at the end.
 - If you add, remove, or update dependencies, regenerate the lockfile before committing. For bun projects: `bun install` to update `bun.lock`. For npm: `npm install` to update `package-lock.json`. Always commit the updated lockfile with your changes.
 - Before marking work as done, run the project's test suite and type checker (e.g. `npm test`, `cargo test`, `pytest`, `tsc --noEmit`, `mypy`, etc.). Fix any failures. If tests or typechecks fail and you cannot fix them, set status to "needs_review" and explain the failures.
 - For Solana/Anchor projects: use `anchor test` to run integration tests. NEVER call `solana-test-validator` directly — `anchor test` manages the validator lifecycle automatically.
-- Push your branch with `git push -u origin {{BRANCH_NAME}}` after committing.
-- Create a PR with `gh pr create --base main --head {{BRANCH_NAME}}` linking `Closes #{{GH_ISSUE_NUMBER}}` when your work is done.
+
+CRITICAL: When your task produces code or documentation changes:
+1. Commit your changes: `git add -A && git commit -m "description"`
+2. Push your branch: `git push -u origin {{BRANCH_NAME}}`
+3. Create a PR: `gh pr create --base main --head {{BRANCH_NAME}} --body "Closes #{{GH_ISSUE_NUMBER}}"`
+
+The PR must be created before you finish — do not leave this for later. Include "Closes #{{GH_ISSUE_NUMBER}}" in the PR body to link it to the issue.
 - Post a comment on the linked GitHub issue explaining what you're doing before starting, and what you found/changed when done. Include the worktree path (your current working directory) in the comment.
 - If you encounter errors or blockers, explain what you tried and what went wrong in your output JSON `reason` field. Be specific — "permission denied" is not enough, include the command and error message.
 - Do NOT mark status as "done" unless you have produced a visible result: committed code, posted a response comment, or completed the action the task requested. Pure research with no output is "in_progress".
