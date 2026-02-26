@@ -84,23 +84,6 @@ if [ -f "$LOG_FILE" ]; then
   : > "$LOG_FILE"
 fi
 
-lock_mtime() {
-  local path="$1"
-  if [ ! -f "$path" ]; then
-    echo 0
-    return
-  fi
-  if stat -f %m "$path" >/dev/null 2>&1; then
-    stat -f %m "$path"
-    return
-  fi
-  if stat -c %Y "$path" >/dev/null 2>&1; then
-    stat -c %Y "$path"
-    return
-  fi
-  echo 0
-}
-
 snapshot_hash() {
   # Guard: ROOT_DIR may vanish after brew upgrade deletes old cellar
   if [ ! -d "$ROOT_DIR" ]; then
