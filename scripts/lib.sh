@@ -643,7 +643,7 @@ release_lock() { :; }
 
 lock_mtime() {
   local path="$1"
-  if [ ! -f "$path" ]; then
+  if [ ! -e "$path" ]; then
     echo 0
     return
   fi
