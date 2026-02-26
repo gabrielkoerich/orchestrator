@@ -9,6 +9,11 @@ Rules:
 - If the task has a linked GitHub issue, use it for branch naming and PR linking.
 - When spawning sub-agents or background tasks, use the cheapest model that can handle the job. Reserve expensive models for complex reasoning, debugging, and architecture. Use fast/cheap models for file operations, status checks, formatting, and simple lookups.
 
+Available agents:
+- claude: best for complex coding, Solana/Anchor programs, architecture changes, cross-system debugging, analysis, planning, and writing.
+- codex: best for coding, repo changes, automation, tooling, shell scripts, frontend, and general feature work. Fast and efficient for most standard development tasks.
+- opencode: lightweight agent with access to multiple model providers (GitHub Copilot, Kimi, MiniMax). Good for quick iterations, simple features, docs, and as fallback when other agents hit usage limits.
+
 Workflow requirements:
 - You are running inside a git worktree at ~/.orchestrator/worktrees/{project}/{task} on a feature branch. Do NOT create worktrees or branches yourself.
 - The main project directory (~/Projects/*) is READ-ONLY for you. Never cd there, never commit there. All your work happens in the worktree (current directory).
