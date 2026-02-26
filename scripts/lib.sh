@@ -146,9 +146,9 @@ gh_backoff_next_delay() {
 }
 
 gh_api() {
-  local mode=${GH_BACKOFF_MODE:-wait}
-  local base=${GH_BACKOFF_BASE_SECONDS:-30}
-  local max=${GH_BACKOFF_MAX_SECONDS:-900}
+  local mode="${GH_BACKOFF_MODE:-wait}"
+  local base="${GH_BACKOFF_BASE_SECONDS:-30}"
+  local max="${GH_BACKOFF_MAX_SECONDS:-900}"
   local errexit_enabled=0
   if [[ $- == *e* ]]; then
     errexit_enabled=1
@@ -650,7 +650,7 @@ lock_mtime() {
 
 lock_is_stale() {
   local path="$1"
-  local stale_seconds=${LOCK_STALE_SECONDS:-600}
+  local stale_seconds="${LOCK_STALE_SECONDS:-600}"
   local mtime
   mtime=$(lock_mtime "$path")
   if [ -z "$mtime" ] || [ "$mtime" -eq 0 ] 2>/dev/null; then
@@ -701,8 +701,8 @@ append_task_context() {
 
 retry_delay_seconds() {
   local attempts=$1
-  local base=${RETRY_BASE_SECONDS:-60}
-  local max=${RETRY_MAX_SECONDS:-3600}
+  local base="${RETRY_BASE_SECONDS:-60}"
+  local max="${RETRY_MAX_SECONDS:-3600}"
   local exp=$((attempts - 1))
   local delay=$base
   if [ "$exp" -gt 0 ]; then
@@ -1375,7 +1375,7 @@ process_owner_feedback() {
 }
 
 run_with_timeout() {
-  local timeout_seconds=${AGENT_TIMEOUT_SECONDS:-1800}
+  local timeout_seconds="${AGENT_TIMEOUT_SECONDS:-1800}"
   if [ -z "$timeout_seconds" ] || [ "$timeout_seconds" = "0" ]; then
     "$@"
     return $?
