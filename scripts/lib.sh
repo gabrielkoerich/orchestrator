@@ -642,9 +642,19 @@ acquire_lock() { :; }
 release_lock() { :; }
 
 lock_mtime() {
-  local path="$1" mtime
-  mtime=$(stat -f %m "$path" 2>/dev/null) && { echo "$mtime"; return 0; }
-  mtime=$(stat -c %Y "$path" 2>/dev/null) && { echo "$mtime"; return 0; }
+  local path="$1"
+  if [ ! -e "$path" ]; then
+    echo 0
+    return
+  fi
+  if stat -f %m "$path" >/dev/null 2>&1; then
+    stat -f %m "$path"
+    return
+  fi
+  if stat -c %Y "$path" >/dev/null 2>&1; then
+    stat -c %Y "$path"
+    return
+  fi
   echo 0
 }
 
