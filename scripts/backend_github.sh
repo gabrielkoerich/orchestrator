@@ -862,7 +862,6 @@ db_load_task() {
   export TASK_LAST_ERROR=$(printf '%s' "$sc" | jq -r '.last_error // empty')
   export TASK_PROMPT_HASH=$(printf '%s' "$sc" | jq -r '.prompt_hash // empty')
   export TASK_GH_SYNCED_AT=$(printf '%s' "$sc" | jq -r '.gh_synced_at // empty')
-  export TASK_GH_STATE=$(printf '%s' "$json" | jq -r '.state // empty')
   export TASK_GH_UPDATED_AT=$(printf '%s' "$json" | jq -r '.updated_at // empty')
   export TASK_GH_LAST_FEEDBACK_AT=$(printf '%s' "$sc" | jq -r '.gh_last_feedback_at // empty')
   export TASK_GH_PROJECT_ITEM_ID=$(printf '%s' "$sc" | jq -r '.gh_project_item_id // empty')
