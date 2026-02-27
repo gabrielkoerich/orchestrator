@@ -22,6 +22,7 @@ _GH_VALID_COMPLEXITIES="simple medium complex"
 _GH_VALID_ROLES="general backend frontend docs devops security test"
 _GH_KNOWN_STANDALONE="plan scheduled blocked no-agent no-review has-error"
 _GH_RESERVED_PREFIXES="status: agent: model: complexity: role: skill: job:"
+read -ra _GH_RESERVED_PREFIXES_ARRAY <<< "$_GH_RESERVED_PREFIXES"
 
 # Model patterns per agent (prefix matching, for post-run diagnostics)
 _GH_CLAUDE_MODELS="haiku sonnet opus claude-"
@@ -228,7 +229,7 @@ _gh_validate_label() {
   [ -z "$label" ] && return 0
 
   # Check each reserved prefix
-  for prefix in $_GH_RESERVED_PREFIXES; do
+  for prefix in "${_GH_RESERVED_PREFIXES_ARRAY[@]}"; do
     if [[ "$label" == "${prefix}"* ]]; then
       local value="${label#"$prefix"}"
       case "$prefix" in
