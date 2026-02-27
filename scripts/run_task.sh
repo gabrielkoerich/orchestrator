@@ -360,8 +360,10 @@ detect_retry_loop() {
   fi
 
   # Strip timestamp prefix (e.g. "[2026-01-01T00:00:00Z] ") before comparing for uniqueness
+  # Call _gh_ensure_repo in parent shell so _GH_REPO side effect is preserved
+  _gh_ensure_repo 2>/dev/null || true
   local _COMMENTS_JSON
-  _COMMENTS_JSON=$(gh_api -X GET "repos/$(_gh_ensure_repo 2>/dev/null; echo "$_GH_REPO")/issues/$task_id/comments" -f per_page=100 2>/dev/null || echo '[]')
+  _COMMENTS_JSON=$(gh_api -X GET "repos/$_GH_REPO/issues/$task_id/comments" -f per_page=100 2>/dev/null || echo '[]')
   local BLOCKED_NOTES
   BLOCKED_NOTES=$(printf '%s' "$_COMMENTS_JSON" \
     | jq -r '[.[] | select(.body | test("blocked:"; "i"))] | .[-3:] | [.[] | (.body | sub("^\\[\\d{4}-[^]]+\\] "; ""))] | unique | length' 2>/dev/null || echo "0")
