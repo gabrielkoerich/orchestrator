@@ -93,19 +93,21 @@ while IFS= read -r id; do
 
   if [ -d "$worktree" ]; then
     log "[cleanup_worktrees] [$PROJECT_NAME] removing worktree=$worktree"
-    if ! git -C "$project_dir" worktree remove "$worktree" --force >/dev/null 2>&1; then
-      log_err "[cleanup_worktrees] [$PROJECT_NAME] failed to remove worktree=$worktree"
+    local _git_err
+    _git_err=$(git -C "$project_dir" worktree remove "$worktree" --force 2>&1) || {
+      log_err "[cleanup_worktrees] [$PROJECT_NAME] failed to remove worktree=$worktree: $_git_err"
       cleanup_ok=false
-    fi
+    }
   fi
 
   if [ -n "$branch" ] && git -C "$project_dir" show-ref --verify --quiet "refs/heads/$branch"; then
     log "[cleanup_worktrees] [$PROJECT_NAME] deleting branch=$branch"
     # Use -D (force) because squash-merged PRs are not considered merged by git
-    if ! git -C "$project_dir" branch -D "$branch" >/dev/null 2>&1; then
-      log_err "[cleanup_worktrees] [$PROJECT_NAME] failed to delete branch=$branch"
+    local _git_err
+    _git_err=$(git -C "$project_dir" branch -D "$branch" 2>&1) || {
+      log_err "[cleanup_worktrees] [$PROJECT_NAME] failed to delete branch=$branch: $_git_err"
       cleanup_ok=false
-    fi
+    }
   fi
 
   if [ "$cleanup_ok" = true ]; then
