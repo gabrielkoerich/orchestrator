@@ -382,7 +382,7 @@ db_task_field() {
 
   # GitHub issues are always numeric
   if ! [[ "$id" =~ ^[0-9]+$ ]]; then
-    return 0
+    return 1
   fi
 
   # Check sidecar first for ephemeral fields
