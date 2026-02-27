@@ -22,6 +22,7 @@ _GH_VALID_COMPLEXITIES="simple medium complex"
 _GH_VALID_ROLES="general backend frontend docs devops security test"
 _GH_KNOWN_STANDALONE="plan scheduled blocked no-agent no-review has-error"
 _GH_RESERVED_PREFIXES="status: agent: model: complexity: role: skill: job:"
+read -ra _GH_RESERVED_PREFIXES_ARRAY <<< "$_GH_RESERVED_PREFIXES"
 
 # Model patterns per agent (prefix matching, for post-run diagnostics)
 _GH_CLAUDE_MODELS="haiku sonnet opus claude-"
@@ -228,7 +229,7 @@ _gh_validate_label() {
   [ -z "$label" ] && return 0
 
   # Check each reserved prefix
-  for prefix in $_GH_RESERVED_PREFIXES; do
+  for prefix in "${_GH_RESERVED_PREFIXES_ARRAY[@]}"; do
     if [[ "$label" == "${prefix}"* ]]; then
       local value="${label#"$prefix"}"
       case "$prefix" in
@@ -862,7 +863,6 @@ db_load_task() {
   export TASK_LAST_ERROR=$(printf '%s' "$sc" | jq -r '.last_error // empty')
   export TASK_PROMPT_HASH=$(printf '%s' "$sc" | jq -r '.prompt_hash // empty')
   export TASK_GH_SYNCED_AT=$(printf '%s' "$sc" | jq -r '.gh_synced_at // empty')
-  export TASK_GH_STATE=$(printf '%s' "$json" | jq -r '.state // empty')
   export TASK_GH_UPDATED_AT=$(printf '%s' "$json" | jq -r '.updated_at // empty')
   export TASK_GH_LAST_FEEDBACK_AT=$(printf '%s' "$sc" | jq -r '.gh_last_feedback_at // empty')
   export TASK_GH_PROJECT_ITEM_ID=$(printf '%s' "$sc" | jq -r '.gh_project_item_id // empty')
