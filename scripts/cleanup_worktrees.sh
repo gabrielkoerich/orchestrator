@@ -45,8 +45,12 @@ issue_has_merged_pr() {
   local issue_number="$2"
   local pr_number=""
 
+  # Return codes:
+  # 0 = merged PR found
+  # 1 = no merged PR found
+  # 2 = gh unavailable or API error
   if ! command -v gh >/dev/null 2>&1; then
-    return 1
+    return 2
   fi
 
   pr_number=$(gh pr list \
@@ -54,8 +58,16 @@ issue_has_merged_pr() {
     --state merged \
     --search "closes #$issue_number" \
     --json number \
-    --jq '.[0].number // ""' 2>/dev/null || true)
-  [ -n "$pr_number" ]
+    --jq '.[0].number // ""' 2>/dev/null) || {
+    # gh command failed (network, auth, rate limit, etc.)
+    return 2
+  }
+
+  if [ -n "$pr_number" ]; then
+    return 0
+  fi
+
+  return 1
 }
 
 log "[cleanup_worktrees] [$PROJECT_NAME] scan start"
@@ -86,6 +98,19 @@ while IFS= read -r id; do
     continue
   fi
   if ! issue_has_merged_pr "$repo" "$gh_issue"; then
+    case "$?" in
+      1)
+        # No merged PR found for this issue — skip cleanup (expected)
+        log "[cleanup_worktrees] [$PROJECT_NAME] task=$id no merged PR; skipping"
+        ;;
+      2)
+        # gh unavailable or API error — surface an error and skip this task for now
+        log_err "[cleanup_worktrees] [$PROJECT_NAME] task=$id failed to check PR status for repo=$repo issue=$gh_issue; gh unavailable or API error; skipping cleanup for now"
+        ;;
+      *)
+        log_err "[cleanup_worktrees] [$PROJECT_NAME] task=$id issue_has_merged_pr returned unexpected code=$?; skipping"
+        ;;
+    esac
     continue
   fi
 
