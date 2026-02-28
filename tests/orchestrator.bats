@@ -4849,6 +4849,55 @@ SH
   [[ "$output" == *"approve"* ]]
 }
 
+@test "review_prs.sh uses router fallback executor when round-robin cannot select agent" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.workflow.review_agent = "round_robin"' "$CONFIG_PATH"
+  run yq -i '.router.fallback_executor = "claude"' "$CONFIG_PATH"
+  run yq -i '.router.disabled_agents = ["claude","codex","opencode","kimi","minimax"]' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [[ "$*" == *"repos/owner/repo/pulls"* ]]; then
+  echo '[{"number":77,"title":"Fallback test","body":"fallback","user":{"login":"dev"},"head":{"sha":"sha777","ref":"feat/fallback"},"draft":false}]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$*" == *"issues"* ]]; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+  echo "+fallback diff"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"decision":"approve","notes":"Fallback agent from config worked."}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" AGENT_TIMEOUT_SECONDS=10 "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+
+  run grep "77" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sha777"* ]]
+  [[ "$output" == *"approve"* ]]
+}
+
 @test "review_prs.sh re-reviews PR when SHA changes" {
   run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
   run yq -i '.workflow.review_agent = "claude"' "$CONFIG_PATH"
