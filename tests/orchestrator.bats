@@ -737,18 +737,16 @@ SH
   run tdb_set "$TASK2_ID" agent "codex"
   [ "$status" -eq 0 ]
 
-  # Execution stub (codex) prints done JSON; review fallback (codex --print) prints approve JSON
+  # Execution stub (codex) prints done JSON; review fallback (codex exec --json) prints approve JSON
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-for a in "$@"; do
-  if [ "$a" = "--print" ]; then
-    cat <<'JSON'
+if [ "$1" = "exec" ]; then
+  cat <<'JSON'
 {"decision":"approve","notes":"codex_fallback_marker"}
 JSON
-    exit 0
-  fi
-done
+  exit 0
+fi
 
 cat <<'JSON'
 {"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
