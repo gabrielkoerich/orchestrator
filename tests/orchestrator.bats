@@ -5883,3 +5883,65 @@ YAML
   [ "$status" -eq 0 ]
   [[ "$output" == *"hello"* ]]
 }
+
+# --- create-pr.sh validation tests ---
+
+@test "create-pr.sh fails when make-pr-body.sh fails" {
+  # Stub make-pr-body.sh to fail
+  STUB="${PROJECT_DIR}/scripts/make-pr-body.sh"
+  mkdir -p "$(dirname "$STUB")"
+  cat > "$STUB" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$STUB"
+
+  # Ensure pr-title.txt does not exist so make-pr-body.sh is invoked
+  rm -f "${PROJECT_DIR}/.orchestrator/pr-title.txt"
+  rm -f "${PROJECT_DIR}/.orchestrator/pr-body.md"
+
+  run bash -c "cd '$PROJECT_DIR' && '${REPO_DIR}/scripts/create-pr.sh' main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"make-pr-body.sh failed"* ]]
+}
+
+@test "create-pr.sh fails when pr-title.txt is empty" {
+  mkdir -p "${PROJECT_DIR}/.orchestrator"
+  printf '' > "${PROJECT_DIR}/.orchestrator/pr-title.txt"
+  printf '## Summary\ntest\n' > "${PROJECT_DIR}/.orchestrator/pr-body.md"
+
+  run bash -c "cd '$PROJECT_DIR' && '${REPO_DIR}/scripts/create-pr.sh' main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PR title is empty"* ]]
+}
+
+@test "create-pr.sh fails when pr-title.txt is whitespace-only" {
+  mkdir -p "${PROJECT_DIR}/.orchestrator"
+  printf '   \n' > "${PROJECT_DIR}/.orchestrator/pr-title.txt"
+  printf '## Summary\ntest\n' > "${PROJECT_DIR}/.orchestrator/pr-body.md"
+
+  run bash -c "cd '$PROJECT_DIR' && '${REPO_DIR}/scripts/create-pr.sh' main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PR title is empty"* ]]
+}
+
+@test "create-pr.sh fails when pr-body.md is missing after make-pr-body.sh" {
+  # Stub make-pr-body.sh to only create title, not body
+  STUB="${PROJECT_DIR}/scripts/make-pr-body.sh"
+  mkdir -p "$(dirname "$STUB")"
+  cat > "$STUB" <<'STUB'
+#!/usr/bin/env bash
+mkdir -p .orchestrator
+echo "Some title" > .orchestrator/pr-title.txt
+# Intentionally skip creating pr-body.md
+STUB
+  chmod +x "$STUB"
+
+  # Ensure neither file exists so make-pr-body.sh is invoked
+  rm -f "${PROJECT_DIR}/.orchestrator/pr-title.txt"
+  rm -f "${PROJECT_DIR}/.orchestrator/pr-body.md"
+
+  run bash -c "cd '$PROJECT_DIR' && '${REPO_DIR}/scripts/create-pr.sh' main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pr-body.md not found"* ]]
+}
