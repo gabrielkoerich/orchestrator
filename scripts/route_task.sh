@@ -221,7 +221,8 @@ if [ -z "$RESPONSE_JSON" ] || ! printf '%s' "$RESPONSE_JSON" | jq -e 'type=="obj
     "summary=Router error: invalid JSON response"
   db_set_blockers "$TASK_ID" "Router failed to return valid JSON. See: $RAW_RESPONSE_PATH"
   append_history "$TASK_ID" "needs_review" "router response invalid JSON (saved to $RAW_RESPONSE_PATH)"
-  exit 0
+  # Signal failure to callers by exiting non-zero — the task status is already set to needs_review
+  exit 1
 fi
 
 ROUTED_AGENT=$(printf '%s' "$RESPONSE_JSON" | jq -r '.executor // ""')
