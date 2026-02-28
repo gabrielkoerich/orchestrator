@@ -1107,13 +1107,16 @@ if [ "$AGENT_STATUS" = "in_review" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ] && [
     _rra_status=0
     case "$agent" in
       codex)
-        response=$(run_with_timeout codex ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
+        response=$(run_with_timeout codex exec ${model:+--model "$model"} --json "$prompt") || _rra_status=$?
         ;;
       claude)
         response=$(run_with_timeout claude ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
         ;;
       opencode)
-        response=$(run_with_timeout opencode ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
+        _review_prompt_file=$(mktemp)
+        printf '%s' "$prompt" > "$_review_prompt_file"
+        response=$(run_with_timeout opencode run ${model:+-m "$model"} --format json - < "$_review_prompt_file") || _rra_status=$?
+        rm -f "$_review_prompt_file"
         ;;
       kimi)
         response=$(run_with_timeout kimi -p ${model:+--model "$model"} "$prompt") || _rra_status=$?
