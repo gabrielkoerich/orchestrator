@@ -95,7 +95,7 @@ for JOB_ID in $JOB_IDS; do
 
     # Validate command to prevent command injection attacks
     if ! validate_job_command "$JOB_CMD"; then
-      job_log "[jobs] job=$JOB_ID command rejected: contains unsafe shell metacharacters"
+      job_log "[jobs] job=$JOB_ID command rejected: contains command substitution"
       job_log "[jobs] job=$JOB_ID disabling job to prevent security issue"
       NOW=$(now_iso)
       db_job_set "$JOB_ID" "enabled" "false"

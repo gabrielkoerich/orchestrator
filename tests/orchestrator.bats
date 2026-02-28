@@ -3130,41 +3130,57 @@ JSON
   [ "$?" -eq 0 ]
 }
 
-@test "validate_job_command rejects command injection" {
-  # Semicolon - command chaining
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test; rm -rf /'" 2>/dev/null
-
-  # Pipe
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test | cat'" 2>/dev/null
+@test "validate_job_command accepts shell features (pipes, variables, globs, etc.)" {
+  # Pipes
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'cat file | grep pattern'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
   # Logical AND
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test && rm -rf /'" 2>/dev/null
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'cmd1 && cmd2'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
   # Logical OR
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test || rm -rf /'" 2>/dev/null
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'cmd1 || cmd2'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
-  # Backticks
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\`ls\`'" 2>/dev/null
+  # Semicolons
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'cmd1; cmd2'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
-  # Command substitution $()
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\$(ls)'" 2>/dev/null
+  # Environment variables
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo \$HOME'" 2>/dev/null
+  [ "$?" -eq 0 ]
+
+  # Globs and brackets
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'ls -la [0-9]*'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
   # Redirection
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test > /tmp/out'" 2>/dev/null
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test > /tmp/out'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
-  # Double quotes
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo \"test\"'" 2>/dev/null
-
-  # Single quotes (some contexts)
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command \"echo '\${VAR}'\"" 2>/dev/null
+  # Braces
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo {a,b,c}'" 2>/dev/null
+  [ "$?" -eq 0 ]
 }
 
-@test "jobs_tick.sh rejects bash job with shell metacharacters" {
+@test "validate_job_command rejects command substitution" {
+  # Backticks - legacy command substitution
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\`ls\`'" 2>/dev/null
+
+  # $() - modern command substitution
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\$(ls)'" 2>/dev/null
+
+  # Nested command substitution
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo \$(cat /etc/passwd)'" 2>/dev/null
+}
+
+@test "jobs_tick.sh rejects bash job with command substitution" {
   export JOBS_PATH="${TMP_DIR}/jobs.yml"
   echo '[]' > "$JOBS_FILE"
 
-  # Create bash job with command injection attempt
-  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test; rm -rf /" "* * * * *" "Bad Cmd Job" >/dev/null
+  # Create bash job with command substitution attempt
+  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command 'echo $(cat /etc/passwd)' "* * * * *" "Bad Cmd Job" >/dev/null
 
   run "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
