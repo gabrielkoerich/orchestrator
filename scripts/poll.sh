@@ -31,6 +31,14 @@ if [ -n "$IN_PROGRESS_IDS" ]; then
       continue
     fi
 
+    # Agent assigned and lock exists, but stale/dead owner — recover.
+    if [ -d "$TASK_LOCK" ] && clear_stale_lock "$TASK_LOCK" >/dev/null 2>&1; then
+      log "[poll] task=$sid has stale lock, clearing and recovering"
+      db_task_update "$sid" status=new "last_error=recovered: stale task lock cleared"
+      db_append_history "$sid" "new" "recovered from stale task lock"
+      continue
+    fi
+
     # Agent assigned but no lock held — agent process died
     if [ ! -d "$TASK_LOCK" ]; then
       UPDATED_AT=$(db_task_field "$sid" "updated_at")

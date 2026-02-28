@@ -5,7 +5,12 @@
 # shellcheck disable=SC2155
 
 # Determine which backend to use (default: github)
-_BACKEND_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+_BACKEND_SOURCE="${BASH_SOURCE[0]:-$0}"
+case "$_BACKEND_SOURCE" in
+  */*) _BACKEND_DIR_RAW="${_BACKEND_SOURCE%/*}" ;;
+  *) _BACKEND_DIR_RAW="." ;;
+esac
+_BACKEND_DIR=$(cd "$_BACKEND_DIR_RAW" && pwd)
 _BACKEND_TYPE="${ORCH_BACKEND:-}"
 if [ -z "$_BACKEND_TYPE" ] && [ -f "${CONFIG_PATH:-}" ]; then
   _BACKEND_TYPE=$(yq -r '.backend // "github"' "$CONFIG_PATH" 2>/dev/null || echo "github")

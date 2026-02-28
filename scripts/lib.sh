@@ -14,22 +14,31 @@ CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
 STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
 
-# Augment PATH and load functions (brew services / launchd start with minimal env)
-_path_found=false
-if [[ -f "$HOME/.path" ]]; then
-  _old_path="$PATH"
-  source "$HOME/.path" >/dev/null 2>&1
-  export PATH="${_old_path}:${PATH}"
-  _path_found=true
-fi
-# Fallback dev tool locations if no .path file found
-if ! $_path_found; then
-  for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.local/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
-    [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
-  done
+# Augment PATH and load functions (brew services / launchd start with minimal env).
+# Guard against repeated sourcing of lib.sh in the same shell, which can bloat PATH.
+if [ "${ORCH_PATH_BOOTSTRAPPED:-0}" != "1" ]; then
+  _path_found=false
+  if [[ -f "$HOME/.path" ]]; then
+    _old_path="$PATH"
+    source "$HOME/.path" >/dev/null 2>&1
+    export PATH="${_old_path}:${PATH}"
+    _path_found=true
+  fi
+  # Fallback dev tool locations if no .path file found
+  if ! $_path_found; then
+    for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.local/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
+      [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
+    done
+  fi
+  export ORCH_PATH_BOOTSTRAPPED=1
 fi
 # Source backend layer (GitHub, etc.)
-_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+_LIB_SOURCE="${BASH_SOURCE[0]:-$0}"
+case "$_LIB_SOURCE" in
+  */*) _LIB_DIR_RAW="${_LIB_SOURCE%/*}" ;;
+  *) _LIB_DIR_RAW="." ;;
+esac
+_LIB_DIR=$(cd "$_LIB_DIR_RAW" && pwd)
 if [ -f "${_LIB_DIR}/backend.sh" ]; then
   source "${_LIB_DIR}/backend.sh"
 fi
@@ -492,7 +501,10 @@ normalize_json_response() {
   local raw="$1"
   if command -v python3 >/dev/null 2>&1; then
     local script_dir
-    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    script_dir="${_LIB_DIR:-}"
+    if [ -z "$script_dir" ] || [ ! -f "${script_dir}/normalize_json.py" ]; then
+      return 1
+    fi
     RAW_RESPONSE="$raw" python3 "${script_dir}/normalize_json.py"
     return $?
   fi
@@ -672,6 +684,94 @@ lock_is_stale() {
     return 0
   fi
   return 1
+}
+
+lock_pid() {
+  local path="$1"
+  if [ -f "$path/pid" ]; then
+    cat "$path/pid" 2>/dev/null || true
+  fi
+}
+
+lock_has_live_pid() {
+  local path="$1"
+  local pid
+  pid=$(lock_pid "$path")
+  if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+clear_stale_lock() {
+  local path="$1"
+  [ -d "$path" ] || return 1
+
+  local observed_mtime
+  observed_mtime=$(lock_mtime "$path")
+  [ -n "$observed_mtime" ] && [ "$observed_mtime" -ne 0 ] 2>/dev/null || return 1
+
+  if ! lock_is_stale "$path"; then
+    return 1
+  fi
+
+  if lock_has_live_pid "$path"; then
+    return 1
+  fi
+
+  local current_mtime
+  current_mtime=$(lock_mtime "$path")
+  if [ "$current_mtime" != "$observed_mtime" ]; then
+    return 1
+  fi
+
+  rm -f "$path/pid"
+  rmdir "$path" 2>/dev/null
+}
+
+acquire_task_lock() {
+  local path="$1"
+  local owner_pid="${2:-$$}"
+
+  if mkdir "$path" 2>/dev/null; then
+    if ! printf '%s\n' "$owner_pid" > "$path/pid"; then
+      rmdir "$path" 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+
+  if lock_has_live_pid "$path"; then
+    return 1
+  fi
+
+  clear_stale_lock "$path" >/dev/null 2>&1 || true
+
+  if mkdir "$path" 2>/dev/null; then
+    if ! printf '%s\n' "$owner_pid" > "$path/pid"; then
+      rmdir "$path" 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+
+  return 1
+}
+
+release_task_lock() {
+  local path="$1"
+  local owner_pid="${2:-}"
+  [ -d "$path" ] || return 0
+
+  local current_pid
+  current_pid=$(lock_pid "$path")
+
+  if [ -n "$owner_pid" ] && [ -n "$current_pid" ] && [ "$current_pid" != "$owner_pid" ]; then
+    return 1
+  fi
+
+  rm -f "$path/pid"
+  rmdir "$path" 2>/dev/null
 }
 
 # Legacy compat — runs command directly.
