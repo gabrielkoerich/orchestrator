@@ -229,7 +229,7 @@ _review_pr() {
 
   case "$REVIEW_AGENT" in
     codex)
-      REVIEW_RESPONSE=$(run_with_timeout codex ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
+      REVIEW_RESPONSE=$(run_with_timeout codex exec ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --json "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
       ;;
     claude|kimi|minimax)
       REVIEW_RESPONSE=$(run_with_timeout claude ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
