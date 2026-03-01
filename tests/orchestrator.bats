@@ -5946,3 +5946,71 @@ YAML
   [ "$status" -eq 0 ]
   [[ "$output" == *"hello"* ]]
 }
+
+# --- create-pr.sh validation tests ---
+
+@test "create-pr.sh fails when make-pr-body.sh fails" {
+  # Copy create-pr.sh into PROJECT_DIR so ROOT_DIR resolves correctly
+  mkdir -p "${PROJECT_DIR}/scripts"
+  cp "${REPO_DIR}/scripts/create-pr.sh" "${PROJECT_DIR}/scripts/create-pr.sh"
+
+  # Stub make-pr-body.sh to fail
+  cat > "${PROJECT_DIR}/scripts/make-pr-body.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "${PROJECT_DIR}/scripts/make-pr-body.sh"
+
+  # Ensure pr-title.txt does not exist so make-pr-body.sh is invoked
+  rm -f "${PROJECT_DIR}/.orchestrator/pr-title.txt"
+  rm -f "${PROJECT_DIR}/.orchestrator/pr-body.md"
+
+  run bash -c "cd '$PROJECT_DIR' && '${PROJECT_DIR}/scripts/create-pr.sh' main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"make-pr-body.sh failed"* ]]
+}
+
+@test "create-pr.sh fails when pr-title.txt is empty" {
+  mkdir -p "${PROJECT_DIR}/scripts" "${PROJECT_DIR}/.orchestrator"
+  cp "${REPO_DIR}/scripts/create-pr.sh" "${PROJECT_DIR}/scripts/create-pr.sh"
+  printf '' > "${PROJECT_DIR}/.orchestrator/pr-title.txt"
+  printf '## Summary\ntest\n' > "${PROJECT_DIR}/.orchestrator/pr-body.md"
+
+  run bash -c "cd '$PROJECT_DIR' && '${PROJECT_DIR}/scripts/create-pr.sh' main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PR title is empty"* ]]
+}
+
+@test "create-pr.sh fails when pr-title.txt is whitespace-only" {
+  mkdir -p "${PROJECT_DIR}/scripts" "${PROJECT_DIR}/.orchestrator"
+  cp "${REPO_DIR}/scripts/create-pr.sh" "${PROJECT_DIR}/scripts/create-pr.sh"
+  printf '   \n' > "${PROJECT_DIR}/.orchestrator/pr-title.txt"
+  printf '## Summary\ntest\n' > "${PROJECT_DIR}/.orchestrator/pr-body.md"
+
+  run bash -c "cd '$PROJECT_DIR' && '${PROJECT_DIR}/scripts/create-pr.sh' main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PR title is empty"* ]]
+}
+
+@test "create-pr.sh fails when pr-body.md is missing after make-pr-body.sh" {
+  # Copy create-pr.sh into PROJECT_DIR so ROOT_DIR resolves correctly
+  mkdir -p "${PROJECT_DIR}/scripts"
+  cp "${REPO_DIR}/scripts/create-pr.sh" "${PROJECT_DIR}/scripts/create-pr.sh"
+
+  # Stub make-pr-body.sh to only create title, not body
+  cat > "${PROJECT_DIR}/scripts/make-pr-body.sh" <<'STUB'
+#!/usr/bin/env bash
+mkdir -p .orchestrator
+echo "Some title" > .orchestrator/pr-title.txt
+# Intentionally skip creating pr-body.md
+STUB
+  chmod +x "${PROJECT_DIR}/scripts/make-pr-body.sh"
+
+  # Ensure neither file exists so make-pr-body.sh is invoked
+  rm -f "${PROJECT_DIR}/.orchestrator/pr-title.txt"
+  rm -f "${PROJECT_DIR}/.orchestrator/pr-body.md"
+
+  run bash -c "cd '$PROJECT_DIR' && '${PROJECT_DIR}/scripts/create-pr.sh' main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pr-body.md not found"* ]]
+}
