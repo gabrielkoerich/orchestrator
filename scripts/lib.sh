@@ -14,22 +14,31 @@ CONTEXTS_DIR=${CONTEXTS_DIR:-"${ORCH_HOME}/contexts"}
 CONFIG_PATH=${CONFIG_PATH:-"${ORCH_HOME}/config.yml"}
 STATE_DIR=${STATE_DIR:-"${ORCH_HOME}/.orchestrator"}
 
-# Augment PATH and load functions (brew services / launchd start with minimal env)
-_path_found=false
-if [[ -f "$HOME/.path" ]]; then
-  _old_path="$PATH"
-  source "$HOME/.path" >/dev/null 2>&1
-  export PATH="${_old_path}:${PATH}"
-  _path_found=true
-fi
-# Fallback dev tool locations if no .path file found
-if ! $_path_found; then
-  for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.local/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
-    [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
-  done
+# Augment PATH and load functions (brew services / launchd start with minimal env).
+# Guard against repeated sourcing of lib.sh in the same shell, which can bloat PATH.
+if [ "${ORCH_PATH_BOOTSTRAPPED:-0}" != "1" ]; then
+  _path_found=false
+  if [[ -f "$HOME/.path" ]]; then
+    _old_path="$PATH"
+    source "$HOME/.path" >/dev/null 2>&1
+    export PATH="${_old_path}:${PATH}"
+    _path_found=true
+  fi
+  # Fallback dev tool locations if no .path file found
+  if ! $_path_found; then
+    for _p in "$HOME/.bun/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.local/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
+      [[ -d "$_p" ]] && [[ ":$PATH:" != *":$_p:"* ]] && export PATH="$_p:$PATH"
+    done
+  fi
+  export ORCH_PATH_BOOTSTRAPPED=1
 fi
 # Source backend layer (GitHub, etc.)
-_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+_LIB_SOURCE="${BASH_SOURCE[0]:-$0}"
+case "$_LIB_SOURCE" in
+  */*) _LIB_DIR_RAW="${_LIB_SOURCE%/*}" ;;
+  *) _LIB_DIR_RAW="." ;;
+esac
+_LIB_DIR=$(cd "$_LIB_DIR_RAW" && pwd)
 if [ -f "${_LIB_DIR}/backend.sh" ]; then
   source "${_LIB_DIR}/backend.sh"
 fi
@@ -146,9 +155,9 @@ gh_backoff_next_delay() {
 }
 
 gh_api() {
-  local mode=${GH_BACKOFF_MODE:-wait}
-  local base=${GH_BACKOFF_BASE_SECONDS:-30}
-  local max=${GH_BACKOFF_MAX_SECONDS:-900}
+  local mode="${GH_BACKOFF_MODE:-wait}"
+  local base="${GH_BACKOFF_BASE_SECONDS:-30}"
+  local max="${GH_BACKOFF_MAX_SECONDS:-900}"
   local errexit_enabled=0
   if [[ $- == *e* ]]; then
     errexit_enabled=1
@@ -345,29 +354,22 @@ require_agent() {
 }
 
 # Validate a bash job command to prevent command injection attacks.
-# Rejects commands containing shell metacharacters that could enable arbitrary code execution.
-# Returns 0 if command is safe, 1 if it contains dangerous characters.
+# Only blocks command substitution patterns ($(...), `...`) which enable arbitrary code execution.
+# Allows all other shell features (pipes, variables, globs, &&, ||, redirection, etc.)
+# since these are legitimate use cases for bash jobs.
+# Returns 0 if command is safe, 1 if it contains dangerous patterns.
 validate_job_command() {
   local cmd="${1:-}"
   [ -n "$cmd" ] || return 1
 
-  # Check for dangerous shell metacharacters
-  # These characters can be used to chain commands, redirect output, or spawn subshells
-  # Use fixed string matching for special chars that break regex: $ ( ) ` |
-  printf '%s' "$cmd" | rg -q -F ';' && return 1
-  printf '%s' "$cmd" | rg -q -F '&&' && return 1
-  printf '%s' "$cmd" | rg -q -F '||' && return 1
-  printf '%s' "$cmd" | rg -q -F '`' && return 1
+  # Block command substitution patterns that allow arbitrary code execution
+  # These are the primary security concern as they allow executing any shell command
+
+  # Block $(...) - modern command substitution
   printf '%s' "$cmd" | rg -q -F '$(' && return 1
-  printf '%s' "$cmd" | rg -q -F ')' && return 1
-  printf '%s' "$cmd" | rg -q -F '|' && return 1
-  printf '%s' "$cmd" | rg -q -F '{' && return 1
-  printf '%s' "$cmd" | rg -q -F '}' && return 1
-  printf '%s' "$cmd" | rg -q -F '[' && return 1
-  printf '%s' "$cmd" | rg -q -F ']' && return 1
-  printf '%s' "$cmd" | rg -q -F '!' && return 1
-  printf '%s' "$cmd" | rg -q -F '<' && return 1
-  printf '%s' "$cmd" | rg -q -F '>' && return 1
+
+  # Block `...` - legacy command substitution
+  printf '%s' "$cmd" | rg -q -F '`' && return 1
 
   return 0
 }
@@ -492,7 +494,10 @@ normalize_json_response() {
   local raw="$1"
   if command -v python3 >/dev/null 2>&1; then
     local script_dir
-    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    script_dir="${_LIB_DIR:-}"
+    if [ -z "$script_dir" ] || [ ! -f "${script_dir}/normalize_json.py" ]; then
+      return 1
+    fi
     RAW_RESPONSE="$raw" python3 "${script_dir}/normalize_json.py"
     return $?
   fi
@@ -642,15 +647,25 @@ acquire_lock() { :; }
 release_lock() { :; }
 
 lock_mtime() {
-  local path="$1" mtime
-  mtime=$(stat -f %m "$path" 2>/dev/null) && { echo "$mtime"; return 0; }
-  mtime=$(stat -c %Y "$path" 2>/dev/null) && { echo "$mtime"; return 0; }
+  local path="$1"
+  if [ ! -e "$path" ]; then
+    echo 0
+    return
+  fi
+  if stat -f %m "$path" >/dev/null 2>&1; then
+    stat -f %m "$path"
+    return
+  fi
+  if stat -c %Y "$path" >/dev/null 2>&1; then
+    stat -c %Y "$path"
+    return
+  fi
   echo 0
 }
 
 lock_is_stale() {
   local path="$1"
-  local stale_seconds=${LOCK_STALE_SECONDS:-600}
+  local stale_seconds="${LOCK_STALE_SECONDS:-600}"
   local mtime
   mtime=$(lock_mtime "$path")
   if [ -z "$mtime" ] || [ "$mtime" -eq 0 ] 2>/dev/null; then
@@ -662,6 +677,94 @@ lock_is_stale() {
     return 0
   fi
   return 1
+}
+
+lock_pid() {
+  local path="$1"
+  if [ -f "$path/pid" ]; then
+    cat "$path/pid" 2>/dev/null || true
+  fi
+}
+
+lock_has_live_pid() {
+  local path="$1"
+  local pid
+  pid=$(lock_pid "$path")
+  if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+clear_stale_lock() {
+  local path="$1"
+  [ -d "$path" ] || return 1
+
+  local observed_mtime
+  observed_mtime=$(lock_mtime "$path")
+  [ -n "$observed_mtime" ] && [ "$observed_mtime" -ne 0 ] 2>/dev/null || return 1
+
+  if ! lock_is_stale "$path"; then
+    return 1
+  fi
+
+  if lock_has_live_pid "$path"; then
+    return 1
+  fi
+
+  local current_mtime
+  current_mtime=$(lock_mtime "$path")
+  if [ "$current_mtime" != "$observed_mtime" ]; then
+    return 1
+  fi
+
+  rm -f "$path/pid"
+  rmdir "$path" 2>/dev/null
+}
+
+acquire_task_lock() {
+  local path="$1"
+  local owner_pid="${2:-$$}"
+
+  if mkdir "$path" 2>/dev/null; then
+    if ! printf '%s\n' "$owner_pid" > "$path/pid"; then
+      rmdir "$path" 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+
+  if lock_has_live_pid "$path"; then
+    return 1
+  fi
+
+  clear_stale_lock "$path" >/dev/null 2>&1 || true
+
+  if mkdir "$path" 2>/dev/null; then
+    if ! printf '%s\n' "$owner_pid" > "$path/pid"; then
+      rmdir "$path" 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+
+  return 1
+}
+
+release_task_lock() {
+  local path="$1"
+  local owner_pid="${2:-}"
+  [ -d "$path" ] || return 0
+
+  local current_pid
+  current_pid=$(lock_pid "$path")
+
+  if [ -n "$owner_pid" ] && [ -n "$current_pid" ] && [ "$current_pid" != "$owner_pid" ]; then
+    return 1
+  fi
+
+  rm -f "$path/pid"
+  rmdir "$path" 2>/dev/null
 }
 
 # Legacy compat — runs command directly.
@@ -701,8 +804,8 @@ append_task_context() {
 
 retry_delay_seconds() {
   local attempts=$1
-  local base=${RETRY_BASE_SECONDS:-60}
-  local max=${RETRY_MAX_SECONDS:-3600}
+  local base="${RETRY_BASE_SECONDS:-60}"
+  local max="${RETRY_MAX_SECONDS:-3600}"
   local exp=$((attempts - 1))
   local delay=$base
   if [ "$exp" -gt 0 ]; then
@@ -1375,7 +1478,7 @@ process_owner_feedback() {
 }
 
 run_with_timeout() {
-  local timeout_seconds=${AGENT_TIMEOUT_SECONDS:-1800}
+  local timeout_seconds="${AGENT_TIMEOUT_SECONDS:-1800}"
   if [ -z "$timeout_seconds" ] || [ "$timeout_seconds" = "0" ]; then
     "$@"
     return $?

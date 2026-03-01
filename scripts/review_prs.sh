@@ -32,10 +32,11 @@ fi
 
 # Config
 _REVIEW_AGENT_CONFIG=$(config_get '.workflow.review_agent // ""')
+REVIEW_FALLBACK=${REVIEW_FALLBACK:-$(config_get '.router.fallback_executor // "codex"')}
+AVAILABLE_AGENTS=$(available_agents)
 
 # Round-robin: use PR number as index to pick agent (excludes task agent after we find it below)
 if [ -z "$_REVIEW_AGENT_CONFIG" ] || [ "$_REVIEW_AGENT_CONFIG" = "null" ] || [ "$_REVIEW_AGENT_CONFIG" = "round_robin" ]; then
-  AVAILABLE_AGENTS=$(available_agents)
   IFS=',' read -ra _agents <<< "$AVAILABLE_AGENTS"
   _agent_count=${#_agents[@]}
   # Will be set per-PR after we find the task agent
@@ -194,18 +195,39 @@ _review_pr() {
     IFS=',' read -ra _agents <<< "$AVAILABLE_AGENTS"
     _agent_count=${#_agents[@]}
 
-    # Try agents starting from pr_number offset, skip task_agent
-    for i in $(seq 0 $((_agent_count - 1))); do
-      local idx=$(( (pr_number + i) % _agent_count ))
-      local candidate="${_agents[$idx]}"
-      if [ "$candidate" != "$task_agent" ]; then
-        REVIEW_AGENT="$candidate"
-        break
-      fi
-    done
+    # Try agents starting from pr_number offset, skip task_agent.
+    # Guard empty lists: seq 0 -1 exits non-zero under set -e.
+    if [ "$_agent_count" -gt 0 ]; then
+      for i in $(seq 0 $((_agent_count - 1))); do
+        local idx=$(( (pr_number + i) % _agent_count ))
+        local candidate="${_agents[$idx]}"
+        if [ "$candidate" != "$task_agent" ]; then
+          REVIEW_AGENT="$candidate"
+          break
+        fi
+      done
+    fi
   fi
 
-  [ -z "$REVIEW_AGENT" ] && REVIEW_AGENT="minimax"
+  # Round-robin marker means selection failed for this PR; continue to fallback logic.
+  if [ "$REVIEW_AGENT" = "round_robin" ]; then
+    REVIEW_AGENT=""
+  fi
+
+  if [ -z "$REVIEW_AGENT" ]; then
+    REVIEW_AGENT="$REVIEW_FALLBACK"
+  fi
+  if [ -n "$REVIEW_AGENT" ] && ! command -v "$REVIEW_AGENT" >/dev/null 2>&1; then
+    local first_available
+    first_available=$(printf '%s' "$AVAILABLE_AGENTS" | cut -d',' -f1)
+    if [ -n "$first_available" ]; then
+      log_err "[review_prs] [$PROJECT_NAME] PR #$pr_number: fallback agent '$REVIEW_AGENT' not installed; using '$first_available'"
+      REVIEW_AGENT="$first_available"
+    else
+      log_err "[review_prs] [$PROJECT_NAME] PR #$pr_number: no available review agents (configured fallback: '$REVIEW_AGENT')"
+      return 0
+    fi
+  fi
 
   # Get diff
   local GIT_DIFF
@@ -229,7 +251,7 @@ _review_pr() {
 
   case "$REVIEW_AGENT" in
     codex)
-      REVIEW_RESPONSE=$(run_with_timeout codex ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
+      REVIEW_RESPONSE=$(run_with_timeout codex exec ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --json "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?
       ;;
     claude|kimi|minimax)
       REVIEW_RESPONSE=$(run_with_timeout claude ${REVIEW_MODEL:+--model "$REVIEW_MODEL"} --print "$REVIEW_PROMPT") 2>&1 || REVIEW_RC=$?

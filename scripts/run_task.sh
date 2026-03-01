@@ -83,32 +83,18 @@ export TASK_ID
 # Must be checked BEFORE the cleanup trap so failed lock attempts exit cleanly.
 TASK_LOCK="${LOCK_PATH}.task.${TASK_ID}"
 TASK_LOCK_OWNED=false
-if ! mkdir "$TASK_LOCK" 2>/dev/null; then
-  lock_pid=""
-  if [ -f "$TASK_LOCK/pid" ]; then
-    lock_pid=$(cat "$TASK_LOCK/pid" 2>/dev/null || true)
-  fi
-  if [ -n "$lock_pid" ] && kill -0 "$lock_pid" >/dev/null 2>&1; then
-    exit 0
-  fi
-  if lock_is_stale "$TASK_LOCK"; then
-    rm -f "$TASK_LOCK/pid"
-    rmdir "$TASK_LOCK" 2>/dev/null || true
-  fi
-  if ! mkdir "$TASK_LOCK" 2>/dev/null; then
-    exit 0
-  fi
+TASK_LOCK_PID="$$"
+if ! acquire_task_lock "$TASK_LOCK" "$TASK_LOCK_PID"; then
+  exit 0
 fi
 TASK_LOCK_OWNED=true
-echo "$$" > "$TASK_LOCK/pid"
 
 # Combined cleanup: recover crashed tasks AND release per-task lock.
 _run_task_cleanup() {
   local exit_code=$?
 
   if [ "$TASK_LOCK_OWNED" = true ]; then
-    rm -f "$TASK_LOCK/pid"
-    rmdir "$TASK_LOCK" 2>/dev/null || true
+    release_task_lock "$TASK_LOCK" "${TASK_LOCK_PID:-}" >/dev/null 2>&1 || true
   fi
 
   if [ $exit_code -ne 0 ] && [ "$TASK_LOCK_OWNED" = true ]; then
@@ -360,8 +346,10 @@ detect_retry_loop() {
   fi
 
   # Strip timestamp prefix (e.g. "[2026-01-01T00:00:00Z] ") before comparing for uniqueness
+  # Call _gh_ensure_repo in parent shell so _GH_REPO side effect is preserved
+  _gh_ensure_repo 2>/dev/null || true
   local _COMMENTS_JSON
-  _COMMENTS_JSON=$(gh_api -X GET "repos/$(_gh_ensure_repo 2>/dev/null; echo "$_GH_REPO")/issues/$task_id/comments" -f per_page=100 2>/dev/null || echo '[]')
+  _COMMENTS_JSON=$(gh_api -X GET "repos/$_GH_REPO/issues/$task_id/comments" -f per_page=100 2>/dev/null || echo '[]')
   local BLOCKED_NOTES
   BLOCKED_NOTES=$(printf '%s' "$_COMMENTS_JSON" \
     | jq -r '[.[] | select(.body | test("blocked:"; "i"))] | .[-3:] | [.[] | (.body | sub("^\\[\\d{4}-[^]]+\\] "; ""))] | unique | length' 2>/dev/null || echo "0")
@@ -1119,13 +1107,16 @@ if [ "$AGENT_STATUS" = "in_review" ] && [ "$ENABLE_REVIEW_AGENT" = "true" ] && [
     _rra_status=0
     case "$agent" in
       codex)
-        response=$(run_with_timeout codex ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
+        response=$(run_with_timeout codex exec ${model:+--model "$model"} --json "$prompt") || _rra_status=$?
         ;;
       claude)
         response=$(run_with_timeout claude ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
         ;;
       opencode)
-        response=$(run_with_timeout opencode ${model:+--model "$model"} --print "$prompt") || _rra_status=$?
+        _review_prompt_file=$(mktemp)
+        printf '%s' "$prompt" > "$_review_prompt_file"
+        response=$(run_with_timeout opencode run ${model:+-m "$model"} --format json - < "$_review_prompt_file") || _rra_status=$?
+        rm -f "$_review_prompt_file"
         ;;
       kimi)
         response=$(run_with_timeout kimi -p ${model:+--model "$model"} "$prompt") || _rra_status=$?
@@ -1631,7 +1622,8 @@ if [ "$_USED_TMUX" = "true" ]; then
     # Spawn background subshell: wait for tmux session, then collect output
     (
       TASK_LOCK_OWNED=true
-      echo "$BASHPID" > "$TASK_LOCK/pid"
+      TASK_LOCK_PID="$BASHPID"
+      printf '%s\n' "$TASK_LOCK_PID" > "$TASK_LOCK/pid"
       trap '_run_task_cleanup' EXIT
       tmux_wait "$TMUX_SESSION" "${AGENT_TIMEOUT_SECONDS:-1800}" || true
       run_hook on_agent_session_end

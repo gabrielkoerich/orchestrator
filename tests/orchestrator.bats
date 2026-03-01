@@ -737,18 +737,16 @@ SH
   run tdb_set "$TASK2_ID" agent "codex"
   [ "$status" -eq 0 ]
 
-  # Execution stub (codex) prints done JSON; review fallback (codex --print) prints approve JSON
+  # Execution stub (codex) prints done JSON; review fallback (codex exec --json) prints approve JSON
   CODEX_STUB="${TMP_DIR}/codex"
   cat > "$CODEX_STUB" <<'SH'
 #!/usr/bin/env bash
-for a in "$@"; do
-  if [ "$a" = "--print" ]; then
-    cat <<'JSON'
+if [ "$1" = "exec" ]; then
+  cat <<'JSON'
 {"decision":"approve","notes":"codex_fallback_marker"}
 JSON
-    exit 0
-  fi
-done
+  exit 0
+fi
 
 cat <<'JSON'
 {"status":"done","summary":"done","files_changed":[],"needs_help":false,"delegations":[]}
@@ -3130,41 +3128,57 @@ JSON
   [ "$?" -eq 0 ]
 }
 
-@test "validate_job_command rejects command injection" {
-  # Semicolon - command chaining
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test; rm -rf /'" 2>/dev/null
-
-  # Pipe
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test | cat'" 2>/dev/null
+@test "validate_job_command accepts shell features (pipes, variables, globs, etc.)" {
+  # Pipes
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'cat file | grep pattern'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
   # Logical AND
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test && rm -rf /'" 2>/dev/null
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'cmd1 && cmd2'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
   # Logical OR
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test || rm -rf /'" 2>/dev/null
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'cmd1 || cmd2'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
-  # Backticks
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\`ls\`'" 2>/dev/null
+  # Semicolons
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'cmd1; cmd2'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
-  # Command substitution $()
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\$(ls)'" 2>/dev/null
+  # Environment variables
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo \$HOME'" 2>/dev/null
+  [ "$?" -eq 0 ]
+
+  # Globs and brackets
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'ls -la [0-9]*'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
   # Redirection
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test > /tmp/out'" 2>/dev/null
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo test > /tmp/out'" 2>/dev/null
+  [ "$?" -eq 0 ]
 
-  # Double quotes
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo \"test\"'" 2>/dev/null
-
-  # Single quotes (some contexts)
-  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command \"echo '\${VAR}'\"" 2>/dev/null
+  # Braces
+  bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo {a,b,c}'" 2>/dev/null
+  [ "$?" -eq 0 ]
 }
 
-@test "jobs_tick.sh rejects bash job with shell metacharacters" {
+@test "validate_job_command rejects command substitution" {
+  # Backticks - legacy command substitution
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\`ls\`'" 2>/dev/null
+
+  # $() - modern command substitution
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command '\$(ls)'" 2>/dev/null
+
+  # Nested command substitution
+  ! bash -c "source '${REPO_DIR}/scripts/lib.sh' && validate_job_command 'echo \$(cat /etc/passwd)'" 2>/dev/null
+}
+
+@test "jobs_tick.sh rejects bash job with command substitution" {
   export JOBS_PATH="${TMP_DIR}/jobs.yml"
   echo '[]' > "$JOBS_FILE"
 
-  # Create bash job with command injection attempt
-  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command "echo test; rm -rf /" "* * * * *" "Bad Cmd Job" >/dev/null
+  # Create bash job with command substitution attempt
+  "${REPO_DIR}/scripts/jobs_add.sh" --type bash --command 'echo $(cat /etc/passwd)' "* * * * *" "Bad Cmd Job" >/dev/null
 
   run "${REPO_DIR}/scripts/jobs_tick.sh"
   [ "$status" -eq 0 ]
@@ -4846,6 +4860,55 @@ SH
   run grep "42" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
   [ "$status" -eq 0 ]
   [[ "$output" == *"def456"* ]]
+  [[ "$output" == *"approve"* ]]
+}
+
+@test "review_prs.sh uses router fallback executor when round-robin cannot select agent" {
+  run yq -i '.workflow.enable_review_agent = true' "$CONFIG_PATH"
+  run yq -i '.workflow.review_agent = "round_robin"' "$CONFIG_PATH"
+  run yq -i '.router.fallback_executor = "claude"' "$CONFIG_PATH"
+  run yq -i '.router.disabled_agents = ["claude","codex","opencode","kimi","minimax"]' "$CONFIG_PATH"
+  run yq -i '.gh.repo = "owner/repo"' "$CONFIG_PATH"
+  [ "$status" -eq 0 ]
+
+  GH_STUB="${TMP_DIR}/gh"
+  cat > "$GH_STUB" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [[ "$*" == *"repos/owner/repo/pulls"* ]]; then
+  echo '[{"number":77,"title":"Fallback test","body":"fallback","user":{"login":"dev"},"head":{"sha":"sha777","ref":"feat/fallback"},"draft":false}]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$*" == *"issues"* ]]; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+  echo "+fallback diff"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$GH_STUB"
+
+  CLAUDE_STUB="${TMP_DIR}/claude"
+  cat > "$CLAUDE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo '{"decision":"approve","notes":"Fallback agent from config worked."}'
+SH
+  chmod +x "$CLAUDE_STUB"
+
+  run env PATH="${TMP_DIR}:${PATH}" AGENT_TIMEOUT_SECONDS=10 "${REPO_DIR}/scripts/review_prs.sh"
+  [ "$status" -eq 0 ]
+
+  run grep "77" "${STATE_DIR}/pr_reviews_owner_repo.tsv"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sha777"* ]]
   [[ "$output" == *"approve"* ]]
 }
 
